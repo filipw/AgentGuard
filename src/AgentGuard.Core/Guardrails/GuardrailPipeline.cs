@@ -3,7 +3,7 @@ using Microsoft.Extensions.Logging;
 
 namespace AgentGuard.Core.Guardrails;
 
-public sealed class GuardrailPipeline
+public sealed partial class GuardrailPipeline
 {
     private readonly IGuardrailPolicy _policy;
     private readonly ILogger<GuardrailPipeline> _logger;
@@ -28,7 +28,7 @@ public sealed class GuardrailPipeline
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            _logger.LogDebug("Running guardrail rule '{RuleName}' in phase {Phase}", rule.Name, context.Phase);
+            LogRunningRule(_logger, rule.Name, context.Phase);
 
             var ruleContext = context with { Text = currentText };
             var result = await rule.EvaluateAsync(ruleContext, cancellationToken);
@@ -37,7 +37,7 @@ public sealed class GuardrailPipeline
 
             if (result.IsBlocked)
             {
-                _logger.LogWarning("Guardrail rule '{RuleName}' BLOCKED: {Reason}", rule.Name, result.Reason);
+                LogRuleBlocked(_logger, rule.Name, result.Reason);
                 return new GuardrailPipelineResult
                 {
                     IsBlocked = true,
@@ -49,7 +49,7 @@ public sealed class GuardrailPipeline
 
             if (result.IsModified && result.ModifiedText is not null)
             {
-                _logger.LogInformation("Guardrail rule '{RuleName}' modified text: {Reason}", rule.Name, result.Reason);
+                LogRuleModified(_logger, rule.Name, result.Reason);
                 currentText = result.ModifiedText;
             }
         }
@@ -62,6 +62,15 @@ public sealed class GuardrailPipeline
             WasModified = currentText != context.Text
         };
     }
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Running guardrail rule '{RuleName}' in phase {Phase}")]
+    private static partial void LogRunningRule(ILogger logger, string ruleName, GuardrailPhase phase);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Guardrail rule '{RuleName}' BLOCKED: {Reason}")]
+    private static partial void LogRuleBlocked(ILogger logger, string ruleName, string? reason);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Guardrail rule '{RuleName}' modified text: {Reason}")]
+    private static partial void LogRuleModified(ILogger logger, string ruleName, string? reason);
 }
 
 public sealed record GuardrailPipelineResult

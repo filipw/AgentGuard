@@ -8,7 +8,7 @@ namespace AgentGuard.Local.Classifiers;
 /// </summary>
 public sealed class KeywordSimilarityProvider : ITopicSimilarityProvider
 {
-    private readonly IDictionary<string, HashSet<string>> _topicKeywords;
+    private readonly Dictionary<string, HashSet<string>> _topicKeywords;
 
     public KeywordSimilarityProvider(IDictionary<string, IEnumerable<string>>? topicKeywords = null)
     {

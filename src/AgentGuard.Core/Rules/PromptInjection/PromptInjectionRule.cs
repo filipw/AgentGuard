@@ -35,10 +35,10 @@ public sealed class PromptInjectionRule : IGuardrailRule
     private static readonly string[] MediumSensitivityPatterns =
     [
         @"what\s+(is|are)\s+your\s+(system\s+)?(instructions|prompt|rules)",
-        @"(show|reveal|display|print|output)\s+(your\s+)?(system\s+)?(prompt|instructions)",
+        @"(show|reveal|display|print|output)\s+(\w+\s+)*(system\s+)?(prompt|instructions)",
         @"repeat\s+(your\s+)?(initial|original|system)\s+(prompt|instructions|message)",
         @"DAN\s+mode",
-        @"jailbreak",
+        @"jailbr(eak|oken|eaking)",
         @"do\s+anything\s+now",
     ];
 

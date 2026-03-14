@@ -1,6 +1,7 @@
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Rules.PromptInjection;
 using FluentAssertions;
+using Xunit;
 
 namespace AgentGuard.Core.Tests.Rules;
 

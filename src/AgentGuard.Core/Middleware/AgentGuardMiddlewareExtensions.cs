@@ -36,7 +36,7 @@ public static class AgentGuardMiddlewareExtensions
                         Text = inputText,
                         Phase = GuardrailPhase.Input,
                         Messages = messages.ToList(),
-                        AgentName = innerAgent.Metadata?.Name
+                        AgentName = innerAgent.Name
                     };
 
                     var inputResult = await pipeline.RunAsync(inputContext, ct);
@@ -69,7 +69,7 @@ public static class AgentGuardMiddlewareExtensions
                         Text = responseText,
                         Phase = GuardrailPhase.Output,
                         Messages = messages.ToList(),
-                        AgentName = innerAgent.Metadata?.Name
+                        AgentName = innerAgent.Name
                     };
 
                     var outputResult = await pipeline.RunAsync(outputContext, ct);

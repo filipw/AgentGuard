@@ -1,6 +1,7 @@
 using AgentGuard.Core.Builders;
 using AgentGuard.Core.Rules.PII;
 using FluentAssertions;
+using Xunit;
 
 namespace AgentGuard.Core.Tests.Builders;
 

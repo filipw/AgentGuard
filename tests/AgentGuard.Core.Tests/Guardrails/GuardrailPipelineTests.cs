@@ -2,6 +2,7 @@ using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Guardrails;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
+using Xunit;
 
 namespace AgentGuard.Core.Tests.Guardrails;
 

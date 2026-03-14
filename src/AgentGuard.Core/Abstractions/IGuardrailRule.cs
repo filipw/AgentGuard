@@ -36,13 +36,13 @@ public enum GuardrailSeverity
     Critical = 4
 }
 
-public sealed class GuardrailContext
+public sealed record GuardrailContext
 {
     public required string Text { get; init; }
     public required GuardrailPhase Phase { get; init; }
     public IReadOnlyList<Microsoft.Extensions.AI.ChatMessage>? Messages { get; init; }
     public string? AgentName { get; init; }
-    public IDictionary<string, object> Properties { get; } = new Dictionary<string, object>();
+    public IDictionary<string, object> Properties { get; init; } = new Dictionary<string, object>();
 }
 
 public interface IGuardrailRule

@@ -5,7 +5,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace AgentGuard.Azure.ContentSafety;
 
-public sealed class AzureContentSafetyClassifier : IContentSafetyClassifier
+public sealed partial class AzureContentSafetyClassifier : IContentSafetyClassifier
 {
     private readonly ContentSafetyClient _client;
     private readonly ILogger<AzureContentSafetyClassifier> _logger;
@@ -36,23 +36,26 @@ public sealed class AzureContentSafetyClassifier : IContentSafetyClassifier
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Azure AI Content Safety analysis failed");
+            LogAnalysisFailed(_logger, ex);
             return []; // fail-open
         }
     }
 
-    private static ContentSafetyCategory MapCategory(TextCategory c) => c switch
+    private static ContentSafetyCategory MapCategory(TextCategory c)
     {
-        TextCategory.Hate => ContentSafetyCategory.Hate,
-        TextCategory.Violence => ContentSafetyCategory.Violence,
-        TextCategory.SelfHarm => ContentSafetyCategory.SelfHarm,
-        TextCategory.Sexual => ContentSafetyCategory.Sexual,
-        _ => ContentSafetyCategory.None
-    };
+        if (c == TextCategory.Hate) return ContentSafetyCategory.Hate;
+        if (c == TextCategory.Violence) return ContentSafetyCategory.Violence;
+        if (c == TextCategory.SelfHarm) return ContentSafetyCategory.SelfHarm;
+        if (c == TextCategory.Sexual) return ContentSafetyCategory.Sexual;
+        return ContentSafetyCategory.None;
+    }
 
     private static ContentSafetySeverity MapSeverity(int s) => s switch
     {
         0 => ContentSafetySeverity.Safe, <= 2 => ContentSafetySeverity.Low,
         <= 4 => ContentSafetySeverity.Medium, _ => ContentSafetySeverity.High
     };
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Azure AI Content Safety analysis failed")]
+    private static partial void LogAnalysisFailed(ILogger logger, Exception ex);
 }
