@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Azure AI Content Safety integration for AgentGuard.</Description>
+    <PackageId>AgentGuard.Azure</PackageId>
+    <RootNamespace>AgentGuard.Azure</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../AgentGuard.Core/AgentGuard.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Azure.AI.ContentSafety" />
+    <PackageReference Include="Azure.Identity" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+  </ItemGroup>
+</Project>

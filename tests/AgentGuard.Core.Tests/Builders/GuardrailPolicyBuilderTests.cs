@@ -1,0 +1,70 @@
+using AgentGuard.Core.Builders;
+using AgentGuard.Core.Rules.PII;
+using FluentAssertions;
+
+namespace AgentGuard.Core.Tests.Builders;
+
+public class GuardrailPolicyBuilderTests
+{
+    [Fact]
+    public void ShouldBuildEmptyPolicy()
+    {
+        var p = new GuardrailPolicyBuilder("empty").Build();
+        p.Name.Should().Be("empty");
+        p.Rules.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void ShouldAddPromptInjectionRule()
+    {
+        new GuardrailPolicyBuilder().BlockPromptInjection().Build()
+            .Rules.Should().ContainSingle().Which.Name.Should().Be("prompt-injection");
+    }
+
+    [Fact]
+    public void ShouldAddPiiRedactionRule()
+    {
+        new GuardrailPolicyBuilder().RedactPII(PiiCategory.Email | PiiCategory.Phone).Build()
+            .Rules.Should().ContainSingle().Which.Name.Should().Be("pii-redaction");
+    }
+
+    [Fact]
+    public void ShouldAddTopicBoundaryRule()
+    {
+        new GuardrailPolicyBuilder().EnforceTopicBoundary("billing", "support").Build()
+            .Rules.Should().ContainSingle().Which.Name.Should().Be("topic-boundary");
+    }
+
+    [Fact]
+    public void ShouldChainMultipleRules()
+    {
+        new GuardrailPolicyBuilder().BlockPromptInjection().RedactPII().EnforceTopicBoundary("support").LimitInputTokens(2000).Build()
+            .Rules.Should().HaveCount(4);
+    }
+
+    [Fact]
+    public void ShouldOrderRulesByPriority()
+    {
+        var p = new GuardrailPolicyBuilder()
+            .LimitInputTokens(2000).RedactPII().BlockPromptInjection().EnforceTopicBoundary("support").Build();
+        p.Rules[0].Name.Should().Be("prompt-injection");
+        p.Rules[1].Name.Should().Be("pii-redaction");
+        p.Rules[2].Name.Should().Be("topic-boundary");
+        p.Rules[3].Name.Should().Contain("token-limit");
+    }
+
+    [Fact]
+    public void ShouldConfigureViolationHandler()
+    {
+        new GuardrailPolicyBuilder().BlockPromptInjection().OnViolation(v => v.RejectWithMessage("Nope.")).Build()
+            .ViolationHandler.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void ShouldAddCustomRule()
+    {
+        new GuardrailPolicyBuilder()
+            .AddRule("custom", Abstractions.GuardrailPhase.Output, (ctx, ct) => ValueTask.FromResult(Abstractions.GuardrailResult.Passed()))
+            .Build().Rules.Should().ContainSingle().Which.Name.Should().Be("custom");
+    }
+}

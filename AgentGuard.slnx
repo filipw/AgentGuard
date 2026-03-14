@@ -1,0 +1,20 @@
+<Solution>
+  <Folder Name="/src">
+    <Project Path="src/AgentGuard.Core/AgentGuard.Core.csproj" />
+    <Project Path="src/AgentGuard.Local/AgentGuard.Local.csproj" />
+    <Project Path="src/AgentGuard.Azure/AgentGuard.Azure.csproj" />
+    <Project Path="src/AgentGuard.Hosting/AgentGuard.Hosting.csproj" />
+  </Folder>
+  <Folder Name="/tests">
+    <Project Path="tests/AgentGuard.Core.Tests/AgentGuard.Core.Tests.csproj" />
+    <Project Path="tests/AgentGuard.Local.Tests/AgentGuard.Local.Tests.csproj" />
+    <Project Path="tests/AgentGuard.Azure.Tests/AgentGuard.Azure.Tests.csproj" />
+    <Project Path="tests/AgentGuard.Integration.Tests/AgentGuard.Integration.Tests.csproj" />
+  </Folder>
+  <Folder Name="/samples">
+    <Project Path="samples/BasicGuardrails/BasicGuardrails.csproj" />
+    <Project Path="samples/CustomRules/CustomRules.csproj" />
+    <Project Path="samples/AzureIntegration/AzureIntegration.csproj" />
+    <Project Path="samples/WorkflowGuardrails/WorkflowGuardrails.csproj" />
+  </Folder>
+</Solution>

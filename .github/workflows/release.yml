@@ -1,0 +1,56 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '8.0.x'
+
+    - name: Extract version from tag
+      id: version
+      run: echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+    - name: Build
+      run: dotnet build AgentGuard.slnx --configuration Release
+
+    - name: Test
+      run: dotnet test AgentGuard.slnx --configuration Release --no-build
+
+    - name: Pack
+      run: |
+        dotnet pack AgentGuard.slnx \
+          --configuration Release \
+          --no-build \
+          --output artifacts/packages \
+          -p:PackageVersion=${{ steps.version.outputs.version }}
+
+    - name: Push to NuGet
+      run: |
+        dotnet nuget push artifacts/packages/*.nupkg \
+          --api-key ${{ secrets.NUGET_API_KEY }} \
+          --source https://api.nuget.org/v3/index.json \
+          --skip-duplicate
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: artifacts/packages/*
+        generate_release_notes: true
