@@ -3,7 +3,7 @@
 ## Development Setup
 
 1. **Prerequisites**: .NET 8.0 SDK or later
-2. **Clone**: `git clone https://github.com/YOUR_USERNAME/AgentGuard.git`
+2. **Clone**: `git clone https://github.com/filipw/AgentGuard.git`
 3. **Build & Test**: `./eng/build.sh` (Linux/macOS) or `eng\build.cmd` (Windows)
 
 ## Project Structure

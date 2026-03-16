@@ -1,9 +1,11 @@
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Rules.ContentSafety;
+using AgentGuard.Core.Rules.LLM;
 using AgentGuard.Core.Rules.PII;
 using AgentGuard.Core.Rules.PromptInjection;
 using AgentGuard.Core.Rules.TokenLimits;
 using AgentGuard.Core.Rules.TopicBoundary;
+using Microsoft.Extensions.AI;
 
 namespace AgentGuard.Core.Builders;
 
@@ -64,6 +66,36 @@ public sealed class GuardrailPolicyBuilder
     public GuardrailPolicyBuilder ValidateInput(Func<string, bool> predicate, string? rejectionMessage = null)
     {
         _rules.Add(new PredicateRule("input-validation", GuardrailPhase.Input, predicate, rejectionMessage ?? "Input failed validation."));
+        return this;
+    }
+
+    /// <summary>
+    /// Adds LLM-based prompt injection detection. More accurate than regex-based detection
+    /// for sophisticated attacks (encoding tricks, indirect injection, multi-turn attacks).
+    /// </summary>
+    public GuardrailPolicyBuilder BlockPromptInjectionWithLlm(IChatClient chatClient, LlmPromptInjectionOptions? options = null)
+    {
+        _rules.Add(new LlmPromptInjectionRule(chatClient, options));
+        return this;
+    }
+
+    /// <summary>
+    /// Adds LLM-based PII detection and optional redaction. More accurate than regex-based detection
+    /// for unstructured PII like names, addresses, and contextual identifiers.
+    /// </summary>
+    public GuardrailPolicyBuilder DetectPIIWithLlm(IChatClient chatClient, LlmPiiDetectionOptions? options = null)
+    {
+        _rules.Add(new LlmPiiDetectionRule(chatClient, options));
+        return this;
+    }
+
+    /// <summary>
+    /// Adds LLM-based topic boundary enforcement. More accurate than keyword matching —
+    /// understands semantic meaning and intent.
+    /// </summary>
+    public GuardrailPolicyBuilder EnforceTopicBoundaryWithLlm(IChatClient chatClient, params string[] allowedTopics)
+    {
+        _rules.Add(new LlmTopicGuardrailRule(chatClient, new LlmTopicGuardrailOptions { AllowedTopics = allowedTopics.ToList() }));
         return this;
     }
 

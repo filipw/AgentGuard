@@ -26,67 +26,160 @@ public static class AgentGuardMiddlewareExtensions
         return builder.Use(
             runFunc: async (messages, session, options, innerAgent, ct) =>
             {
-                var lastMessage = messages.LastOrDefault();
-                var inputText = lastMessage?.Text ?? "";
+                var (blocked, processedMessages) = await RunInputGuardrails(pipeline, policy, messages, innerAgent.Name, ct);
+                if (blocked is not null)
+                    return blocked;
 
-                if (!string.IsNullOrEmpty(inputText))
-                {
-                    var inputContext = new GuardrailContext
-                    {
-                        Text = inputText,
-                        Phase = GuardrailPhase.Input,
-                        Messages = messages.ToList(),
-                        AgentName = innerAgent.Name
-                    };
+                var response = await innerAgent.RunAsync(processedMessages, session, options, ct);
 
-                    var inputResult = await pipeline.RunAsync(inputContext, ct);
-
-                    if (inputResult.IsBlocked)
-                    {
-                        var msg = await policy.ViolationHandler.HandleViolationAsync(inputResult.BlockingResult!, inputContext, ct);
-                        return new AgentResponse([new ChatMessage(ChatRole.Assistant, msg)]);
-                    }
-
-                    if (inputResult.WasModified && lastMessage is not null)
-                    {
-                        var modified = messages.ToList();
-                        modified[^1] = new ChatMessage(lastMessage.Role, inputResult.FinalText);
-                        messages = modified;
-                    }
-                }
-
-                var response = await innerAgent.RunAsync(messages, session, options, ct);
-
-                var responseText = response.Messages
-                    .Where(m => m.Role == ChatRole.Assistant)
-                    .Select(m => m.Text)
-                    .LastOrDefault() ?? "";
-
-                if (!string.IsNullOrEmpty(responseText))
-                {
-                    var outputContext = new GuardrailContext
-                    {
-                        Text = responseText,
-                        Phase = GuardrailPhase.Output,
-                        Messages = messages.ToList(),
-                        AgentName = innerAgent.Name
-                    };
-
-                    var outputResult = await pipeline.RunAsync(outputContext, ct);
-
-                    if (outputResult.IsBlocked)
-                    {
-                        var msg = await policy.ViolationHandler.HandleViolationAsync(outputResult.BlockingResult!, outputContext, ct);
-                        return new AgentResponse([new ChatMessage(ChatRole.Assistant, msg)]);
-                    }
-
-                    if (outputResult.WasModified)
-                        return new AgentResponse([new ChatMessage(ChatRole.Assistant, outputResult.FinalText)]);
-                }
-
-                return response;
+                return await RunOutputGuardrails(pipeline, policy, response, processedMessages, innerAgent.Name, ct);
             },
-            runStreamingFunc: null
+            runStreamingFunc: (messages, session, options, innerAgent, ct) =>
+            {
+                return StreamWithGuardrails(pipeline, policy, messages, session, options, innerAgent, ct);
+            }
         );
+    }
+
+    private static async Task<(AgentResponse? blocked, IEnumerable<ChatMessage> messages)> RunInputGuardrails(
+        GuardrailPipeline pipeline,
+        IGuardrailPolicy policy,
+        IEnumerable<ChatMessage> messages,
+        string? agentName,
+        CancellationToken ct)
+    {
+        var lastMessage = messages.LastOrDefault();
+        var inputText = lastMessage?.Text ?? "";
+
+        if (string.IsNullOrEmpty(inputText))
+            return (null, messages);
+
+        var inputContext = new GuardrailContext
+        {
+            Text = inputText,
+            Phase = GuardrailPhase.Input,
+            Messages = messages.ToList(),
+            AgentName = agentName
+        };
+
+        var inputResult = await pipeline.RunAsync(inputContext, ct);
+
+        if (inputResult.IsBlocked)
+        {
+            var msg = await policy.ViolationHandler.HandleViolationAsync(inputResult.BlockingResult!, inputContext, ct);
+            return (new AgentResponse([new ChatMessage(ChatRole.Assistant, msg)]), messages);
+        }
+
+        if (inputResult.WasModified && lastMessage is not null)
+        {
+            var modified = messages.ToList();
+            modified[^1] = new ChatMessage(lastMessage.Role, inputResult.FinalText);
+            return (null, modified);
+        }
+
+        return (null, messages);
+    }
+
+    private static async Task<AgentResponse> RunOutputGuardrails(
+        GuardrailPipeline pipeline,
+        IGuardrailPolicy policy,
+        AgentResponse response,
+        IEnumerable<ChatMessage> messages,
+        string? agentName,
+        CancellationToken ct)
+    {
+        var responseText = response.Messages
+            .Where(m => m.Role == ChatRole.Assistant)
+            .Select(m => m.Text)
+            .LastOrDefault() ?? "";
+
+        if (string.IsNullOrEmpty(responseText))
+            return response;
+
+        var outputContext = new GuardrailContext
+        {
+            Text = responseText,
+            Phase = GuardrailPhase.Output,
+            Messages = messages.ToList(),
+            AgentName = agentName
+        };
+
+        var outputResult = await pipeline.RunAsync(outputContext, ct);
+
+        if (outputResult.IsBlocked)
+        {
+            var msg = await policy.ViolationHandler.HandleViolationAsync(outputResult.BlockingResult!, outputContext, ct);
+            return new AgentResponse([new ChatMessage(ChatRole.Assistant, msg)]);
+        }
+
+        if (outputResult.WasModified)
+            return new AgentResponse([new ChatMessage(ChatRole.Assistant, outputResult.FinalText)]);
+
+        return response;
+    }
+
+    private static async IAsyncEnumerable<AgentResponseUpdate> StreamWithGuardrails(
+        GuardrailPipeline pipeline,
+        IGuardrailPolicy policy,
+        IEnumerable<ChatMessage> messages,
+        AgentSession? session,
+        AgentRunOptions? options,
+        AIAgent innerAgent,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+    {
+        // Run input guardrails before streaming
+        var (blocked, processedMessages) = await RunInputGuardrails(pipeline, policy, messages, innerAgent.Name, ct);
+        if (blocked is not null)
+        {
+            var text = blocked.Messages.FirstOrDefault()?.Text ?? "";
+            yield return new AgentResponseUpdate(ChatRole.Assistant, text);
+            yield break;
+        }
+
+        // Buffer the streaming output so we can run output guardrails
+        var chunks = new List<AgentResponseUpdate>();
+        var textBuilder = new System.Text.StringBuilder();
+
+        await foreach (var update in innerAgent.RunStreamingAsync(processedMessages, session, options, ct))
+        {
+            chunks.Add(update);
+            if (!string.IsNullOrEmpty(update.Text))
+                textBuilder.Append(update.Text);
+        }
+
+        var fullText = textBuilder.ToString();
+
+        // Run output guardrails on the accumulated text
+        if (!string.IsNullOrEmpty(fullText))
+        {
+            var outputContext = new GuardrailContext
+            {
+                Text = fullText,
+                Phase = GuardrailPhase.Output,
+                Messages = processedMessages.ToList(),
+                AgentName = innerAgent.Name
+            };
+
+            var outputResult = await pipeline.RunAsync(outputContext, ct);
+
+            if (outputResult.IsBlocked)
+            {
+                var msg = await policy.ViolationHandler.HandleViolationAsync(outputResult.BlockingResult!, outputContext, ct);
+                yield return new AgentResponseUpdate(ChatRole.Assistant, msg);
+                yield break;
+            }
+
+            if (outputResult.WasModified)
+            {
+                yield return new AgentResponseUpdate(ChatRole.Assistant, outputResult.FinalText);
+                yield break;
+            }
+        }
+
+        // Output passed guardrails — yield all original chunks
+        foreach (var chunk in chunks)
+        {
+            yield return chunk;
+        }
     }
 }

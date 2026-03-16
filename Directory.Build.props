@@ -15,8 +15,8 @@
     <Product>AgentGuard</Product>
     <Copyright>Copyright (c) 2026 AgentGuard Contributors</Copyright>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <PackageProjectUrl>https://github.com/YOUR_USERNAME/AgentGuard</PackageProjectUrl>
-    <RepositoryUrl>https://github.com/YOUR_USERNAME/AgentGuard</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/filipw/AgentGuard</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/filipw/AgentGuard</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageTags>ai;agents;guardrails;safety;microsoft-agent-framework;maf;dotnet</PackageTags>
   </PropertyGroup>
