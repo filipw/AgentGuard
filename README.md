@@ -19,7 +19,8 @@ Microsoft Agent Framework provides raw middleware hooks for intercepting agent r
 var guardedAgent = agent
     .AsBuilder()
     .UseAgentGuard(g => g
-        .BlockPromptInjection()
+        .NormalizeInput()              // decode base64/hex/unicode evasion tricks
+        .BlockPromptInjection()        // regex-based injection detection
         .RedactPII(PiiCategory.Email | PiiCategory.Phone | PiiCategory.SSN)
         .EnforceTopicBoundary("customer-support", "billing", "returns")
         .LimitInputTokens(4000)
@@ -33,7 +34,8 @@ var guardedAgent = agent
 
 ### Regex-based rules (fast, zero-cost, offline)
 
-- **Prompt injection detection** — blocks jailbreak attempts, system prompt extraction, and role-play attacks with configurable sensitivity levels (Low/Medium/High)
+- **Input normalization** — decodes evasion encodings (base64, hex, reversed text, Unicode homoglyphs) before downstream rules evaluate the text, catching attacks hidden via encoding tricks
+- **Prompt injection detection** — blocks jailbreak attempts, system prompt extraction, role-play attacks, end sequence injection, variable expansion, framing attacks, and rule addition with configurable sensitivity levels (Low/Medium/High). Patterns based on the [Arcanum Prompt Injection Taxonomy](https://github.com/Arcanum-Sec/arc_pi_taxonomy)
 - **PII redaction** — detects and redacts emails, phone numbers, SSNs, credit cards, IP addresses, dates of birth, and custom patterns on input and output
 - **Topic boundary enforcement** — keyword-based topic matching with pluggable `ITopicSimilarityProvider` for embedding-based similarity
 - **Token limits** — enforces input/output token budgets using `Microsoft.ML.Tokenizers` (cl100k_base) with configurable overflow strategies (Reject/Truncate/Warn)
@@ -43,7 +45,7 @@ var guardedAgent = agent
 
 For teams that need higher accuracy than regex, AgentGuard provides LLM-as-judge guardrail rules that work with any `IChatClient` (Azure OpenAI, Ollama, local models, etc.):
 
-- **LLM prompt injection detection** — catches sophisticated attacks that regex misses: encoding tricks, indirect injection, multi-turn attacks, and multilingual payloads
+- **LLM prompt injection detection** — catches sophisticated attacks that regex misses: narrative smuggling, meta-prompting, cognitive overload, multi-chain attacks, and more. Prompt templates cover all 12 attack technique families and 20 evasion methods from the [Arcanum PI Taxonomy](https://github.com/Arcanum-Sec/arc_pi_taxonomy). Returns structured threat classification metadata (technique, intent, evasion, confidence) for operational telemetry
 - **LLM PII detection & redaction** — catches unstructured PII like full names, physical addresses, and contextual identifiers that regex can't find. Supports block or redact modes
 - **LLM topic boundary enforcement** — semantic topic classification that understands intent, not just keywords
 
@@ -126,6 +128,7 @@ IChatClient classifier = new OllamaChatClient("llama3");
 var guardedAgent = agent
     .AsBuilder()
     .UseAgentGuard(g => g
+        .NormalizeInput()                                      // decode evasion encodings first
         .BlockPromptInjection()                                // regex: fast first pass
         .BlockPromptInjectionWithLlm(classifier)               // LLM: catches what regex misses
         .DetectPIIWithLlm(classifier)                          // LLM: catches names, addresses, etc.
@@ -187,6 +190,8 @@ User Input
 ┌─────────────────────────────┐
 │  Input Guardrails Pipeline  │
 │  ┌───────────────────────┐  │
+│  │ Input Normalization   │  │  ← Decode evasions (order 5)
+│  ├───────────────────────┤  │
 │  │ Prompt Injection      │  │  ← Regex (order 10) + LLM (order 15)
 │  ├───────────────────────┤  │
 │  │ PII Detection         │  │  ← Regex (order 20) + LLM (order 25)
@@ -227,6 +232,7 @@ Rules execute in order of their `Order` property (lower = first). Built-in rules
 
 | Order | Rule | Type | Phase |
 |-------|------|------|-------|
+| 5 | `InputNormalizationRule` | Local | Input |
 | 10 | `PromptInjectionRule` | Regex | Input |
 | 15 | `LlmPromptInjectionRule` | LLM | Input |
 | 20 | `PiiRedactionRule` | Regex | Both |
@@ -254,12 +260,13 @@ Rules execute in order of their `Order` property (lower = first). Built-in rules
 
 ## Requirements
 
-- .NET 8.0 or later
+- .NET 10.0 or later
 - Microsoft Agent Framework 1.0.0-rc4 or later
 
-## Contributing
 
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+## Acknowledgements
+
+- Prompt injection detection patterns and LLM prompt templates are informed by the [Arcanum Prompt Injection Taxonomy](https://github.com/Arcanum-Sec/arc_pi_taxonomy) by Jason Haddix / Arcanum Information Security (CC BY 4.0)
 
 ## License
 

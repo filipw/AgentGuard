@@ -14,7 +14,8 @@
       "Bash(dotnet tool:*)",
       "Bash(dotnet ilspycmd:*)",
       "Bash(dotnet script:*)",
-      "Bash(find /Users/filipw/.nuget/packages/microsoft.extensions.ai -name *.dll -path */net*/*)"
+      "Bash(find /Users/filipw/.nuget/packages/microsoft.extensions.ai -name *.dll -path */net*/*)",
+      "WebFetch(domain:github.com)"
     ]
   }
 }

@@ -1,6 +1,7 @@
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Rules.ContentSafety;
 using AgentGuard.Core.Rules.LLM;
+using AgentGuard.Core.Rules.Normalization;
 using AgentGuard.Core.Rules.PII;
 using AgentGuard.Core.Rules.PromptInjection;
 using AgentGuard.Core.Rules.TokenLimits;
@@ -16,6 +17,16 @@ public sealed class GuardrailPolicyBuilder
     private IViolationHandler? _violationHandler;
 
     public GuardrailPolicyBuilder(string name = "default") => _name = name;
+
+    /// <summary>
+    /// Adds input normalization that decodes common evasion encodings (base64, hex, reversed text,
+    /// Unicode homoglyphs) so downstream rules see plaintext. Runs before all other rules (order 5).
+    /// </summary>
+    public GuardrailPolicyBuilder NormalizeInput(InputNormalizationOptions? options = null)
+    {
+        _rules.Add(new InputNormalizationRule(options));
+        return this;
+    }
 
     public GuardrailPolicyBuilder BlockPromptInjection(Sensitivity sensitivity = Sensitivity.Medium)
     {
