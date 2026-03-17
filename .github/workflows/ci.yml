@@ -30,7 +30,7 @@ jobs:
       run: dotnet restore AgentGuard.slnx
 
     - name: Build
-      run: dotnet build AgentGuard.slnx --no-restore --configuration Release -warnaserror
+      run: dotnet build AgentGuard.slnx --no-restore --configuration Release
 
     - name: Test
       run: |

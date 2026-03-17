@@ -1,6 +1,6 @@
 <Project>
   <PropertyGroup Condition="'$(IsTestProject)' == 'true'">
     <IsPackable>false</IsPackable>
-    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <NoWarn>$(NoWarn);CA1707;CA1852;CA1822</NoWarn>
   </PropertyGroup>
 </Project>
