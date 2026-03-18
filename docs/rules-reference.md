@@ -117,11 +117,20 @@ Uses `Microsoft.ML.Tokenizers` (cl100k_base) for accurate token counting.
 
 ## Content Safety
 
-`.BlockHarmfulContent(maxSeverity)`
+`.BlockHarmfulContent(maxSeverity)` or `.BlockHarmfulContent(options)` or `.BlockHarmfulContent(classifier, options?)`
 
 Order 50, Both phases.
 
 Requires an `IContentSafetyClassifier`. Use `AgentGuard.Azure` for Azure AI Content Safety integration.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| MaxAllowedSeverity | `ContentSafetySeverity` | Low | Threshold for blocking |
+| Categories | `ContentSafetyCategory` | All | Which categories to check (Hate, Violence, SelfHarm, Sexual) |
+| BlocklistNames | `IList<string>` | [] | Server-side blocklists to check against |
+| HaltOnBlocklistHit | `bool` | false | Skip category analysis if blocklist matches (performance optimization) |
+
+Blocklist matches are checked first and take precedence over category analysis. When a blocklist match is found, the result includes metadata with `blocklistName`, `blocklistItemText`, and `totalMatches`.
 
 ## Output/Input Validation
 

@@ -110,9 +110,31 @@ public sealed class GuardrailPolicyBuilder
         return this;
     }
 
+    /// <summary>
+    /// Adds content safety filtering. Requires an <see cref="IContentSafetyClassifier"/> to be injected
+    /// via DI or passed directly via <see cref="BlockHarmfulContent(IContentSafetyClassifier, ContentSafetyOptions?)"/>.
+    /// </summary>
     public GuardrailPolicyBuilder BlockHarmfulContent(ContentSafetySeverity maxAllowedSeverity = ContentSafetySeverity.Low)
     {
         _rules.Add(new ContentSafetyRule(new ContentSafetyOptions { MaxAllowedSeverity = maxAllowedSeverity }));
+        return this;
+    }
+
+    /// <summary>
+    /// Adds content safety filtering with full options (category filtering, blocklists).
+    /// </summary>
+    public GuardrailPolicyBuilder BlockHarmfulContent(ContentSafetyOptions options)
+    {
+        _rules.Add(new ContentSafetyRule(options));
+        return this;
+    }
+
+    /// <summary>
+    /// Adds content safety filtering with an explicit classifier instance and optional configuration.
+    /// </summary>
+    public GuardrailPolicyBuilder BlockHarmfulContent(IContentSafetyClassifier classifier, ContentSafetyOptions? options = null)
+    {
+        _rules.Add(new ContentSafetyRule(options, classifier));
         return this;
     }
 
