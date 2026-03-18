@@ -26,4 +26,4 @@ builder.AddAIAgent("BillingAgent", (sp, key) =>
 
 ## appsettings.json Support
 
-Coming in v0.2.0.
+Not yet supported. Policies are currently configured in code via the fluent API or DI registration.
