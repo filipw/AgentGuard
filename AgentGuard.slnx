@@ -9,6 +9,7 @@
     <Project Path="tests/AgentGuard.Core.Tests/AgentGuard.Core.Tests.csproj" />
     <Project Path="tests/AgentGuard.Local.Tests/AgentGuard.Local.Tests.csproj" />
     <Project Path="tests/AgentGuard.Azure.Tests/AgentGuard.Azure.Tests.csproj" />
+    <Project Path="tests/AgentGuard.E2E.Tests/AgentGuard.E2E.Tests.csproj" />
     <Project Path="tests/AgentGuard.Integration.Tests/AgentGuard.Integration.Tests.csproj" />
   </Folder>
   <Folder Name="/samples/">

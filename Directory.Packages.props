@@ -12,6 +12,7 @@
     <!-- Microsoft.Extensions.AI -->
     <PackageVersion Include="Microsoft.Extensions.AI" Version="10.3.0" />
     <PackageVersion Include="Microsoft.Extensions.AI.Abstractions" Version="10.3.0" />
+    <PackageVersion Include="Microsoft.Extensions.AI.OpenAI" Version="10.3.0" />
 
     <!-- Azure AI Content Safety -->
     <PackageVersion Include="Azure.AI.ContentSafety" Version="1.0.0" />

@@ -10,10 +10,12 @@ namespace AgentGuard.Core.Rules.LLM;
 public abstract class LlmGuardrailRule : IGuardrailRule
 {
     private readonly IChatClient _chatClient;
+    private readonly ChatOptions? _chatOptions;
 
-    protected LlmGuardrailRule(IChatClient chatClient)
+    protected LlmGuardrailRule(IChatClient chatClient, ChatOptions? chatOptions = null)
     {
         _chatClient = chatClient ?? throw new ArgumentNullException(nameof(chatClient));
+        _chatOptions = chatOptions;
     }
 
     public abstract string Name { get; }
@@ -40,7 +42,7 @@ public abstract class LlmGuardrailRule : IGuardrailRule
         try
         {
             var messages = BuildPrompt(context).ToList();
-            var response = await _chatClient.GetResponseAsync(messages, cancellationToken: cancellationToken);
+            var response = await _chatClient.GetResponseAsync(messages, _chatOptions, cancellationToken);
             var responseText = response.Text ?? "";
             return ParseResponse(responseText, context);
         }

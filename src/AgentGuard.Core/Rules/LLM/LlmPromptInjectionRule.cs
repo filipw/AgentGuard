@@ -34,8 +34,8 @@ public sealed class LlmPromptInjectionRule : LlmGuardrailRule
     private readonly string _systemPrompt;
     private readonly bool _includeClassification;
 
-    public LlmPromptInjectionRule(IChatClient chatClient, LlmPromptInjectionOptions? options = null)
-        : base(chatClient)
+    public LlmPromptInjectionRule(IChatClient chatClient, LlmPromptInjectionOptions? options = null, ChatOptions? chatOptions = null)
+        : base(chatClient, chatOptions)
     {
         _includeClassification = options?.IncludeClassification ?? true;
         _systemPrompt = options?.SystemPrompt

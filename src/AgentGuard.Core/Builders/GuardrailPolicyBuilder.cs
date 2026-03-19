@@ -84,25 +84,40 @@ public sealed class GuardrailPolicyBuilder
     /// Adds LLM-based prompt injection detection. More accurate than regex-based detection
     /// for sophisticated attacks (encoding tricks, indirect injection, multi-turn attacks).
     /// </summary>
-    public GuardrailPolicyBuilder BlockPromptInjectionWithLlm(IChatClient chatClient, LlmPromptInjectionOptions? options = null)
+    public GuardrailPolicyBuilder BlockPromptInjectionWithLlm(IChatClient chatClient, LlmPromptInjectionOptions? options = null, ChatOptions? chatOptions = null)
     {
-        _rules.Add(new LlmPromptInjectionRule(chatClient, options));
+        _rules.Add(new LlmPromptInjectionRule(chatClient, options, chatOptions));
         return this;
     }
+
+    /// <summary>
+    /// Adds LLM-based prompt injection detection with a shorter method name alias.
+    /// </summary>
+    public GuardrailPolicyBuilder DetectPromptInjectionWithLlm(IChatClient chatClient, LlmPromptInjectionOptions? options = null, ChatOptions? chatOptions = null)
+        => BlockPromptInjectionWithLlm(chatClient, options, chatOptions);
 
     /// <summary>
     /// Adds LLM-based PII detection and optional redaction. More accurate than regex-based detection
     /// for unstructured PII like names, addresses, and contextual identifiers.
     /// </summary>
-    public GuardrailPolicyBuilder DetectPIIWithLlm(IChatClient chatClient, LlmPiiDetectionOptions? options = null)
+    public GuardrailPolicyBuilder DetectPIIWithLlm(IChatClient chatClient, LlmPiiDetectionOptions? options = null, ChatOptions? chatOptions = null)
     {
-        _rules.Add(new LlmPiiDetectionRule(chatClient, options));
+        _rules.Add(new LlmPiiDetectionRule(chatClient, options, chatOptions));
         return this;
     }
 
     /// <summary>
     /// Adds LLM-based topic boundary enforcement. More accurate than keyword matching —
     /// understands semantic meaning and intent.
+    /// </summary>
+    public GuardrailPolicyBuilder EnforceTopicBoundaryWithLlm(IChatClient chatClient, LlmTopicGuardrailOptions options, ChatOptions? chatOptions = null)
+    {
+        _rules.Add(new LlmTopicGuardrailRule(chatClient, options, chatOptions));
+        return this;
+    }
+
+    /// <summary>
+    /// Adds LLM-based topic boundary enforcement with a simple topic list.
     /// </summary>
     public GuardrailPolicyBuilder EnforceTopicBoundaryWithLlm(IChatClient chatClient, params string[] allowedTopics)
     {
