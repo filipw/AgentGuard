@@ -5,9 +5,13 @@
     <RootNamespace>AgentGuard.Local</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="AgentGuard.Local.Tests" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="../AgentGuard.Core/AgentGuard.Core.csproj" />
   </ItemGroup>
   <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.AI.Abstractions" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
   </ItemGroup>
 </Project>

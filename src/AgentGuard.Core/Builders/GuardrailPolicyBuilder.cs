@@ -56,6 +56,28 @@ public sealed class GuardrailPolicyBuilder
         return this;
     }
 
+    /// <summary>
+    /// Adds topic boundary enforcement with a custom similarity provider (e.g. embedding-based).
+    /// </summary>
+    public GuardrailPolicyBuilder EnforceTopicBoundary(ITopicSimilarityProvider provider, params string[] allowedTopics)
+    {
+        _rules.Add(new TopicBoundaryRule(new TopicBoundaryOptions { AllowedTopics = allowedTopics.ToList() }, provider));
+        return this;
+    }
+
+    /// <summary>
+    /// Adds topic boundary enforcement with a custom similarity provider and threshold.
+    /// </summary>
+    public GuardrailPolicyBuilder EnforceTopicBoundary(ITopicSimilarityProvider provider, float similarityThreshold, params string[] allowedTopics)
+    {
+        _rules.Add(new TopicBoundaryRule(new TopicBoundaryOptions
+        {
+            AllowedTopics = allowedTopics.ToList(),
+            SimilarityThreshold = similarityThreshold
+        }, provider));
+        return this;
+    }
+
     public GuardrailPolicyBuilder LimitInputTokens(int maxTokens, TokenOverflowStrategy strategy = TokenOverflowStrategy.Reject)
     {
         _rules.Add(new TokenLimitRule(new TokenLimitOptions { MaxTokens = maxTokens, Phase = GuardrailPhase.Input, OverflowStrategy = strategy }));

@@ -37,7 +37,7 @@ var guardedAgent = agent
 - **Input normalization** — decodes evasion encodings (base64, hex, reversed text, Unicode homoglyphs) before downstream rules evaluate the text, catching attacks hidden via encoding tricks
 - **Prompt injection detection** — blocks jailbreak attempts, system prompt extraction, role-play attacks, end sequence injection, variable expansion, framing attacks, and rule addition with configurable sensitivity levels (Low/Medium/High). Patterns based on the [Arcanum Prompt Injection Taxonomy](https://github.com/Arcanum-Sec/arc_pi_taxonomy)
 - **PII redaction** — detects and redacts emails, phone numbers, SSNs, credit cards, IP addresses, dates of birth, and custom patterns on input and output
-- **Topic boundary enforcement** — keyword-based topic matching with pluggable `ITopicSimilarityProvider` for embedding-based similarity
+- **Topic boundary enforcement** — keyword-based topic matching with pluggable `ITopicSimilarityProvider` for embedding-based similarity. `EmbeddingSimilarityProvider` in `AgentGuard.Local` uses any `IEmbeddingGenerator<string, Embedding<float>>` for cosine similarity with automatic topic embedding caching
 - **Token limits** — enforces input/output token budgets using `Microsoft.ML.Tokenizers` (cl100k_base) with configurable overflow strategies (Reject/Truncate/Warn)
 - **Content safety** — severity-based filtering via pluggable `IContentSafetyClassifier` (Azure AI Content Safety adapter included)
 
@@ -74,6 +74,7 @@ GuardGuard works with both `RunAsync` and `RunStreamingAsync`. Streaming middlew
 - **Custom rules** — implement `IGuardrailRule` to add your own checks with full access to the conversation context
 - **Composable middleware** — all rules run as MAF middleware; stack them, order them, short-circuit them
 - **Fully testable** — every rule is a pure function; mock the pipeline, assert the behavior
+- **Configuration-driven** — define policies entirely in `appsettings.json` with full support for all 9 rule types, named policies, and DI resolution for LLM/cloud rules
 - **Offline-first** — works without any cloud services; optionally upgrade to Azure AI Content Safety or LLM-based rules for production accuracy
 
 ## Packages
@@ -81,9 +82,9 @@ GuardGuard works with both `RunAsync` and `RunStreamingAsync`. Streaming middlew
 | Package | Description | NuGet |
 |---------|-------------|-------|
 | `AgentGuard.Core` | Core abstractions, rules engine, fluent builder, LLM rules, MAF middleware | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Core.svg)](https://www.nuget.org/packages/AgentGuard.Core) |
-| `AgentGuard.Local` | Offline classifiers (keyword similarity for topic boundary) | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Local.svg)](https://www.nuget.org/packages/AgentGuard.Local) |
+| `AgentGuard.Local` | Offline classifiers (keyword similarity, embedding-based topic similarity) | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Local.svg)](https://www.nuget.org/packages/AgentGuard.Local) |
 | `AgentGuard.Azure` | Azure AI Content Safety integration | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Azure.svg)](https://www.nuget.org/packages/AgentGuard.Azure) |
-| `AgentGuard.Hosting` | DI registration and named policy factory | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Hosting.svg)](https://www.nuget.org/packages/AgentGuard.Hosting) |
+| `AgentGuard.Hosting` | DI registration, named policy factory, `appsettings.json` config binding | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Hosting.svg)](https://www.nuget.org/packages/AgentGuard.Hosting) |
 
 ## Quick Start
 
@@ -154,6 +155,53 @@ builder.Services.AddAgentGuard(options =>
         .EnforceTopicBoundary("billing"));
 });
 ```
+
+### With Embedding-based Topic Boundary
+
+```csharp
+using Microsoft.Extensions.AI;
+using AgentGuard.Local.Classifiers;
+
+// Use any IEmbeddingGenerator — OpenAI, Ollama, local ONNX, etc.
+IEmbeddingGenerator<string, Embedding<float>> embeddings = /* your provider */;
+
+var guardedAgent = agent
+    .AsBuilder()
+    .UseAgentGuard(g => g
+        .BlockPromptInjection()
+        .EnforceTopicBoundary(
+            new EmbeddingSimilarityProvider(embeddings),
+            similarityThreshold: 0.4f,
+            "billing", "returns", "customer support")
+        .LimitInputTokens(4000)
+    )
+    .Build();
+```
+
+### With `appsettings.json` Configuration
+
+Define guardrail policies entirely in configuration — no code changes needed to adjust rules:
+
+```json
+{
+  "AgentGuard": {
+    "DefaultPolicy": {
+      "Rules": [
+        { "Type": "PromptInjection", "Sensitivity": "High" },
+        { "Type": "PiiRedaction", "Categories": "Email,Phone,SSN" },
+        { "Type": "TokenLimit", "MaxTokens": 4000 }
+      ],
+      "ViolationMessage": "Request blocked by safety policy."
+    }
+  }
+}
+```
+
+```csharp
+builder.Services.AddAgentGuard(builder.Configuration.GetSection("AgentGuard"));
+```
+
+See [Configuration docs](docs/configuration.md) for the full JSON schema covering all 9 rule types.
 
 ### Custom Rules
 
