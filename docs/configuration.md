@@ -41,6 +41,7 @@ builder.Services.AddAgentGuard(builder.Configuration.GetSection("AgentGuard"));
       "Rules": [
         { "Type": "InputNormalization" },
         { "Type": "PromptInjection", "Sensitivity": "High" },
+        { "Type": "OnnxPromptInjection", "ModelPath": "./models/deberta-v3-prompt-injection/model.onnx", "TokenizerPath": "./models/deberta-v3-prompt-injection/spm.model" },
         { "Type": "PiiRedaction", "Categories": "All", "Replacement": "[REDACTED]" },
         { "Type": "TopicBoundary", "AllowedTopics": ["billing", "support"], "SimilarityThreshold": 0.5 },
         { "Type": "TokenLimit", "MaxTokens": 4000, "Phase": "Input", "OverflowStrategy": "Reject" }
@@ -66,6 +67,7 @@ builder.Services.AddAgentGuard(builder.Configuration.GetSection("AgentGuard"));
 |------|-----------|-------|
 | `InputNormalization` | `DecodeBase64`, `DecodeHex`, `DetectReversedText`, `NormalizeUnicode` (all bool, default true) | Decodes evasion encodings |
 | `PromptInjection` | `Sensitivity` (Low/Medium/High, default Medium) | Regex-based detection |
+| `OnnxPromptInjection` | `ModelPath` (string, required), `TokenizerPath` (string, required), `Threshold` (float, default 0.5) | Requires `AgentGuard.Onnx` package. Download model via `eng/download-onnx-model.sh` |
 | `PiiRedaction` | `Categories` (Default/All/Email,Phone,...), `Replacement` (default [REDACTED]) | Regex-based redaction |
 | `TopicBoundary` | `AllowedTopics` (string[]), `SimilarityThreshold` (float, default 0.3) | Keyword-based topic matching |
 | `TokenLimit` | `MaxTokens` (int), `Phase` (Input/Output), `OverflowStrategy` (Reject/Truncate/Warn) | Token counting via ML.Tokenizers |

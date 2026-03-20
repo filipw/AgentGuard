@@ -41,6 +41,10 @@ var guardedAgent = agent
 - **Token limits** — enforces input/output token budgets using `Microsoft.ML.Tokenizers` (cl100k_base) with configurable overflow strategies (Reject/Truncate/Warn)
 - **Content safety** — severity-based filtering via pluggable `IContentSafetyClassifier` (Azure AI Content Safety adapter included)
 
+### ONNX ML-based rules (fast, accurate, offline)
+
+- **ONNX prompt injection detection** — uses a fine-tuned DeBERTa v3 model (`protectai/deberta-v3-base-prompt-injection-v2`) for ML-based classification. Runs fully offline with ~10ms inference time. Sits between regex (order 10) and LLM (order 15) at order 12. Returns confidence scores in metadata. Install via `AgentGuard.Onnx` package. Download the model with `./eng/download-onnx-model.sh`.
+
 ### LLM-based rules (accurate, pluggable via `IChatClient`)
 
 For teams that need higher accuracy than regex, AgentGuard provides LLM-as-judge guardrail rules that work with any `IChatClient` (Azure OpenAI, Ollama, local models, etc.):
@@ -53,11 +57,15 @@ For teams that need higher accuracy than regex, AgentGuard provides LLM-as-judge
 - **LLM copyright detection** — catches verbatim reproduction of copyrighted material (song lyrics, book passages, articles, restrictively-licensed code). Kill switch for copyright violations
 
 ```csharp
+using AgentGuard.Onnx;
+
 var guardedAgent = agent
     .AsBuilder()
     .UseAgentGuard(g => g
-        .BlockPromptInjection()                              // fast regex layer
-        .BlockPromptInjectionWithLlm(chatClient)             // accurate LLM layer
+        .BlockPromptInjection()                              // tier 1: fast regex (order 10)
+        .BlockPromptInjectionWithOnnx(                       // tier 2: ML classifier (order 12)
+            "./models/model.onnx", "./models/spm.model")
+        .BlockPromptInjectionWithLlm(chatClient)             // tier 3: LLM judge (order 15)
         .DetectPIIWithLlm(chatClient, new() { Action = PiiAction.Redact })
         .EnforceTopicBoundaryWithLlm(chatClient, "billing", "payments")
         .LimitInputTokens(4000)
@@ -86,6 +94,7 @@ GuardGuard works with both `RunAsync` and `RunStreamingAsync`. Streaming middlew
 |---------|-------------|-------|
 | `AgentGuard.Core` | Core abstractions, rules engine, fluent builder, LLM rules, MAF middleware | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Core.svg)](https://www.nuget.org/packages/AgentGuard.Core) |
 | `AgentGuard.Workflows` | Workflow guardrails — decorates MAF `Executor` with guardrails at step boundaries | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Workflows.svg)](https://www.nuget.org/packages/AgentGuard.Workflows) |
+| `AgentGuard.Onnx` | ONNX-based ML classifiers — offline prompt injection detection with DeBERTa v3 | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Onnx.svg)](https://www.nuget.org/packages/AgentGuard.Onnx) |
 | `AgentGuard.Local` | Offline classifiers (keyword similarity, embedding-based topic similarity) | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Local.svg)](https://www.nuget.org/packages/AgentGuard.Local) |
 | `AgentGuard.Azure` | Azure AI Content Safety integration | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Azure.svg)](https://www.nuget.org/packages/AgentGuard.Azure) |
 | `AgentGuard.Hosting` | DI registration, named policy factory, `appsettings.json` config binding | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Hosting.svg)](https://www.nuget.org/packages/AgentGuard.Hosting) |
@@ -205,7 +214,7 @@ Define guardrail policies entirely in configuration — no code changes needed t
 builder.Services.AddAgentGuard(builder.Configuration.GetSection("AgentGuard"));
 ```
 
-See [Configuration docs](docs/configuration.md) for the full JSON schema covering all 9 rule types.
+See [Configuration docs](docs/configuration.md) for the full JSON schema covering all 10 rule types.
 
 ### Workflow Guardrails
 
@@ -282,7 +291,7 @@ User Input
 │  ┌───────────────────────┐  │
 │  │ Input Normalization   │  │  ← Decode evasions (order 5)
 │  ├───────────────────────┤  │
-│  │ Prompt Injection      │  │  ← Regex (order 10) + LLM (order 15)
+│  │ Prompt Injection      │  │  ← Regex (10) + ONNX ML (12) + LLM (15)
 │  ├───────────────────────┤  │
 │  │ PII Detection         │  │  ← Regex (order 20) + LLM (order 25)
 │  ├───────────────────────┤  │
@@ -328,6 +337,7 @@ Rules execute in order of their `Order` property (lower = first). Built-in rules
 |-------|------|------|-------|
 | 5 | `InputNormalizationRule` | Local | Input |
 | 10 | `PromptInjectionRule` | Regex | Input |
+| 12 | `OnnxPromptInjectionRule` | ONNX ML | Input |
 | 15 | `LlmPromptInjectionRule` | LLM | Input |
 | 20 | `PiiRedactionRule` | Regex | Both |
 | 25 | `LlmPiiDetectionRule` | LLM | Both |
@@ -343,6 +353,7 @@ Rules execute in order of their `Order` property (lower = first). Built-in rules
 ## Samples
 
 - [Basic Guardrails](samples/BasicGuardrails/) — minimal setup with common rules
+- [ONNX Guardrails](samples/OnnxGuardrails/) — offline ML-based prompt injection detection with DeBERTa v3
 - [Custom Rules](samples/CustomRules/) — implementing and composing custom guardrail rules
 - [Azure Integration](samples/AzureIntegration/) — using Azure AI Content Safety for production
 - [Workflow Guardrails](samples/WorkflowGuardrails/) — wrapping MAF workflow executors with `.WithGuardrails()` decorator

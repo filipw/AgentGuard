@@ -33,6 +33,9 @@
     <!-- Tokenization -->
     <PackageVersion Include="Microsoft.ML.Tokenizers" Version="2.0.0" />
 
+    <!-- ONNX Runtime -->
+    <PackageVersion Include="Microsoft.ML.OnnxRuntime" Version="1.21.0" />
+
     <!-- Source Link -->
     <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="8.0.0" />
 

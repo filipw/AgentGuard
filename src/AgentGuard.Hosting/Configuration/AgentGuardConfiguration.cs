@@ -95,6 +95,14 @@ public sealed class RuleConfiguration
     /// <summary>Custom system prompt for LLM rules. Optional.</summary>
     public string? SystemPrompt { get; set; }
 
+    // --- OnnxPromptInjection ---
+    /// <summary>Path to the ONNX model file (required for OnnxPromptInjection).</summary>
+    public string? ModelPath { get; set; }
+    /// <summary>Path to the HuggingFace tokenizer.json file (required for OnnxPromptInjection).</summary>
+    public string? TokenizerPath { get; set; }
+    /// <summary>Confidence threshold (0.0–1.0) for ONNX prompt injection. Default: 0.5.</summary>
+    public float? Threshold { get; set; }
+
     // --- LlmPromptInjection ---
     /// <summary>Include structured threat classification. Default: true.</summary>
     public bool? IncludeClassification { get; set; }

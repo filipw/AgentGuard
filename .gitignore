@@ -29,6 +29,9 @@ CLAUDE.md
 ## Secrets
 .env
 
+## ONNX models (downloaded via eng/download-onnx-model.sh)
+models/
+
 ## OS
 .DS_Store
 Thumbs.db

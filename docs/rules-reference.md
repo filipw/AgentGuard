@@ -37,6 +37,44 @@ Order 10, Input phase. Patterns informed by the [Arcanum Prompt Injection Taxono
 | Medium (+Medium) | + System prompt extraction, jailbreak keywords, rule addition/modification |
 | High (+High) | + Framing attacks (hypothetical/fictional contexts), inversion/double-negative extraction |
 
+## Prompt Injection Detection (ONNX)
+
+`.BlockPromptInjectionWithOnnx(options)` or `.BlockPromptInjectionWithOnnx(modelPath, tokenizerPath, threshold)`
+
+Order 12, Input phase. Uses a fine-tuned DeBERTa v3 ONNX model for ML-based binary classification. Fully offline, ~10ms inference. Requires `AgentGuard.Onnx` package.
+
+**Setup:** Download the model from HuggingFace using the included script:
+```bash
+./eng/download-onnx-model.sh
+# Downloads model.onnx (~370MB) + spm.model (~2MB) to ./models/deberta-v3-prompt-injection/
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| ModelPath | `string` | *(required)* | Path to the ONNX model file |
+| TokenizerPath | `string` | *(required)* | Path to the SentencePiece model file (spm.model) |
+| Threshold | `float` | 0.5 | Confidence threshold (0.0–1.0) for injection classification |
+| MaxTokenLength | `int` | 512 | Maximum input token length (truncated if longer) |
+| IncludeConfidence | `bool` | true | Include confidence score in result metadata |
+
+When blocked, result metadata includes:
+- `confidence` — injection probability (0.0–1.0)
+- `model` — `"deberta-v3-prompt-injection-v2"`
+- `threshold` — the configured threshold
+
+**Three-tier detection:**
+```csharp
+using AgentGuard.Onnx;
+
+builder.BlockPromptInjection()                     // tier 1: regex (order 10)
+    .BlockPromptInjectionWithOnnx(new OnnxPromptInjectionOptions   // tier 2: ML (order 12)
+    {
+        ModelPath = "./models/model.onnx",
+        TokenizerPath = "./models/spm.model"
+    })
+    .BlockPromptInjectionWithLlm(chatClient)       // tier 3: LLM (order 15)
+```
+
 ## Prompt Injection Detection (LLM)
 
 `.BlockPromptInjectionWithLlm(chatClient, options?)`

@@ -5,6 +5,7 @@
 ```bash
 dotnet add package AgentGuard.Core --prerelease
 dotnet add package AgentGuard.Workflows --prerelease # optional: workflow executor guardrails
+dotnet add package AgentGuard.Onnx --prerelease      # optional: ONNX ML-based classifiers
 dotnet add package AgentGuard.Local --prerelease     # optional: offline classifiers
 dotnet add package AgentGuard.Azure --prerelease     # optional: Azure AI Content Safety
 dotnet add package AgentGuard.Hosting --prerelease   # optional: DI + config binding
@@ -33,14 +34,22 @@ If any rule blocks, the agent never runs. The user gets a configurable rejection
 
 ## Available Rules
 
-| Rule | Phase | Order |
-|------|-------|-------|
-| `BlockPromptInjection()` | Input | 10 |
-| `RedactPII()` | Both | 20 |
-| `EnforceTopicBoundary()` | Input | 30 |
-| `LimitInputTokens()` / `LimitOutputTokens()` | Input/Output | 40 |
-| `BlockHarmfulContent()` | Both | 50 |
-| `ValidateInput()` / `ValidateOutput()` | Input/Output | 100 |
+| Rule | Phase | Order | Package |
+|------|-------|-------|---------|
+| `NormalizeInput()` | Input | 5 | Core |
+| `BlockPromptInjection()` | Input | 10 | Core |
+| `BlockPromptInjectionWithOnnx()` | Input | 12 | Onnx |
+| `BlockPromptInjectionWithLlm()` | Input | 15 | Core |
+| `RedactPII()` | Both | 20 | Core |
+| `DetectPIIWithLlm()` | Both | 25 | Core |
+| `EnforceTopicBoundary()` | Input | 30 | Core |
+| `EnforceTopicBoundaryWithLlm()` | Input | 35 | Core |
+| `LimitInputTokens()` / `LimitOutputTokens()` | Input/Output | 40 | Core |
+| `BlockHarmfulContent()` | Both | 50 | Core + Azure |
+| `EnforceOutputPolicy()` | Output | 55 | Core |
+| `CheckGroundedness()` | Output | 65 | Core |
+| `CheckCopyright()` | Output | 75 | Core |
+| `ValidateInput()` / `ValidateOutput()` | Input/Output | 100 | Core |
 
 ## Workflow Guardrails
 

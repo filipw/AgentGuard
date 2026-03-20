@@ -1,8 +1,12 @@
 // AgentGuard — Basic Guardrails Sample
 // Demonstrates standalone rule evaluation without an LLM.
 
-var injectionRule = new AgentGuard.Core.Rules.PromptInjection.PromptInjectionRule();
-var piiRule = new AgentGuard.Core.Rules.PII.PiiRedactionRule();
+using AgentGuard.Core.Abstractions;
+using AgentGuard.Core.Rules.PII;
+using AgentGuard.Core.Rules.PromptInjection;
+
+var injectionRule = new PromptInjectionRule();
+var piiRule = new PiiRedactionRule();
 
 Console.WriteLine("AgentGuard — Basic Guardrails Demo");
 Console.WriteLine(new string('=', 50));
@@ -18,7 +22,7 @@ var inputs = new[]
 foreach (var input in inputs)
 {
     Console.WriteLine($"\n  Input: \"{input}\"");
-    var ctx = new AgentGuard.Core.Abstractions.GuardrailContext { Text = input, Phase = AgentGuard.Core.Abstractions.GuardrailPhase.Input };
+    var ctx = new GuardrailContext { Text = input, Phase = GuardrailPhase.Input };
 
     var injResult = await injectionRule.EvaluateAsync(ctx);
     if (injResult.IsBlocked) { Console.WriteLine($"  BLOCKED: {injResult.Reason}"); continue; }

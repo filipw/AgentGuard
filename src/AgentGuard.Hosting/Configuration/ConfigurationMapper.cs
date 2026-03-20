@@ -7,6 +7,7 @@ using AgentGuard.Core.Rules.PII;
 using AgentGuard.Core.Rules.PromptInjection;
 using AgentGuard.Core.Rules.TokenLimits;
 using AgentGuard.Core.Rules.TopicBoundary;
+using AgentGuard.Onnx;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -90,6 +91,17 @@ internal static class ConfigurationMapper
                 });
                 break;
 
+            case "onnxpromptinjection":
+                builder.BlockPromptInjectionWithOnnx(new OnnxPromptInjectionOptions
+                {
+                    ModelPath = rule.ModelPath
+                        ?? throw new InvalidOperationException("OnnxPromptInjection requires ModelPath."),
+                    TokenizerPath = rule.TokenizerPath
+                        ?? throw new InvalidOperationException("OnnxPromptInjection requires TokenizerPath."),
+                    Threshold = rule.Threshold ?? 0.5f
+                });
+                break;
+
             case "llmpromptinjection":
                 var injectionClient = ResolveService<IChatClient>(serviceProvider, "LlmPromptInjection");
                 builder.BlockPromptInjectionWithLlm(injectionClient, new LlmPromptInjectionOptions
@@ -161,9 +173,9 @@ internal static class ConfigurationMapper
             default:
                 throw new InvalidOperationException(
                     $"Unknown guardrail rule type: '{rule.Type}'. " +
-                    "Valid types: InputNormalization, PromptInjection, PiiRedaction, TopicBoundary, " +
-                    "OutputTopicBoundary, TokenLimit, ContentSafety, LlmPromptInjection, LlmPiiDetection, " +
-                    "LlmTopicBoundary, LlmOutputPolicy, LlmGroundedness, LlmCopyright.");
+                    "Valid types: InputNormalization, PromptInjection, OnnxPromptInjection, PiiRedaction, " +
+                    "TopicBoundary, OutputTopicBoundary, TokenLimit, ContentSafety, LlmPromptInjection, " +
+                    "LlmPiiDetection, LlmTopicBoundary, LlmOutputPolicy, LlmGroundedness, LlmCopyright.");
         }
     }
 
