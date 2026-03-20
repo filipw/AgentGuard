@@ -26,6 +26,9 @@ coverage/
 .claude/settings.local.json
 CLAUDE.md
 
+## Secrets
+.env
+
 ## OS
 .DS_Store
 Thumbs.db
