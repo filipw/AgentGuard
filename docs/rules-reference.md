@@ -193,6 +193,60 @@ Detects verbatim or near-verbatim reproduction of copyrighted material (song lyr
 
 ---
 
+## Workflow Guardrails
+
+`AgentGuard.Workflows` applies guardrails at MAF workflow step boundaries using the decorator pattern.
+
+### `.WithGuardrails()` Extension Methods
+
+Wraps `Executor<TInput>` or `Executor<TInput, TOutput>` with a `GuardedExecutor` that runs guardrails before/after the inner executor.
+
+| Executor Type | Input Guardrails | Output Guardrails | On Block |
+|---------------|-----------------|-------------------|----------|
+| `Executor<TInput>` (void) | Yes | No | Throws `GuardrailViolationException` |
+| `Executor<TInput, TOutput>` (typed) | Yes | Yes | Throws `GuardrailViolationException` |
+
+```csharp
+// Builder overload
+var guarded = executor.WithGuardrails(b => b.BlockPromptInjection().RedactPII());
+
+// Pre-built policy overload
+var guarded = executor.WithGuardrails(existingPolicy);
+
+// With options (custom text extractor, logger)
+var guarded = executor.WithGuardrails(b => b.RedactPII(),
+    new GuardedExecutorOptions { TextExtractor = myExtractor });
+```
+
+### `ITextExtractor`
+
+Bridges typed workflow messages to strings for guardrail evaluation. `DefaultTextExtractor` handles:
+- `string` → the string itself
+- `ChatMessage` → `.Text`
+- `AgentResponse` → last assistant message text
+- `IEnumerable<ChatMessage>` → last message text
+- Objects with a public `Text` property → reflection
+- Fallback → `ToString()`
+
+### `GuardrailViolationException`
+
+Thrown when a guardrail blocks within a workflow executor. MAF surfaces this as `ExecutorFailedEvent`.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `ViolationResult` | `GuardrailResult` | The blocking result (rule name, reason, severity) |
+| `Phase` | `GuardrailPhase` | `Input` or `Output` |
+| `ExecutorId` | `string` | ID of the inner executor that was guarded |
+
+### Text Reconstruction
+
+When a guardrail modifies text (e.g. PII redaction), the modified text is reconstructed back into the message type:
+- `string` → replaced directly
+- `ChatMessage` → new message with same role, modified text
+- Other types → passed through unchanged (modification cannot be applied)
+
+---
+
 ## Custom Rules
 
 `.AddRule(rule)` or `.AddRule(name, phase, evaluate, order)`

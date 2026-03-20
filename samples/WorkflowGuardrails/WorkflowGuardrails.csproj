@@ -2,10 +2,11 @@
   <PropertyGroup><OutputType>Exe</OutputType><IsPackable>false</IsPackable></PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/AgentGuard.Core/AgentGuard.Core.csproj" />
-    <ProjectReference Include="../../src/AgentGuard.Local/AgentGuard.Local.csproj" />
+    <ProjectReference Include="../../src/AgentGuard.Workflows/AgentGuard.Workflows.csproj" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Agents.AI" />
+    <PackageReference Include="Microsoft.Agents.AI.Workflows" />
     <PackageReference Include="Microsoft.Extensions.AI" />
   </ItemGroup>
 </Project>

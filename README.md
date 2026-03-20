@@ -85,6 +85,7 @@ GuardGuard works with both `RunAsync` and `RunStreamingAsync`. Streaming middlew
 | Package | Description | NuGet |
 |---------|-------------|-------|
 | `AgentGuard.Core` | Core abstractions, rules engine, fluent builder, LLM rules, MAF middleware | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Core.svg)](https://www.nuget.org/packages/AgentGuard.Core) |
+| `AgentGuard.Workflows` | Workflow guardrails — decorates MAF `Executor` with guardrails at step boundaries | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Workflows.svg)](https://www.nuget.org/packages/AgentGuard.Workflows) |
 | `AgentGuard.Local` | Offline classifiers (keyword similarity, embedding-based topic similarity) | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Local.svg)](https://www.nuget.org/packages/AgentGuard.Local) |
 | `AgentGuard.Azure` | Azure AI Content Safety integration | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Azure.svg)](https://www.nuget.org/packages/AgentGuard.Azure) |
 | `AgentGuard.Hosting` | DI registration, named policy factory, `appsettings.json` config binding | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Hosting.svg)](https://www.nuget.org/packages/AgentGuard.Hosting) |
@@ -206,6 +207,44 @@ builder.Services.AddAgentGuard(builder.Configuration.GetSection("AgentGuard"));
 
 See [Configuration docs](docs/configuration.md) for the full JSON schema covering all 9 rule types.
 
+### Workflow Guardrails
+
+MAF workflows compose multiple `Executor` steps into a DAG. `AgentGuard.Workflows` lets you wrap individual executors with guardrails at step boundaries using the `.WithGuardrails()` decorator:
+
+```csharp
+dotnet add package AgentGuard.Workflows --prerelease
+```
+
+```csharp
+using AgentGuard.Workflows;
+
+// Wrap a void executor with input guardrails
+var guardedInput = myInputExecutor.WithGuardrails(b => b
+    .NormalizeInput()
+    .BlockPromptInjection(Sensitivity.High)
+    .RedactPII());
+
+// Wrap a typed executor with input + output guardrails
+var guardedProcessor = myProcessorExecutor.WithGuardrails(b => b
+    .RedactPII()
+    .ValidateOutput(text => !text.Contains("internal-only"), "Leaked internal info"));
+
+// Use in your workflow — GuardedExecutor is still an Executor
+try
+{
+    await guardedInput.HandleAsync(userMessage, workflowContext);
+    var result = await guardedProcessor.HandleAsync(input, workflowContext);
+}
+catch (GuardrailViolationException ex)
+{
+    Console.WriteLine($"Blocked at {ex.Phase} in '{ex.ExecutorId}': {ex.ViolationResult.Reason}");
+}
+```
+
+`GuardedExecutor<TInput>` applies input guardrails before delegating to the inner executor. `GuardedExecutor<TInput, TOutput>` applies both input and output guardrails. If a guardrail blocks, a `GuardrailViolationException` is thrown (surfaced by MAF as `ExecutorFailedEvent`).
+
+The `ITextExtractor` interface bridges typed workflow messages to string-based guardrail rules. The built-in `DefaultTextExtractor` handles `string`, `ChatMessage`, `AgentResponse`, and objects with a `Text` property.
+
 ### Custom Rules
 
 ```csharp
@@ -306,7 +345,8 @@ Rules execute in order of their `Order` property (lower = first). Built-in rules
 - [Basic Guardrails](samples/BasicGuardrails/) — minimal setup with common rules
 - [Custom Rules](samples/CustomRules/) — implementing and composing custom guardrail rules
 - [Azure Integration](samples/AzureIntegration/) — using Azure AI Content Safety for production
-- [Workflow Guardrails](samples/WorkflowGuardrails/) — applying guardrails to multi-agent MAF workflows
+- [Workflow Guardrails](samples/WorkflowGuardrails/) — wrapping MAF workflow executors with `.WithGuardrails()` decorator
+- [Output Guardrails](samples/OutputGuardrails/) — LLM output validation (policy, groundedness, copyright)
 
 ## Documentation
 
