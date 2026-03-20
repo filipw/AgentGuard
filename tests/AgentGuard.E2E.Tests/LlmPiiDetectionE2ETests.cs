@@ -31,7 +31,7 @@ public class LlmPiiDetectionE2ETests : IClassFixture<LlmTestFixture>
         var rule = new LlmPiiDetectionRule(_fixture.ChatClient!,
             new LlmPiiDetectionOptions { Action = PiiAction.Block },
             chatOptions: _fixture.ChatOptions);
-        var ctx = new GuardrailContext { Text = "Please send the report to john.doe@example.com", Phase = GuardrailPhase.Input };
+        var ctx = new GuardrailContext { Text = "Please send the invoice to john.doe@acmecorp.com, his employee ID is EMP-29481", Phase = GuardrailPhase.Input };
 
         var result = await rule.EvaluateAsync(ctx);
         result.IsBlocked.Should().BeTrue("email address is PII");

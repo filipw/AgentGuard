@@ -2,17 +2,40 @@
 // Demonstrates LLM-based output validation: policy enforcement, groundedness checking, and copyright detection.
 // These rules run on agent responses (output phase) to catch violations before they reach the user.
 //
-// NOTE: This sample uses a mock IChatClient to simulate LLM responses.
-// In production, replace MockChatClient with a real IChatClient (e.g., from Microsoft.Extensions.AI.OpenAI).
+// Requirements:
+//   Set environment variables before running:
+//     AGENTGUARD_LLM_ENDPOINT  — base URL of an OpenAI-compatible API (e.g. http://localhost:1234/v1/)
+//     AGENTGUARD_LLM_MODEL     — model name (e.g. openai/gpt-oss-20b, gpt-4o-mini)
+//     AGENTGUARD_LLM_KEY       — API key (optional, defaults to "unused" for local servers)
 
+using System.ClientModel;
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Builders;
 using AgentGuard.Core.Guardrails;
 using AgentGuard.Core.Rules.LLM;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
+using OpenAI;
+
+var endpoint = Environment.GetEnvironmentVariable("AGENTGUARD_LLM_ENDPOINT");
+var model = Environment.GetEnvironmentVariable("AGENTGUARD_LLM_MODEL");
+var key = Environment.GetEnvironmentVariable("AGENTGUARD_LLM_KEY") ?? "unused";
+
+if (string.IsNullOrEmpty(endpoint) || string.IsNullOrEmpty(model))
+{
+    Console.Error.WriteLine("Set AGENTGUARD_LLM_ENDPOINT and AGENTGUARD_LLM_MODEL to run this sample.");
+    Console.Error.WriteLine("  Example: AGENTGUARD_LLM_ENDPOINT=http://localhost:1234/v1/ AGENTGUARD_LLM_MODEL=gpt-4o-mini");
+    return 1;
+}
+
+var openAiClient = new OpenAIClient(new ApiKeyCredential(key),
+    new OpenAIClientOptions { Endpoint = new Uri(endpoint) });
+using var chatClient = openAiClient.GetChatClient(model).AsIChatClient();
+var chatOptions = new ChatOptions { MaxOutputTokens = 500, Temperature = 0f };
 
 Console.WriteLine("AgentGuard — Output Guardrails Demo");
+Console.WriteLine($"  Endpoint: {endpoint}");
+Console.WriteLine($"  Model:    {model}");
 Console.WriteLine(new string('=', 60));
 
 // ─── Example 1: Output Policy Enforcement ───────────────────────────────
@@ -21,16 +44,12 @@ Console.WriteLine(new string('=', 60));
 Console.WriteLine("\n[1] Output Policy Enforcement");
 Console.WriteLine(new string('─', 60));
 
-var policyClient = new MockChatClient(response =>
-{
-    if (response.Contains("CompetitorCRM", StringComparison.OrdinalIgnoreCase))
-        return "VIOLATION|reason:Response recommends competitor product CompetitorCRM";
-    return "COMPLIANT";
-});
-
 var policyPipeline = new GuardrailPipeline(
     new GuardrailPolicyBuilder("output-policy-demo")
-        .EnforceOutputPolicy(policyClient, "Never recommend competitor products. Our product is AgentCRM.")
+        .EnforceOutputPolicy(chatClient,
+            "The assistant must never recommend, suggest, or mention competitor products by name. " +
+            "Our product is AgentCRM. Any mention of another CRM product is a violation.",
+            chatOptions: chatOptions)
         .Build(),
     NullLogger<GuardrailPipeline>.Instance);
 
@@ -43,7 +62,7 @@ var policyScenarios = new (string Label, string Response)[]
 
 foreach (var (label, response) in policyScenarios)
 {
-    Console.WriteLine($"\n  [{label}] \"{response[..Math.Min(80, response.Length)]}...\"");
+    Console.WriteLine($"\n  [{label}] \"{Truncate(response)}\"");
     var ctx = new GuardrailContext { Text = response, Phase = GuardrailPhase.Output };
     var result = await policyPipeline.RunAsync(ctx);
     PrintResult(result);
@@ -55,17 +74,9 @@ foreach (var (label, response) in policyScenarios)
 Console.WriteLine($"\n\n[2] Groundedness Checking");
 Console.WriteLine(new string('─', 60));
 
-var groundednessClient = new MockChatClient(response =>
-{
-    if (response.Contains("47%", StringComparison.OrdinalIgnoreCase)
-        || response.Contains("founded in 1987", StringComparison.OrdinalIgnoreCase))
-        return "UNGROUNDED|claim:Fabricated specific statistics and founding date not present in conversation";
-    return "GROUNDED";
-});
-
 var groundednessPipeline = new GuardrailPipeline(
     new GuardrailPolicyBuilder("groundedness-demo")
-        .CheckGroundedness(groundednessClient)
+        .CheckGroundedness(chatClient, chatOptions: chatOptions)
         .Build(),
     NullLogger<GuardrailPipeline>.Instance);
 
@@ -86,7 +97,7 @@ var groundednessScenarios = new (string Label, string Response)[]
 
 foreach (var (label, response) in groundednessScenarios)
 {
-    Console.WriteLine($"\n  [{label}] \"{response[..Math.Min(80, response.Length)]}...\"");
+    Console.WriteLine($"\n  [{label}] \"{Truncate(response)}\"");
     var ctx = new GuardrailContext
     {
         Text = response,
@@ -98,64 +109,68 @@ foreach (var (label, response) in groundednessScenarios)
 }
 
 // ─── Example 3: Copyright Detection ─────────────────────────────────────
-// Detect verbatim reproduction of copyrighted material.
+// Detect reproduction of copyrighted material.
+// Uses public domain content (Dickens) to avoid triggering content filters on the LLM endpoint.
 
 Console.WriteLine($"\n\n[3] Copyright Detection");
 Console.WriteLine(new string('─', 60));
 
-var copyrightClient = new MockChatClient(response =>
-{
-    if (response.Contains("Here are the full lyrics", StringComparison.OrdinalIgnoreCase))
-        return "COPYRIGHT|source:Famous Song by Popular Artist|type:lyrics";
-    return "CLEAN";
-});
-
 var copyrightPipeline = new GuardrailPipeline(
     new GuardrailPolicyBuilder("copyright-demo")
-        .CheckCopyright(copyrightClient)
+        .CheckCopyright(chatClient, chatOptions: chatOptions)
         .Build(),
     NullLogger<GuardrailPipeline>.Instance);
 
 var copyrightScenarios = new (string Label, string Response)[]
 {
-    ("Original", "Here's a summary of the song: it explores themes of resilience and hope, with a powerful chorus that builds momentum."),
-    ("Copyright", "Here are the full lyrics to the song:\n\nVerse 1: Walking through the shadows of the night...\nChorus: We rise above, we shine so bright..."),
-    ("Short quote", "As the song goes, \"we rise above\" — a powerful message about perseverance."),
+    ("Original", "Dickens wrote about social inequality in Victorian England, focusing on themes of poverty and redemption."),
+    ("Extended reproduction", """
+        It was the best of times, it was the worst of times, it was the age of wisdom,
+        it was the age of foolishness, it was the epoch of belief, it was the epoch of
+        incredulity, it was the season of Light, it was the season of Darkness, it was
+        the spring of hope, it was the winter of despair, we had everything before us,
+        we had nothing before us, we were all going direct to Heaven, we were all going
+        direct the other way.
+        """),
+    ("Short quote", "As Dickens wrote, \"it was the best of times\" — a famous opening line."),
 };
 
 foreach (var (label, response) in copyrightScenarios)
 {
-    var display = response.Replace("\n", " ");
-    Console.WriteLine($"\n  [{label}] \"{display[..Math.Min(80, display.Length)]}...\"");
+    var display = response.Replace("\n", " ").Trim();
+    Console.WriteLine($"\n  [{label}] \"{Truncate(display)}\"");
     var ctx = new GuardrailContext { Text = response, Phase = GuardrailPhase.Output };
     var result = await copyrightPipeline.RunAsync(ctx);
     PrintResult(result);
 }
 
 // ─── Example 4: Combined Output Pipeline ────────────────────────────────
-// All three output rules in a single pipeline — rules execute in order.
+// All three output rules in a single pipeline — rules execute in order (55 → 65 → 75).
 
 Console.WriteLine($"\n\n[4] Combined Output Pipeline (Policy + Groundedness + Copyright)");
 Console.WriteLine(new string('─', 60));
 
 var combinedPipeline = new GuardrailPipeline(
     new GuardrailPolicyBuilder("combined-output")
-        .EnforceOutputPolicy(policyClient, "Never recommend competitor products. Our product is AgentCRM.")
-        .CheckGroundedness(groundednessClient)
-        .CheckCopyright(copyrightClient)
+        .EnforceOutputPolicy(chatClient,
+            "The assistant must never recommend, suggest, or mention competitor products by name. " +
+            "Our product is AgentCRM. Any mention of another CRM product is a violation.",
+            chatOptions: chatOptions)
+        .CheckGroundedness(chatClient, chatOptions: chatOptions)
+        .CheckCopyright(chatClient, chatOptions: chatOptions)
         .Build(),
     NullLogger<GuardrailPipeline>.Instance);
 
 var combinedScenarios = new (string Label, string Response)[]
 {
-    ("Clean", "Your order shipped on March 15th. You can track it using the FedEx link in your confirmation email."),
+    ("Clean", "Your order #12345 shipped on March 15th via FedEx. Your tracking number is FX-9876543."),
     ("Policy violation", "Have you considered switching to CompetitorCRM? Their free tier is quite generous."),
     ("Hallucinated", "Our company, founded in 1987, processes orders 47% faster than any other provider."),
 };
 
 foreach (var (label, response) in combinedScenarios)
 {
-    Console.WriteLine($"\n  [{label}] \"{response[..Math.Min(80, response.Length)]}...\"");
+    Console.WriteLine($"\n  [{label}] \"{Truncate(response)}\"");
     var ctx = new GuardrailContext
     {
         Text = response,
@@ -174,8 +189,10 @@ Console.WriteLine(new string('─', 60));
 
 var warnPipeline = new GuardrailPipeline(
     new GuardrailPolicyBuilder("warn-mode-demo")
-        .EnforceOutputPolicy(policyClient, "Never recommend competitor products.", OutputPolicyAction.Warn)
-        .CheckGroundedness(groundednessClient, new LlmGroundednessOptions { Action = GroundednessAction.Warn })
+        .EnforceOutputPolicy(chatClient,
+            "The assistant must never recommend or mention competitor products by name. Our product is AgentCRM.",
+            OutputPolicyAction.Warn, chatOptions)
+        .CheckGroundedness(chatClient, new LlmGroundednessOptions { Action = GroundednessAction.Warn }, chatOptions)
         .Build(),
     NullLogger<GuardrailPipeline>.Instance);
 
@@ -185,8 +202,7 @@ var warnCtx = new GuardrailContext { Text = warnResponse, Phase = GuardrailPhase
 var warnResult = await warnPipeline.RunAsync(warnCtx);
 
 Console.WriteLine($"  Blocked: {warnResult.IsBlocked}");
-Console.WriteLine($"  Response passes through (warn mode), but metadata is attached:");
-// In warn mode, individual rule results carry metadata
+Console.WriteLine("  Response passes through (warn mode), but metadata is attached:");
 foreach (var ruleResult in warnResult.AllResults)
 {
     if (ruleResult.Metadata?.Count > 0)
@@ -198,9 +214,13 @@ foreach (var ruleResult in warnResult.AllResults)
 }
 
 Console.WriteLine($"\n{new string('=', 60)}");
-Console.WriteLine("Done. In production, replace MockChatClient with a real IChatClient.");
+Console.WriteLine("Done.");
+return 0;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
+
+static string Truncate(string text, int maxLen = 80) =>
+    text.Length > maxLen ? text[..(maxLen - 3)] + "..." : text;
 
 static void PrintResult(GuardrailPipelineResult result)
 {
@@ -217,38 +237,4 @@ static void PrintResult(GuardrailPipelineResult result)
     {
         Console.WriteLine("  PASSED all output guardrails");
     }
-}
-
-// ─── Mock IChatClient ────────────────────────────────────────────────────
-// Simulates an LLM judge by matching keywords in the input text.
-// Replace with a real IChatClient for production use.
-
-sealed class MockChatClient : IChatClient
-{
-    private readonly Func<string, string> _respond;
-
-    public MockChatClient(Func<string, string> respond) => _respond = respond;
-
-    public void Dispose() { }
-
-    public ChatClientMetadata Metadata { get; } = new("mock");
-
-    public object? GetService(Type serviceType, object? serviceKey = null) => null;
-
-    public Task<ChatResponse> GetResponseAsync(
-        IEnumerable<ChatMessage> chatMessages,
-        ChatOptions? options = null,
-        CancellationToken cancellationToken = default)
-    {
-        // The last user message contains the response being evaluated
-        var userMessage = chatMessages.LastOrDefault(m => m.Role == ChatRole.User)?.Text ?? "";
-        var verdict = _respond(userMessage);
-        return Task.FromResult(new ChatResponse([new(ChatRole.Assistant, verdict)]));
-    }
-
-    public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
-        IEnumerable<ChatMessage> chatMessages,
-        ChatOptions? options = null,
-        CancellationToken cancellationToken = default)
-        => throw new NotSupportedException("Streaming not needed for guardrail evaluation.");
 }

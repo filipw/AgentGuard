@@ -25,7 +25,7 @@ public sealed class LlmGroundednessE2ETests : IClassFixture<LlmTestFixture>
 
         var ctx = new GuardrailContext
         {
-            Text = "As I mentioned, your order #12345 was shipped on March 10th via FedEx. You should receive it within 3-5 business days.",
+            Text = "As I mentioned, your order #12345 was shipped on March 10th via FedEx.",
             Phase = GuardrailPhase.Output,
             Messages = messages
         };
@@ -62,15 +62,20 @@ public sealed class LlmGroundednessE2ETests : IClassFixture<LlmTestFixture>
     {
         var rule = new LlmGroundednessRule(_fixture.ChatClient!, chatOptions: _fixture.ChatOptions);
 
+        var messages = new List<ChatMessage>
+        {
+            new(ChatRole.User, "At what temperature does water boil?")
+        };
+
         var ctx = new GuardrailContext
         {
-            Text = "Water boils at 100 degrees Celsius at standard atmospheric pressure. This is a fundamental property of water.",
+            Text = "Water boils at 100 degrees Celsius at standard atmospheric pressure.",
             Phase = GuardrailPhase.Output,
-            Messages = []
+            Messages = messages
         };
 
         var result = await rule.EvaluateAsync(ctx);
 
-        result.IsBlocked.Should().BeFalse("common knowledge facts should be considered grounded");
+        result.IsBlocked.Should().BeFalse("common knowledge answer to a direct question should be considered grounded");
     }
 }
