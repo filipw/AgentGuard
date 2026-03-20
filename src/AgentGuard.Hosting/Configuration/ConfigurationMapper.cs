@@ -6,6 +6,7 @@ using AgentGuard.Core.Rules.Normalization;
 using AgentGuard.Core.Rules.PII;
 using AgentGuard.Core.Rules.PromptInjection;
 using AgentGuard.Core.Rules.TokenLimits;
+using AgentGuard.Core.Rules.TopicBoundary;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -117,6 +118,17 @@ internal static class ConfigurationMapper
                 });
                 break;
 
+            case "outputtopicboundary":
+                var outputTopics = rule.AllowedTopics?.ToArray() ?? [];
+                var outputTopicOpts = new OutputTopicBoundaryOptions
+                {
+                    AllowedTopics = outputTopics.ToList(),
+                    SimilarityThreshold = rule.SimilarityThreshold ?? 0.3f,
+                    Action = ParseEnum<OutputTopicAction>(rule.OutputTopicAction, OutputTopicAction.Block)
+                };
+                builder.EnforceOutputTopicBoundary(outputTopicOpts);
+                break;
+
             case "llmoutputpolicy":
                 var outputPolicyClient = ResolveService<IChatClient>(serviceProvider, "LlmOutputPolicy");
                 builder.EnforceOutputPolicyWithLlm(outputPolicyClient, new LlmOutputPolicyOptions
@@ -150,8 +162,8 @@ internal static class ConfigurationMapper
                 throw new InvalidOperationException(
                     $"Unknown guardrail rule type: '{rule.Type}'. " +
                     "Valid types: InputNormalization, PromptInjection, PiiRedaction, TopicBoundary, " +
-                    "TokenLimit, ContentSafety, LlmPromptInjection, LlmPiiDetection, LlmTopicBoundary, " +
-                    "LlmOutputPolicy, LlmGroundedness, LlmCopyright.");
+                    "OutputTopicBoundary, TokenLimit, ContentSafety, LlmPromptInjection, LlmPiiDetection, " +
+                    "LlmTopicBoundary, LlmOutputPolicy, LlmGroundedness, LlmCopyright.");
         }
     }
 

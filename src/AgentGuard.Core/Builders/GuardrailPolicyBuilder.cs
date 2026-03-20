@@ -78,6 +78,47 @@ public sealed class GuardrailPolicyBuilder
         return this;
     }
 
+    /// <summary>
+    /// Adds output topic boundary enforcement using keyword matching.
+    /// Checks whether the agent's response stays within the allowed topics.
+    /// </summary>
+    public GuardrailPolicyBuilder EnforceOutputTopicBoundary(params string[] allowedTopics)
+    {
+        _rules.Add(new OutputTopicBoundaryRule(new OutputTopicBoundaryOptions { AllowedTopics = allowedTopics.ToList() }));
+        return this;
+    }
+
+    /// <summary>
+    /// Adds output topic boundary enforcement with a similarity provider (e.g. embedding-based).
+    /// </summary>
+    public GuardrailPolicyBuilder EnforceOutputTopicBoundary(ITopicSimilarityProvider provider, params string[] allowedTopics)
+    {
+        _rules.Add(new OutputTopicBoundaryRule(new OutputTopicBoundaryOptions { AllowedTopics = allowedTopics.ToList() }, provider));
+        return this;
+    }
+
+    /// <summary>
+    /// Adds output topic boundary enforcement with a similarity provider and threshold.
+    /// </summary>
+    public GuardrailPolicyBuilder EnforceOutputTopicBoundary(ITopicSimilarityProvider provider, float similarityThreshold, params string[] allowedTopics)
+    {
+        _rules.Add(new OutputTopicBoundaryRule(new OutputTopicBoundaryOptions
+        {
+            AllowedTopics = allowedTopics.ToList(),
+            SimilarityThreshold = similarityThreshold
+        }, provider));
+        return this;
+    }
+
+    /// <summary>
+    /// Adds output topic boundary enforcement with full options.
+    /// </summary>
+    public GuardrailPolicyBuilder EnforceOutputTopicBoundary(OutputTopicBoundaryOptions options, ITopicSimilarityProvider? provider = null)
+    {
+        _rules.Add(new OutputTopicBoundaryRule(options, provider));
+        return this;
+    }
+
     public GuardrailPolicyBuilder LimitInputTokens(int maxTokens, TokenOverflowStrategy strategy = TokenOverflowStrategy.Reject)
     {
         _rules.Add(new TokenLimitRule(new TokenLimitOptions { MaxTokens = maxTokens, Phase = GuardrailPhase.Input, OverflowStrategy = strategy }));

@@ -347,6 +347,47 @@ public class ConfigurationBindingTests
     }
 
     [Fact]
+    public void ShouldResolveOutputTopicBoundaryFromConfig()
+    {
+        var config = BuildConfig(new Dictionary<string, string?>
+        {
+            ["DefaultPolicy:Rules:0:Type"] = "OutputTopicBoundary",
+            ["DefaultPolicy:Rules:0:AllowedTopics:0"] = "billing",
+            ["DefaultPolicy:Rules:0:AllowedTopics:1"] = "returns",
+            ["DefaultPolicy:Rules:0:SimilarityThreshold"] = "0.4"
+        });
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddAgentGuard(config);
+
+        var provider = services.BuildServiceProvider();
+        var policy = provider.GetRequiredService<IAgentGuardFactory>().GetDefaultPolicy();
+        policy.Rules.Should().HaveCount(1);
+        policy.Rules[0].Name.Should().Be("output-topic-boundary");
+    }
+
+    [Fact]
+    public void ShouldResolveOutputTopicBoundaryWithWarnAction()
+    {
+        var config = BuildConfig(new Dictionary<string, string?>
+        {
+            ["DefaultPolicy:Rules:0:Type"] = "OutputTopicBoundary",
+            ["DefaultPolicy:Rules:0:AllowedTopics:0"] = "billing",
+            ["DefaultPolicy:Rules:0:OutputTopicAction"] = "Warn"
+        });
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddAgentGuard(config);
+
+        var provider = services.BuildServiceProvider();
+        var policy = provider.GetRequiredService<IAgentGuardFactory>().GetDefaultPolicy();
+        policy.Rules.Should().HaveCount(1);
+        policy.Rules[0].Name.Should().Be("output-topic-boundary");
+    }
+
+    [Fact]
     public void ShouldThrowForLlmOutputPolicy_WhenMissingPolicyDescription()
     {
         var config = BuildConfig(new Dictionary<string, string?>
