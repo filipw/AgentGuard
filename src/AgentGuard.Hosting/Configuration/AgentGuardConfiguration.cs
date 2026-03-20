@@ -40,7 +40,8 @@ public sealed class RuleConfiguration
 {
     /// <summary>
     /// Rule type. One of: InputNormalization, PromptInjection, PiiRedaction,
-    /// TopicBoundary, TokenLimit, ContentSafety, LlmPromptInjection, LlmPiiDetection, LlmTopicBoundary.
+    /// TopicBoundary, TokenLimit, ContentSafety, LlmPromptInjection, LlmPiiDetection, LlmTopicBoundary,
+    /// LlmOutputPolicy, LlmGroundedness, LlmCopyright.
     /// </summary>
     public string Type { get; set; } = "";
 
@@ -97,4 +98,18 @@ public sealed class RuleConfiguration
     // --- LlmPromptInjection ---
     /// <summary>Include structured threat classification. Default: true.</summary>
     public bool? IncludeClassification { get; set; }
+
+    // --- LlmOutputPolicy ---
+    /// <summary>Natural language description of the policy to enforce (required for LlmOutputPolicy).</summary>
+    public string? PolicyDescription { get; set; }
+    /// <summary>Output policy action: Block or Warn. Default: Block.</summary>
+    public string? OutputPolicyAction { get; set; }
+
+    // --- LlmGroundedness ---
+    /// <summary>Groundedness action: Block or Warn. Default: Block.</summary>
+    public string? GroundednessAction { get; set; }
+
+    // --- LlmCopyright ---
+    /// <summary>Copyright action: Block or Warn. Default: Block.</summary>
+    public string? CopyrightAction { get; set; }
 }

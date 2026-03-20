@@ -148,6 +148,58 @@ public sealed class GuardrailPolicyBuilder
     }
 
     /// <summary>
+    /// Adds LLM-based output policy enforcement. Checks if the agent's response
+    /// violates a custom policy constraint (e.g. "never recommend competitors").
+    /// </summary>
+    public GuardrailPolicyBuilder EnforceOutputPolicy(
+        IChatClient chatClient, string policyDescription, OutputPolicyAction action = OutputPolicyAction.Block, ChatOptions? chatOptions = null)
+    {
+        _rules.Add(new LlmOutputPolicyRule(chatClient, new LlmOutputPolicyOptions { PolicyDescription = policyDescription, Action = action }, chatOptions));
+        return this;
+    }
+
+    /// <summary>
+    /// Adds LLM-based output policy enforcement with full options.
+    /// </summary>
+    public GuardrailPolicyBuilder EnforceOutputPolicyWithLlm(IChatClient chatClient, LlmOutputPolicyOptions options, ChatOptions? chatOptions = null)
+    {
+        _rules.Add(new LlmOutputPolicyRule(chatClient, options, chatOptions));
+        return this;
+    }
+
+    /// <summary>
+    /// Adds LLM-based groundedness checking. Detects hallucinated facts and claims
+    /// not supported by the conversation context.
+    /// </summary>
+    public GuardrailPolicyBuilder CheckGroundedness(IChatClient chatClient, LlmGroundednessOptions? options = null, ChatOptions? chatOptions = null)
+    {
+        _rules.Add(new LlmGroundednessRule(chatClient, options, chatOptions));
+        return this;
+    }
+
+    /// <summary>
+    /// Adds LLM-based groundedness checking with full options.
+    /// </summary>
+    public GuardrailPolicyBuilder CheckGroundednessWithLlm(IChatClient chatClient, LlmGroundednessOptions? options = null, ChatOptions? chatOptions = null)
+        => CheckGroundedness(chatClient, options, chatOptions);
+
+    /// <summary>
+    /// Adds LLM-based copyright detection. Detects verbatim or near-verbatim reproduction
+    /// of copyrighted material (song lyrics, book passages, articles, restrictively-licensed code).
+    /// </summary>
+    public GuardrailPolicyBuilder CheckCopyright(IChatClient chatClient, LlmCopyrightOptions? options = null, ChatOptions? chatOptions = null)
+    {
+        _rules.Add(new LlmCopyrightRule(chatClient, options, chatOptions));
+        return this;
+    }
+
+    /// <summary>
+    /// Adds LLM-based copyright detection with full options.
+    /// </summary>
+    public GuardrailPolicyBuilder CheckCopyrightWithLlm(IChatClient chatClient, LlmCopyrightOptions? options = null, ChatOptions? chatOptions = null)
+        => CheckCopyright(chatClient, options, chatOptions);
+
+    /// <summary>
     /// Adds content safety filtering. Requires an <see cref="IContentSafetyClassifier"/> to be injected
     /// via DI or passed directly via <see cref="BlockHarmfulContent(IContentSafetyClassifier, ContentSafetyOptions?)"/>.
     /// </summary>

@@ -48,6 +48,9 @@ For teams that need higher accuracy than regex, AgentGuard provides LLM-as-judge
 - **LLM prompt injection detection** — catches sophisticated attacks that regex misses: narrative smuggling, meta-prompting, cognitive overload, multi-chain attacks, and more. Prompt templates cover all 12 attack technique families and 20 evasion methods from the [Arcanum PI Taxonomy](https://github.com/Arcanum-Sec/arc_pi_taxonomy). Returns structured threat classification metadata (technique, intent, evasion, confidence) for operational telemetry
 - **LLM PII detection & redaction** — catches unstructured PII like full names, physical addresses, and contextual identifiers that regex can't find. Supports block or redact modes
 - **LLM topic boundary enforcement** — semantic topic classification that understands intent, not just keywords
+- **LLM output policy enforcement** — checks if agent responses violate custom policy constraints (e.g. "never recommend competitors", "always include a disclaimer"). Configurable policy description with block or warn modes
+- **LLM groundedness checking** — detects hallucinated facts and claims not supported by the conversation context. Uses conversation history for grounding evaluation
+- **LLM copyright detection** — catches verbatim reproduction of copyrighted material (song lyrics, book passages, articles, restrictively-licensed code). Kill switch for copyright violations
 
 ```csharp
 var guardedAgent = agent
@@ -264,7 +267,11 @@ User Input
 │  ├───────────────────────┤  │
 │  │ Content Safety Filter │  │  ← Blocks harmful content
 │  ├───────────────────────┤  │
-│  │ Output Validation     │  │  ← Custom assertions
+│  │ Output Policy Check   │  │  ← Policy compliance (order 55)
+│  ├───────────────────────┤  │
+│  │ Groundedness Check    │  │  ← Hallucination detection (order 65)
+│  ├───────────────────────┤  │
+│  │ Copyright Detection   │  │  ← Copyright protection (order 75)
 │  ├───────────────────────┤  │
 │  │ Token Limit Check     │  │  ← Enforces response budget
 │  └───────────────────────┘  │
@@ -289,6 +296,9 @@ Rules execute in order of their `Order` property (lower = first). Built-in rules
 | 35 | `LlmTopicGuardrailRule` | LLM | Input |
 | 40 | `TokenLimitRule` | Local | Input/Output |
 | 50 | `ContentSafetyRule` | Pluggable | Both |
+| 55 | `LlmOutputPolicyRule` | LLM | Output |
+| 65 | `LlmGroundednessRule` | LLM | Output |
+| 75 | `LlmCopyrightRule` | LLM | Output |
 | 100 | Custom rules | User-defined | Any |
 
 ## Samples

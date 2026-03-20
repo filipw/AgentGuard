@@ -286,4 +286,81 @@ public class ConfigurationBindingTests
         policy.Rules.Should().HaveCount(1);
         policy.Rules[0].Name.Should().Be("content-safety");
     }
+
+    [Fact]
+    public void ShouldResolveLlmOutputPolicyFromConfig()
+    {
+        var config = BuildConfig(new Dictionary<string, string?>
+        {
+            ["DefaultPolicy:Rules:0:Type"] = "LlmOutputPolicy",
+            ["DefaultPolicy:Rules:0:PolicyDescription"] = "Never recommend competitors"
+        });
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton(new Mock<IChatClient>().Object);
+        services.AddAgentGuard(config);
+
+        var provider = services.BuildServiceProvider();
+        var policy = provider.GetRequiredService<IAgentGuardFactory>().GetDefaultPolicy();
+        policy.Rules.Should().HaveCount(1);
+        policy.Rules[0].Name.Should().Be("llm-output-policy");
+    }
+
+    [Fact]
+    public void ShouldResolveLlmGroundednessFromConfig()
+    {
+        var config = BuildConfig(new Dictionary<string, string?>
+        {
+            ["DefaultPolicy:Rules:0:Type"] = "LlmGroundedness",
+            ["DefaultPolicy:Rules:0:GroundednessAction"] = "Warn"
+        });
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton(new Mock<IChatClient>().Object);
+        services.AddAgentGuard(config);
+
+        var provider = services.BuildServiceProvider();
+        var policy = provider.GetRequiredService<IAgentGuardFactory>().GetDefaultPolicy();
+        policy.Rules.Should().HaveCount(1);
+        policy.Rules[0].Name.Should().Be("llm-groundedness");
+    }
+
+    [Fact]
+    public void ShouldResolveLlmCopyrightFromConfig()
+    {
+        var config = BuildConfig(new Dictionary<string, string?>
+        {
+            ["DefaultPolicy:Rules:0:Type"] = "LlmCopyright"
+        });
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton(new Mock<IChatClient>().Object);
+        services.AddAgentGuard(config);
+
+        var provider = services.BuildServiceProvider();
+        var policy = provider.GetRequiredService<IAgentGuardFactory>().GetDefaultPolicy();
+        policy.Rules.Should().HaveCount(1);
+        policy.Rules[0].Name.Should().Be("llm-copyright");
+    }
+
+    [Fact]
+    public void ShouldThrowForLlmOutputPolicy_WhenMissingPolicyDescription()
+    {
+        var config = BuildConfig(new Dictionary<string, string?>
+        {
+            ["DefaultPolicy:Rules:0:Type"] = "LlmOutputPolicy"
+        });
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton(new Mock<IChatClient>().Object);
+        services.AddAgentGuard(config);
+
+        var provider = services.BuildServiceProvider();
+        var act = () => provider.GetRequiredService<IAgentGuardFactory>();
+        act.Should().Throw<InvalidOperationException>().Which.ToString().Should().Contain("PolicyDescription");
+    }
 }

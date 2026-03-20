@@ -117,11 +117,41 @@ internal static class ConfigurationMapper
                 });
                 break;
 
+            case "llmoutputpolicy":
+                var outputPolicyClient = ResolveService<IChatClient>(serviceProvider, "LlmOutputPolicy");
+                builder.EnforceOutputPolicyWithLlm(outputPolicyClient, new LlmOutputPolicyOptions
+                {
+                    PolicyDescription = rule.PolicyDescription
+                        ?? throw new InvalidOperationException("LlmOutputPolicy requires PolicyDescription."),
+                    Action = ParseEnum<OutputPolicyAction>(rule.OutputPolicyAction, OutputPolicyAction.Block),
+                    SystemPrompt = rule.SystemPrompt
+                });
+                break;
+
+            case "llmgroundedness":
+                var groundednessClient = ResolveService<IChatClient>(serviceProvider, "LlmGroundedness");
+                builder.CheckGroundedness(groundednessClient, new LlmGroundednessOptions
+                {
+                    Action = ParseEnum<GroundednessAction>(rule.GroundednessAction, GroundednessAction.Block),
+                    SystemPrompt = rule.SystemPrompt
+                });
+                break;
+
+            case "llmcopyright":
+                var copyrightClient = ResolveService<IChatClient>(serviceProvider, "LlmCopyright");
+                builder.CheckCopyright(copyrightClient, new LlmCopyrightOptions
+                {
+                    Action = ParseEnum<CopyrightAction>(rule.CopyrightAction, CopyrightAction.Block),
+                    SystemPrompt = rule.SystemPrompt
+                });
+                break;
+
             default:
                 throw new InvalidOperationException(
                     $"Unknown guardrail rule type: '{rule.Type}'. " +
                     "Valid types: InputNormalization, PromptInjection, PiiRedaction, TopicBoundary, " +
-                    "TokenLimit, ContentSafety, LlmPromptInjection, LlmPiiDetection, LlmTopicBoundary.");
+                    "TokenLimit, ContentSafety, LlmPromptInjection, LlmPiiDetection, LlmTopicBoundary, " +
+                    "LlmOutputPolicy, LlmGroundedness, LlmCopyright.");
         }
     }
 

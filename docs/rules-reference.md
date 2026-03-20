@@ -138,6 +138,61 @@ Blocklist matches are checked first and take precedence over category analysis. 
 
 Order 100. Simple predicate-based assertions.
 
+## Output Policy Enforcement (LLM)
+
+`.EnforceOutputPolicy(chatClient, policyDescription)` or `.EnforceOutputPolicyWithLlm(chatClient, options)`
+
+Checks whether the agent's response violates a custom policy constraint. Useful for brand safety, compliance, and operational guardrails.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| PolicyDescription | `string` | *(required)* | Natural language description of the policy to enforce |
+| Action | `OutputPolicyAction` | Block | `Block` to reject, `Warn` to pass with metadata |
+| SystemPrompt | `string?` | *(built-in)* | Custom system prompt (use `{policy}` placeholder) |
+
+- **Order**: 55, **Phase**: Output
+- Response format: `COMPLIANT` or `VIOLATION|reason:<reason>`
+- When `Action = Warn`, the result passes but includes `Metadata["violation_reason"]` and `Metadata["policy"]`
+
+---
+
+## Groundedness Checking (LLM)
+
+`.CheckGroundedness(chatClient)` or `.CheckGroundednessWithLlm(chatClient, options?)`
+
+Detects hallucinated facts and claims not supported by the conversation context. Uses `GuardrailContext.Messages` to provide conversation history to the LLM.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| Action | `GroundednessAction` | Block | `Block` to reject, `Warn` to pass with metadata |
+| SystemPrompt | `string?` | *(built-in)* | Custom system prompt (use `{context}` placeholder) |
+
+- **Order**: 65, **Phase**: Output
+- Response format: `GROUNDED` or `UNGROUNDED|claim:<ungrounded claim>`
+- Common knowledge facts are considered grounded even without conversation context
+- When `Action = Warn`, the result passes but includes `Metadata["ungrounded_claim"]`
+
+---
+
+## Copyright Detection (LLM)
+
+`.CheckCopyright(chatClient)` or `.CheckCopyrightWithLlm(chatClient, options?)`
+
+Detects verbatim or near-verbatim reproduction of copyrighted material (song lyrics, book passages, articles, restrictively-licensed code).
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| Action | `CopyrightAction` | Block | `Block` to reject, `Warn` to pass with metadata |
+| SystemPrompt | `string?` | *(built-in)* | Custom system prompt override |
+
+- **Order**: 75, **Phase**: Output
+- Response format: `CLEAN` or `COPYRIGHT|source:<source>|type:<lyrics|book|article|code|poem|speech|other>`
+- Short quotes (<15 words) for commentary are acceptable and not flagged
+- Public domain works and common phrases are not flagged
+- When `Action = Warn`, the result passes but includes `Metadata["copyright_source"]` and `Metadata["copyright_type"]`
+
+---
+
 ## Custom Rules
 
 `.AddRule(rule)` or `.AddRule(name, phase, evaluate, order)`
