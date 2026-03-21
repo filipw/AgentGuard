@@ -1,8 +1,8 @@
 name: Release
 
 on:
-  push:
-    tags: ['v*']
+  release:
+    types: [published]
 
 permissions:
   contents: write
@@ -11,6 +11,7 @@ permissions:
 env:
   DOTNET_NOLOGO: true
   DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
 
 jobs:
   release:
@@ -44,13 +45,25 @@ jobs:
 
     - name: Push to NuGet
       run: |
-        dotnet nuget push artifacts/packages/*.nupkg \
+        dotnet nuget push "artifacts/packages/*.nupkg" \
           --api-key ${{ secrets.NUGET_API_KEY }} \
           --source https://api.nuget.org/v3/index.json \
           --skip-duplicate
+      env:
+        NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
 
-    - name: Create GitHub Release
+    - name: Push symbols to NuGet
+      run: |
+        dotnet nuget push "artifacts/packages/*.snupkg" \
+          --api-key ${{ secrets.NUGET_API_KEY }} \
+          --source https://api.nuget.org/v3/index.json \
+          --skip-duplicate
+      env:
+        NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+
+    - name: Attach packages to GitHub Release
       uses: softprops/action-gh-release@v2
       with:
-        files: artifacts/packages/*
-        generate_release_notes: true
+        files: |
+          artifacts/packages/*.nupkg
+          artifacts/packages/*.snupkg

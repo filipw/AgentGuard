@@ -56,27 +56,17 @@ jobs:
         name: coverage
         path: TestResults/**/coverage.cobertura.xml
 
-  pack:
-    runs-on: ubuntu-latest
-    needs: build
-    if: github.ref == 'refs/heads/main'
-
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Setup .NET
-      uses: actions/setup-dotnet@v4
-      with:
-        dotnet-version: '10.0.x'
-
     - name: Pack NuGet packages
       run: |
         dotnet pack AgentGuard.slnx \
+          --no-build \
           --configuration Release \
           --output artifacts/packages
 
-    - name: Upload packages
+    - name: Upload NuGet packages
       uses: actions/upload-artifact@v4
       with:
         name: nuget-packages
-        path: artifacts/packages/*.nupkg
+        path: |
+          artifacts/packages/*.nupkg
+          artifacts/packages/*.snupkg

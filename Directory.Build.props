@@ -19,7 +19,12 @@
     <RepositoryUrl>https://github.com/filipw/AgentGuard</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageTags>ai;agents;guardrails;safety;microsoft-agent-framework;maf;dotnet</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
+
+  <ItemGroup Condition="'$(IsPackable)' != 'false'">
+    <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
 
   <PropertyGroup>
     <VersionPrefix>0.1.0</VersionPrefix>

@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <Description>ONNX-based ML classifiers for AgentGuard — offline prompt injection detection using DeBERTa v3.</Description>
+    <Description>ONNX-based ML classifiers for AgentGuard — offline prompt injection detection using DeBERTa v3. The ONNX model files are NOT included in this package and must be downloaded separately. See https://github.com/filipw/AgentGuard for setup instructions and the download script (eng/download-onnx-model.sh).</Description>
     <PackageId>AgentGuard.Onnx</PackageId>
     <RootNamespace>AgentGuard.Onnx</RootNamespace>
   </PropertyGroup>
