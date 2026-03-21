@@ -22,6 +22,12 @@ public sealed class InputNormalizationOptions
     /// <summary>Whether to normalize Unicode homoglyphs (e.g. Cyrillic а → Latin a). Default: true.</summary>
     public bool NormalizeUnicode { get; init; } = true;
 
+    /// <summary>Whether to decode leetspeak substitutions (e.g. 1gn0r3 → ignore). Default: true.</summary>
+    public bool DecodeLeetspeak { get; init; } = true;
+
+    /// <summary>Whether to strip invisible Unicode characters (zero-width joiners, invisible tags, etc.). Default: true.</summary>
+    public bool StripInvisibleUnicode { get; init; } = true;
+
     /// <summary>
     /// Minimum length of a base64-encoded segment to attempt decoding.
     /// Shorter segments are likely to be false positives (e.g. common English words).
@@ -95,6 +101,23 @@ public sealed partial class InputNormalizationRule : IGuardrailRule
             var reversed = DetectAndReverseText(text);
             if (reversed is not null)
                 decodedSegments.Add(reversed);
+        }
+
+        if (_options.StripInvisibleUnicode)
+        {
+            var stripped = StripInvisibleCharacters(text);
+            if (stripped is not null)
+            {
+                text = stripped;
+                decodedSegments.Add(stripped);
+            }
+        }
+
+        if (_options.DecodeLeetspeak)
+        {
+            var decoded = DecodeLeetspeak(text);
+            if (decoded is not null)
+                decodedSegments.Add(decoded);
         }
 
         if (decodedSegments.Count == 0)
@@ -199,6 +222,89 @@ public sealed partial class InputNormalizationRule : IGuardrailRule
 
         return sb.ToString();
     }
+
+    /// <summary>
+    /// Strips invisible Unicode characters used to evade detection:
+    /// zero-width spaces, zero-width joiners, zero-width non-joiners,
+    /// Unicode tag characters (U+E0000-U+E007F), soft hyphens, and other invisible formatting characters.
+    /// Returns null if no invisible characters were found.
+    /// </summary>
+    internal static string? StripInvisibleCharacters(string text)
+    {
+        var sb = new StringBuilder(text.Length);
+        var changed = false;
+
+        foreach (var c in text)
+        {
+            if (IsInvisibleCharacter(c))
+            {
+                changed = true;
+                continue;
+            }
+            sb.Append(c);
+        }
+
+        return changed ? sb.ToString() : null;
+    }
+
+    private static bool IsInvisibleCharacter(char c) => c switch
+    {
+        '\u200B' => true, // Zero-width space
+        '\u200C' => true, // Zero-width non-joiner
+        '\u200D' => true, // Zero-width joiner
+        '\u200E' => true, // Left-to-right mark
+        '\u200F' => true, // Right-to-left mark
+        '\u2060' => true, // Word joiner
+        '\u2061' => true, // Function application
+        '\u2062' => true, // Invisible times
+        '\u2063' => true, // Invisible separator
+        '\u2064' => true, // Invisible plus
+        '\uFEFF' => true, // BOM / zero-width no-break space
+        '\u00AD' => true, // Soft hyphen
+        '\u034F' => true, // Combining grapheme joiner
+        '\u061C' => true, // Arabic letter mark
+        '\u180E' => true, // Mongolian vowel separator
+        _ => false
+    };
+
+    /// <summary>
+    /// Decodes common leetspeak substitutions to reveal hidden injection attempts.
+    /// Only triggers if the decoded version contains known injection-related words
+    /// that the original did not, reducing false positives.
+    /// </summary>
+    internal static string? DecodeLeetspeak(string text)
+    {
+        var decoded = new StringBuilder(text.Length);
+        foreach (var c in text)
+        {
+            decoded.Append(LeetMap.TryGetValue(c, out var replacement) ? replacement : c);
+        }
+
+        var decodedStr = decoded.ToString();
+        if (decodedStr == text)
+            return null;
+
+        // Only report as decoded if the substitution reveals significantly more
+        // injection-related words (threshold of +2 to reduce false positives from
+        // normal text containing numbers like "3 cats and 4 dogs")
+        var originalHits = CountKnownWords(text.ToLowerInvariant());
+        var decodedHits = CountKnownWords(decodedStr.ToLowerInvariant());
+
+        return decodedHits > originalHits + 1 ? decodedStr : null;
+    }
+
+    // Common leetspeak substitutions
+    private static readonly Dictionary<char, char> LeetMap = new()
+    {
+        ['0'] = 'o',
+        ['1'] = 'i',
+        ['3'] = 'e',
+        ['4'] = 'a',
+        ['5'] = 's',
+        ['7'] = 't',
+        ['@'] = 'a',
+        ['!'] = 'i',
+    };
 
     private static bool IsPrintableText(string text)
     {

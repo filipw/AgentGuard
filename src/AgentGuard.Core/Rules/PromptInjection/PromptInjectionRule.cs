@@ -39,12 +39,29 @@ public sealed class PromptInjectionRule : IGuardrailRule
         @"pretend\s+(you\s+are|to\s+be)\s+",
         @"act\s+as\s+(if\s+you\s+are\s+|a\s+)",
 
-        // End sequence injection
+        // End sequence injection — 8 closure families from the Arcanum taxonomy
+        // Token delimiters
         @"<\|endoftext\|>",
-        @"\[system\]",
-        @"<\s*system\s*>",
         @"<\|im_start\|>",
         @"<\|im_end\|>",
+        @"<\|eot_id\|>",
+        @"<\|start_header_id\|>",
+        // Fake chat roles
+        @"\[system\]",
+        @"<\s*system\s*>",
+        @"\[\s*INST\s*\]",
+        @"\[/\s*INST\s*\]",
+        @"<<\s*SYS\s*>>",
+        @"<\|assistant\|>",
+        @"<\|user\|>",
+        // Bracketed frames
+        @"\[START\s+(OUTPUT|INSTRUCTIONS|SYSTEM)\]",
+        @"\[END\s+(OUTPUT|INSTRUCTIONS|SYSTEM)\]",
+        // JSON/YAML boundary markers
+        @"""role""\s*:\s*""system""",
+        // Soft boundaries used as context separators
+        @"[-=]{5,}\s*(SYSTEM|END|BEGIN|RESET|OVERRIDE)\s*[-=]*",
+        @"#{3,}\s*(SYSTEM|END|BEGIN|RESET)",
 
         // Variable expansion attacks
         @"\$\{(system_prompt|instructions|config|prompt)\}",
@@ -52,13 +69,13 @@ public sealed class PromptInjectionRule : IGuardrailRule
         @"%\{(system_prompt|instructions|config|prompt)\}",
     ];
 
-    /// <summary>Medium patterns: system prompt extraction, jailbreak keywords, rule addition.</summary>
+    /// <summary>Medium patterns: system prompt extraction, jailbreak, rule addition, anti-harm coercion, contradiction.</summary>
     private static readonly string[] MediumPatterns =
     [
         // System prompt extraction
         @"what\s+(is|are)\s+your\s+(system\s+)?(instructions|prompt|rules)",
         @"(show|reveal|display|print|output)\s+(\w+\s+)*(system\s+)?(prompt|instructions)",
-        @"repeat\s+(your\s+)?(initial|original|system)\s+(prompt|instructions|message)",
+        @"repeat\s+(your\s+)?(initial|original|system)\s+(\w+\s+)*(prompt|instructions|message)",
 
         // Jailbreak keywords
         @"DAN\s+mode",
@@ -68,9 +85,21 @@ public sealed class PromptInjectionRule : IGuardrailRule
         // Rule addition / modification
         @"(new|additional|updated)\s+rule\s*:",
         @"(from\s+now\s+on|henceforth|going\s+forward)\s*,?\s*(you\s+)?(must|should|will|shall)",
+
+        // Anti-harm coercion — pressuring the model to override safety by framing refusal as harmful
+        @"(refusing|failure)\s+to\s+(comply|help|assist|respond)\s+(is|would\s+be|causes?)(\s+\w+)*\s+(harmful|dangerous|unethical|immoral|harm)",
+        @"you\s+(must|have\s+to|need\s+to)\s+(comply|obey|help|answer)\s+(or|otherwise)",
+        @"it\s+would\s+be\s+(unethical|immoral|wrong|harmful)\s+(not\s+to|to\s+refuse|to\s+decline)",
+        @"(ethical|moral)\s+(duty|obligation|imperative)\s+to\s+(help|comply|answer|respond)",
+        @"(people|someone|lives?)\s+(will|could|might)\s+(be\s+)?(hurt|harmed|die|suffer)\s+if\s+you\s+(don't|do\s+not|refuse)",
+
+        // Contradiction — presenting conflicting instructions to confuse safety logic
+        @"(your\s+)?(actual|real|true|original)\s+(instructions|rules|purpose)\s+(are|is|say)",
+        @"(the\s+)?(previous|above)\s+(instructions?|rules?)\s+(are|were|was)\s+(wrong|incorrect|fake|a\s+test)",
+        @"(contrary\s+to|despite|regardless\s+of)\s+(what|your)\s+(you\s+were|previous|system)\s+(told|instructions|prompt)",
     ];
 
-    /// <summary>High-sensitivity patterns: framing attacks, inversion, double-negative extraction.</summary>
+    /// <summary>High-sensitivity patterns: framing attacks, inversion, double-negative extraction, link injection.</summary>
     private static readonly string[] HighPatterns =
     [
         // Framing attacks
@@ -81,6 +110,10 @@ public sealed class PromptInjectionRule : IGuardrailRule
         // Inversion / double-negative extraction
         @"what\s+would\s+you\s+(not|never)\s+do\s+if",
         @"list\s+(the\s+)?(things|topics)\s+you('re|\s+are)\s+(forbidden|not\s+allowed|unable)",
+
+        // Link injection — malicious directives embedded in URLs or references
+        @"https?://[^\s]*(system_prompt|ignore_rules|jailbreak|override|injection)",
+        @"\[.*?\]\(.*?(ignore|override|system|jailbreak|injection).*?\)",
     ];
 
     public PromptInjectionRule(PromptInjectionOptions? options = null) => _options = options ?? new();
