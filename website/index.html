@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AgentGuard — Guardrails for .NET AI Agents</title>
+  <meta name="description" content="Declarative guardrails and safety controls for .NET AI agents. Framework-agnostic. Prompt injection, PII redaction, topic enforcement, and more.">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ── Navigation ──────────────────────────────────── -->
+<nav>
+  <div class="nav-inner">
+    <a href="/" class="logo">AgentGuard</a>
+    <ul class="nav-links">
+      <li><a href="#features">Features</a></li>
+      <li><a href="#rules">Rules</a></li>
+      <li><a href="#packages">Packages</a></li>
+      <li><a href="https://github.com/filipw/AgentGuard/tree/main/docs">Docs</a></li>
+      <li><a href="https://github.com/filipw/AgentGuard">GitHub</a></li>
+    </ul>
+  </div>
+</nav>
+
+<!-- ── Hero ────────────────────────────────────────── -->
+<section class="hero">
+  <h1>Safety controls for<br>.NET AI agents.</h1>
+  <p class="subtitle">
+    Composable, testable, declarative guardrails. Block prompt injections, redact PII, enforce topics, validate outputs — in two lines of code.
+  </p>
+  <div class="cta-row">
+    <a href="#quickstart" class="btn btn-primary">Get Started</a>
+    <a href="https://github.com/filipw/AgentGuard" class="btn btn-secondary">View on GitHub</a>
+  </div>
+</section>
+
+<!-- ── Install ────────────────────────────────────── -->
+<div class="install-strip">
+  <code>dotnet add package AgentGuard.Core --prerelease</code>
+</div>
+
+<!-- ── Standalone example ─────────────────────────── -->
+<section id="quickstart">
+  <p class="section-label">Quick Start</p>
+  <h2 class="section-title">No framework required.</h2>
+  <p class="section-subtitle">
+    The core engine works standalone. Build a policy, run the pipeline, get a result. Use it with any .NET AI stack — or none at all.
+  </p>
+
+  <div class="two-col">
+    <div>
+      <p class="code-label">Standalone pipeline</p>
+<pre><code>using AgentGuard.Core.Abstractions;
+using AgentGuard.Core.Builders;
+using AgentGuard.Core.Guardrails;
+
+var policy = new GuardrailPolicyBuilder()
+    .NormalizeInput()
+    .BlockPromptInjection()
+    .RedactPII()
+    .EnforceTopicBoundary("billing", "returns")
+    .LimitInputTokens(4000)
+    .Build();
+
+var pipeline = new GuardrailPipeline(policy, logger);
+var ctx = new GuardrailContext
+{
+    Text = userInput,
+    Phase = GuardrailPhase.Input
+};
+
+var result = await pipeline.RunAsync(ctx);
+
+if (result.IsBlocked)
+    Console.WriteLine(result.BlockingResult!.Reason);
+else if (result.WasModified)
+    Console.WriteLine(result.FinalText);</code></pre>
+    </div>
+    <div>
+      <p class="code-label">With Microsoft Agent Framework</p>
+<pre><code>using AgentGuard.AgentFramework;
+
+// Two lines to add guardrails
+var guardedAgent = agent
+    .AsBuilder()
+    .UseAgentGuard(g => g
+        .NormalizeInput()
+        .BlockPromptInjection()
+        .RedactPII()
+        .EnforceTopicBoundary("billing")
+        .LimitInputTokens(4000)
+    )
+    .Build();
+
+// Use exactly like a normal agent
+var response = await guardedAgent
+    .RunAsync(messages, session, options);
+
+// Streaming works too
+await foreach (var update in guardedAgent
+    .RunStreamingAsync(messages, session, options))
+{
+    Console.Write(update.Text);
+}</code></pre>
+    </div>
+  </div>
+</section>
+
+<!-- ── Features ───────────────────────────────────── -->
+<section class="alt" id="features">
+  <div class="section-inner">
+    <p class="section-label">Features</p>
+    <h2 class="section-title">Everything you need.<br>Nothing you don't.</h2>
+    <p class="section-subtitle">
+      14 built-in rules covering the full input/output safety lifecycle. Regex for speed, ONNX ML for accuracy, LLM for nuance.
+    </p>
+
+    <div class="feature-grid">
+      <div class="feature-card">
+        <h3>Prompt Injection Detection</h3>
+        <p>Three-tier defense: regex patterns (from Arcanum taxonomy), ONNX ML classifier (DeBERTa v3, ~10ms offline), and LLM-as-judge with structured threat classification.</p>
+      </div>
+      <div class="feature-card">
+        <h3>PII Redaction</h3>
+        <p>Regex-based redaction for emails, phones, SSNs, credit cards, IPs, and dates of birth. LLM-based detection catches names, addresses, and contextual identifiers.</p>
+      </div>
+      <div class="feature-card">
+        <h3>Topic Enforcement</h3>
+        <p>Keep conversations on-topic with keyword matching, embedding-based similarity, or LLM semantic classification. Works on both input and output.</p>
+      </div>
+      <div class="feature-card">
+        <h3>Output Validation</h3>
+        <p>Policy enforcement, groundedness checking, and copyright detection. Catch hallucinations, brand violations, and copyrighted content before they reach users.</p>
+      </div>
+      <div class="feature-card">
+        <h3>Input Normalization</h3>
+        <p>Decodes evasion tricks — base64, hex escapes, reversed text, Unicode homoglyphs — before any other rule evaluates. Stops encoding-based attacks cold.</p>
+      </div>
+      <div class="feature-card">
+        <h3>Framework Agnostic</h3>
+        <p>Core has zero framework dependency. Use standalone, with Microsoft Agent Framework, or with any .NET AI stack. Framework adapters are separate packages.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Rules ──────────────────────────────────────── -->
+<section id="rules">
+  <p class="section-label">Built-in Rules</p>
+  <h2 class="section-title">14 rules. Ordered by cost.</h2>
+  <p class="section-subtitle">
+    Cheap regex checks run first and short-circuit. Expensive LLM calls only run if needed.
+  </p>
+
+  <table class="rule-table">
+    <thead>
+      <tr>
+        <th>Order</th>
+        <th>Rule</th>
+        <th>Type</th>
+        <th>Phase</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>5</td>
+        <td><code>InputNormalizationRule</code></td>
+        <td><span class="badge badge-local">Local</span></td>
+        <td>Input</td>
+      </tr>
+      <tr>
+        <td>10</td>
+        <td><code>PromptInjectionRule</code></td>
+        <td><span class="badge badge-regex">Regex</span></td>
+        <td>Input</td>
+      </tr>
+      <tr>
+        <td>12</td>
+        <td><code>OnnxPromptInjectionRule</code></td>
+        <td><span class="badge badge-onnx">ONNX ML</span></td>
+        <td>Input</td>
+      </tr>
+      <tr>
+        <td>15</td>
+        <td><code>LlmPromptInjectionRule</code></td>
+        <td><span class="badge badge-llm">LLM</span></td>
+        <td>Input</td>
+      </tr>
+      <tr>
+        <td>20</td>
+        <td><code>PiiRedactionRule</code></td>
+        <td><span class="badge badge-regex">Regex</span></td>
+        <td>Both</td>
+      </tr>
+      <tr>
+        <td>25</td>
+        <td><code>LlmPiiDetectionRule</code></td>
+        <td><span class="badge badge-llm">LLM</span></td>
+        <td>Both</td>
+      </tr>
+      <tr>
+        <td>30</td>
+        <td><code>TopicBoundaryRule</code></td>
+        <td><span class="badge badge-local">Keywords</span></td>
+        <td>Input</td>
+      </tr>
+      <tr>
+        <td>35</td>
+        <td><code>LlmTopicGuardrailRule</code></td>
+        <td><span class="badge badge-llm">LLM</span></td>
+        <td>Input</td>
+      </tr>
+      <tr>
+        <td>40</td>
+        <td><code>TokenLimitRule</code></td>
+        <td><span class="badge badge-local">Local</span></td>
+        <td>Input / Output</td>
+      </tr>
+      <tr>
+        <td>50</td>
+        <td><code>ContentSafetyRule</code></td>
+        <td><span class="badge badge-plugin">Pluggable</span></td>
+        <td>Both</td>
+      </tr>
+      <tr>
+        <td>55</td>
+        <td><code>LlmOutputPolicyRule</code></td>
+        <td><span class="badge badge-llm">LLM</span></td>
+        <td>Output</td>
+      </tr>
+      <tr>
+        <td>60</td>
+        <td><code>OutputTopicBoundaryRule</code></td>
+        <td><span class="badge badge-local">Embedding</span></td>
+        <td>Output</td>
+      </tr>
+      <tr>
+        <td>65</td>
+        <td><code>LlmGroundednessRule</code></td>
+        <td><span class="badge badge-llm">LLM</span></td>
+        <td>Output</td>
+      </tr>
+      <tr>
+        <td>75</td>
+        <td><code>LlmCopyrightRule</code></td>
+        <td><span class="badge badge-llm">LLM</span></td>
+        <td>Output</td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ── Architecture ───────────────────────────────── -->
+<section class="alt">
+  <div class="section-inner">
+    <p class="section-label">Architecture</p>
+    <h2 class="section-title">Input → Agent → Output.</h2>
+    <p class="section-subtitle">
+      Rules run as a pipeline. Input guardrails protect the LLM. Output guardrails protect the user.
+    </p>
+
+    <div class="feature-grid">
+      <div class="feature-card">
+        <h3>1. Input Guardrails</h3>
+        <p>Normalization, prompt injection detection, PII redaction, topic boundary enforcement, token limits, and content safety — all before the LLM sees the input.</p>
+      </div>
+      <div class="feature-card">
+        <h3>2. Agent Execution</h3>
+        <p>Your AI agent runs with the sanitized input. Works with any framework — MAF, Semantic Kernel, or standalone. Supports both RunAsync and streaming.</p>
+      </div>
+      <div class="feature-card">
+        <h3>3. Output Guardrails</h3>
+        <p>PII redaction, policy compliance, topic drift detection, groundedness checking, copyright detection, and token limits — all before the response reaches the user.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Packages ───────────────────────────────────── -->
+<section id="packages">
+  <p class="section-label">Packages</p>
+  <h2 class="section-title">Pick what you need.</h2>
+  <p class="section-subtitle">
+    Seven packages, layered. Core is all you need to start. Add framework adapters, cloud integrations, or ML classifiers as needed.
+  </p>
+
+  <div class="package-grid">
+    <div class="package-card">
+      <div class="package-name">AgentGuard.Core</div>
+      <div class="package-desc">Framework-agnostic core. Abstractions, rules engine, fluent builder, all 14 built-in rules. No agent framework dependency.</div>
+    </div>
+    <div class="package-card">
+      <div class="package-name">AgentGuard.AgentFramework</div>
+      <div class="package-desc">Microsoft Agent Framework adapter. <code>UseAgentGuard()</code> middleware for <code>AIAgentBuilder</code> with RunAsync and streaming.</div>
+    </div>
+    <div class="package-card">
+      <div class="package-name">AgentGuard.Workflows</div>
+      <div class="package-desc">MAF workflow guardrails. Decorates <code>Executor&lt;T&gt;</code> with guardrails at step boundaries via <code>.WithGuardrails()</code>.</div>
+    </div>
+    <div class="package-card">
+      <div class="package-name">AgentGuard.Onnx</div>
+      <div class="package-desc">ONNX-based ML classifiers. Offline prompt injection detection with DeBERTa v3. ~10ms inference, no cloud needed.</div>
+    </div>
+    <div class="package-card">
+      <div class="package-name">AgentGuard.Local</div>
+      <div class="package-desc">Offline classifiers. Keyword similarity and embedding-based topic matching for fully local deployments.</div>
+    </div>
+    <div class="package-card">
+      <div class="package-name">AgentGuard.Azure</div>
+      <div class="package-desc">Azure AI Content Safety integration. Category analysis, severity thresholds, and server-side blocklists.</div>
+    </div>
+    <div class="package-card">
+      <div class="package-name">AgentGuard.Hosting</div>
+      <div class="package-desc">DI registration, named policy factory, and <code>appsettings.json</code> configuration binding for ASP.NET Core and Aspire.</div>
+    </div>
+  </div>
+</section>
+
+<!-- ── LLM rules ─────────────────────────────────── -->
+<section class="alt">
+  <div class="section-inner">
+    <p class="section-label">LLM-as-Judge</p>
+    <h2 class="section-title">When regex isn't enough.</h2>
+    <p class="section-subtitle">
+      Plug in any <code>IChatClient</code> — Azure OpenAI, Ollama, local models. Built-in prompt templates, fail-open on errors.
+    </p>
+<pre><code>using AgentGuard.Onnx;
+
+// Three-tier prompt injection: Regex → ONNX → LLM
+var policy = new GuardrailPolicyBuilder()
+    .NormalizeInput()
+    .BlockPromptInjection()                            // regex (order 10)
+    .BlockPromptInjectionWithOnnx(                     // ML (order 12)
+        modelPath, tokenizerPath)
+    .BlockPromptInjectionWithLlm(chatClient)           // LLM (order 15)
+    .DetectPIIWithLlm(chatClient,
+        new() { Action = PiiAction.Redact })
+    .EnforceOutputPolicy(chatClient,
+        "Never recommend competitor products")
+    .CheckGroundedness(chatClient)
+    .CheckCopyright(chatClient)
+    .Build();</code></pre>
+  </div>
+</section>
+
+<!-- ── Custom rules ──────────────────────────────── -->
+<section>
+  <p class="section-label">Extensible</p>
+  <h2 class="section-title">Build your own rules.</h2>
+  <p class="section-subtitle">
+    Implement <code>IGuardrailRule</code> and plug it in. Full access to conversation context, phase, and metadata.
+  </p>
+<pre><code>using AgentGuard.Core.Abstractions;
+
+public class NoProfanityRule : IGuardrailRule
+{
+    public string Name => "no-profanity";
+    public GuardrailPhase Phase => GuardrailPhase.Output;
+    public int Order => 100;
+
+    public ValueTask&lt;GuardrailResult&gt; EvaluateAsync(
+        GuardrailContext context,
+        CancellationToken cancellationToken = default)
+    {
+        var hasProfanity = ProfanityDetector.Check(context.Text);
+
+        return ValueTask.FromResult(hasProfanity
+            ? GuardrailResult.Blocked("Inappropriate language.")
+            : GuardrailResult.Passed());
+    }
+}
+
+// Add to any pipeline
+var policy = new GuardrailPolicyBuilder()
+    .BlockPromptInjection()
+    .AddRule(new NoProfanityRule())
+    .Build();</code></pre>
+</section>
+
+<!-- ── Footer ─────────────────────────────────────── -->
+<footer>
+  <p>
+    AgentGuard is open source under the <a href="https://github.com/filipw/AgentGuard/blob/main/LICENSE">MIT License</a>.
+    Prompt injection patterns informed by the <a href="https://github.com/Arcanum-Sec/arc_pi_taxonomy">Arcanum PI Taxonomy</a>.
+  </p>
+</footer>
+
+</body>
+</html>

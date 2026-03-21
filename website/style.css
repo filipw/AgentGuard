@@ -1,0 +1,430 @@
+/* AgentGuard — Minimalist site styling */
+
+:root {
+  --color-bg: #fff;
+  --color-text: #1d1d1f;
+  --color-text-secondary: #6e6e73;
+  --color-border: #e5e5e7;
+  --color-code-bg: #f5f5f7;
+  --color-accent: #0071e3;
+  --color-accent-hover: #0077ed;
+  --color-badge-bg: #1d1d1f;
+  --color-badge-text: #fff;
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-mono: "SF Mono", SFMono-Regular, ui-monospace, Menlo, Consolas, monospace;
+  --max-width: 980px;
+  --max-width-narrow: 720px;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  font-size: 16px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  font-family: var(--font-sans);
+  color: var(--color-text);
+  background: var(--color-bg);
+  line-height: 1.5;
+}
+
+a {
+  color: var(--color-accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+/* ── Navigation ──────────────────────────────────────── */
+
+nav {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  background: rgba(255, 255, 255, 0.72);
+  border-bottom: 1px solid var(--color-border);
+}
+
+nav .nav-inner {
+  max-width: var(--max-width);
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 1.5rem;
+  height: 52px;
+}
+
+nav .logo {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--color-text);
+  letter-spacing: -0.02em;
+}
+
+nav .logo:hover {
+  text-decoration: none;
+}
+
+nav .nav-links {
+  display: flex;
+  gap: 2rem;
+  list-style: none;
+  font-size: 0.875rem;
+}
+
+nav .nav-links a {
+  color: var(--color-text-secondary);
+  transition: color 0.2s;
+}
+
+nav .nav-links a:hover {
+  color: var(--color-text);
+  text-decoration: none;
+}
+
+/* ── Hero ────────────────────────────────────────────── */
+
+.hero {
+  text-align: center;
+  padding: 6rem 1.5rem 4rem;
+  max-width: var(--max-width);
+  margin: 0 auto;
+}
+
+.hero h1 {
+  font-size: 3.5rem;
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  line-height: 1.08;
+  margin-bottom: 1rem;
+}
+
+.hero .subtitle {
+  font-size: 1.5rem;
+  font-weight: 400;
+  color: var(--color-text-secondary);
+  line-height: 1.4;
+  max-width: 600px;
+  margin: 0 auto 2.5rem;
+}
+
+.hero .cta-row {
+  display: flex;
+  gap: 1rem;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.btn {
+  display: inline-block;
+  padding: 0.75rem 1.75rem;
+  border-radius: 980px;
+  font-size: 1rem;
+  font-weight: 500;
+  transition: background 0.2s, transform 0.1s;
+  cursor: pointer;
+  border: none;
+}
+
+.btn:hover {
+  text-decoration: none;
+  transform: scale(1.02);
+}
+
+.btn-primary {
+  background: var(--color-accent);
+  color: #fff;
+}
+
+.btn-primary:hover {
+  background: var(--color-accent-hover);
+}
+
+.btn-secondary {
+  background: transparent;
+  color: var(--color-accent);
+  border: 1px solid var(--color-accent);
+}
+
+.btn-secondary:hover {
+  background: rgba(0, 113, 227, 0.06);
+}
+
+/* ── Sections ────────────────────────────────────────── */
+
+section {
+  padding: 5rem 1.5rem;
+  max-width: var(--max-width);
+  margin: 0 auto;
+}
+
+section.alt {
+  max-width: none;
+  background: var(--color-code-bg);
+}
+
+section.alt > .section-inner {
+  max-width: var(--max-width);
+  margin: 0 auto;
+}
+
+.section-label {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-text-secondary);
+  margin-bottom: 0.75rem;
+}
+
+.section-title {
+  font-size: 2.5rem;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+  margin-bottom: 1rem;
+}
+
+.section-subtitle {
+  font-size: 1.125rem;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+  max-width: 600px;
+  margin-bottom: 3rem;
+}
+
+/* ── Install strip ───────────────────────────────────── */
+
+.install-strip {
+  text-align: center;
+  padding: 3rem 1.5rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.install-strip code {
+  font-family: var(--font-mono);
+  font-size: 1.0625rem;
+  background: var(--color-code-bg);
+  padding: 0.75rem 2rem;
+  border-radius: 12px;
+  display: inline-block;
+  color: var(--color-text);
+  letter-spacing: -0.01em;
+}
+
+/* ── Code blocks ─────────────────────────────────────── */
+
+pre {
+  background: var(--color-code-bg);
+  border-radius: 16px;
+  padding: 1.75rem 2rem;
+  overflow-x: auto;
+  font-size: 0.875rem;
+  line-height: 1.7;
+  border: 1px solid var(--color-border);
+}
+
+pre code {
+  font-family: var(--font-mono);
+  color: var(--color-text);
+}
+
+.code-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-secondary);
+  margin-bottom: 0.75rem;
+}
+
+/* ── Feature grid ────────────────────────────────────── */
+
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 2rem;
+}
+
+.feature-card {
+  padding: 2rem;
+  border-radius: 20px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+}
+
+section.alt .feature-card {
+  background: var(--color-bg);
+}
+
+.feature-card h3 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin-bottom: 0.5rem;
+}
+
+.feature-card p {
+  font-size: 0.9375rem;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+}
+
+/* ── Rule table ──────────────────────────────────────── */
+
+.rule-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9375rem;
+  margin-top: 2rem;
+}
+
+.rule-table th {
+  text-align: left;
+  font-weight: 600;
+  padding: 0.75rem 1rem;
+  border-bottom: 2px solid var(--color-text);
+  font-size: 0.8125rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-secondary);
+}
+
+.rule-table td {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.rule-table code {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  background: var(--color-code-bg);
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+}
+
+/* ── Badges ──────────────────────────────────────────── */
+
+.badge {
+  display: inline-block;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  padding: 0.2rem 0.6rem;
+  border-radius: 980px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.badge-regex { background: #e8e8ed; color: #1d1d1f; }
+.badge-onnx { background: #1d1d1f; color: #fff; }
+.badge-llm { background: #0071e3; color: #fff; }
+.badge-local { background: #e8e8ed; color: #1d1d1f; }
+.badge-plugin { background: #e8e8ed; color: #1d1d1f; }
+
+/* ── Packages ────────────────────────────────────────── */
+
+.package-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1.25rem;
+}
+
+.package-card {
+  padding: 1.5rem 1.75rem;
+  border-radius: 16px;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg);
+}
+
+.package-card .package-name {
+  font-family: var(--font-mono);
+  font-size: 0.9375rem;
+  font-weight: 600;
+  margin-bottom: 0.375rem;
+}
+
+.package-card .package-desc {
+  font-size: 0.875rem;
+  color: var(--color-text-secondary);
+  line-height: 1.45;
+}
+
+/* ── Two-column layout ───────────────────────────────── */
+
+.two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3rem;
+  align-items: start;
+}
+
+.two-col .col-text {
+  padding-top: 1rem;
+}
+
+/* ── Footer ──────────────────────────────────────────── */
+
+footer {
+  border-top: 1px solid var(--color-border);
+  padding: 2.5rem 1.5rem;
+  text-align: center;
+  font-size: 0.8125rem;
+  color: var(--color-text-secondary);
+}
+
+footer a {
+  color: var(--color-text-secondary);
+}
+
+footer a:hover {
+  color: var(--color-text);
+}
+
+/* ── Responsive ──────────────────────────────────────── */
+
+@media (max-width: 768px) {
+  .hero h1 {
+    font-size: 2.25rem;
+  }
+
+  .hero .subtitle {
+    font-size: 1.125rem;
+  }
+
+  .section-title {
+    font-size: 1.75rem;
+  }
+
+  .feature-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .package-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .two-col {
+    grid-template-columns: 1fr;
+  }
+
+  nav .nav-links {
+    display: none;
+  }
+
+  pre {
+    padding: 1.25rem 1rem;
+    font-size: 0.8125rem;
+  }
+}
