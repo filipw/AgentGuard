@@ -1,31 +1,49 @@
 # AgentGuard
 
-**Declarative guardrails and safety controls for Microsoft Agent Framework (.NET)**
+**Declarative guardrails and safety controls for .NET AI agents**
 
 [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Core.svg)](https://www.nuget.org/packages/AgentGuard.Core)
 [![Build](https://github.com/filipw/AgentGuard/actions/workflows/ci.yml/badge.svg)](https://github.com/filipw/AgentGuard/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-What [NeMo Guardrails](https://github.com/NVIDIA/NeMo-Guardrails) and [Guardrails AI](https://github.com/guardrails-ai/guardrails) do for Python, **AgentGuard** does for .NET — with the fluent APIs, middleware integration, and type safety that .NET developers expect.
+What [NeMo Guardrails](https://github.com/NVIDIA/NeMo-Guardrails) and [Guardrails AI](https://github.com/guardrails-ai/guardrails) do for Python, **AgentGuard** does for .NET — with the fluent APIs, composable rules, and type safety that .NET developers expect.
 
 ---
 
 ## Why AgentGuard?
 
-Microsoft Agent Framework provides raw middleware hooks for intercepting agent runs, but every team ends up writing the same boilerplate: PII detection, prompt injection blocking, topic enforcement, token limits, output validation. AgentGuard provides all of this as composable, testable, declarative rules that plug directly into MAF's middleware pipeline.
+Every AI agent needs the same safety guardrails: PII detection, prompt injection blocking, topic enforcement, token limits, output validation. AgentGuard provides all of this as composable, testable, declarative rules.
+
+The core engine is **framework-agnostic** — use it standalone, with Microsoft Agent Framework, Semantic Kernel, or any other .NET AI stack. Framework-specific adapters (like `AgentGuard.AgentFramework` for MAF) wire guardrails into the host's middleware pipeline.
 
 ```csharp
-// Add guardrails to any MAF agent in two lines
+// Use the guardrail engine standalone — no framework dependency needed
+var policy = new GuardrailPolicyBuilder()
+    .NormalizeInput()              // decode base64/hex/unicode evasion tricks
+    .BlockPromptInjection()        // regex-based injection detection
+    .RedactPII(PiiCategory.Email | PiiCategory.Phone | PiiCategory.SSN)
+    .EnforceTopicBoundary("customer-support", "billing", "returns")
+    .LimitInputTokens(4000)
+    .Build();
+
+var pipeline = new GuardrailPipeline(policy, logger);
+var result = await pipeline.RunAsync(new GuardrailContext { Text = userInput, Phase = GuardrailPhase.Input });
+
+if (result.IsBlocked)
+    Console.WriteLine($"Blocked: {result.BlockingResult!.Reason}");
+```
+
+```csharp
+// Or plug into Microsoft Agent Framework with two lines
+using AgentGuard.AgentFramework;
+
 var guardedAgent = agent
     .AsBuilder()
     .UseAgentGuard(g => g
-        .NormalizeInput()              // decode base64/hex/unicode evasion tricks
-        .BlockPromptInjection()        // regex-based injection detection
-        .RedactPII(PiiCategory.Email | PiiCategory.Phone | PiiCategory.SSN)
-        .EnforceTopicBoundary("customer-support", "billing", "returns")
-        .LimitInputTokens(4000)
-        .LimitOutputTokens(2000)
-        .ValidateOutput(o => !o.Contains("internal use only"))
+        .BlockPromptInjection()
+        .RedactPII()
+        .EnforceTopicBoundary("customer-support")
+        .OnViolation(v => v.RejectWithMessage("I can only help with customer support topics."))
     )
     .Build();
 ```
@@ -59,17 +77,15 @@ For teams that need higher accuracy than regex, AgentGuard provides LLM-as-judge
 ```csharp
 using AgentGuard.Onnx;
 
-var guardedAgent = agent
-    .AsBuilder()
-    .UseAgentGuard(g => g
-        .BlockPromptInjection()                              // tier 1: fast regex (order 10)
-        .BlockPromptInjectionWithOnnx(                       // tier 2: ML classifier (order 12)
-            "./models/model.onnx", "./models/spm.model")
-        .BlockPromptInjectionWithLlm(chatClient)             // tier 3: LLM judge (order 15)
-        .DetectPIIWithLlm(chatClient, new() { Action = PiiAction.Redact })
-        .EnforceTopicBoundaryWithLlm(chatClient, "billing", "payments")
-        .LimitInputTokens(4000)
-    )
+// Three-tier prompt injection detection: Regex → ONNX ML → LLM
+var policy = new GuardrailPolicyBuilder()
+    .BlockPromptInjection()                              // tier 1: fast regex (order 10)
+    .BlockPromptInjectionWithOnnx(                       // tier 2: ML classifier (order 12)
+        "./models/model.onnx", "./models/spm.model")
+    .BlockPromptInjectionWithLlm(chatClient)             // tier 3: LLM judge (order 15)
+    .DetectPIIWithLlm(chatClient, new() { Action = PiiAction.Redact })
+    .EnforceTopicBoundaryWithLlm(chatClient, "billing", "payments")
+    .LimitInputTokens(4000)
     .Build();
 ```
 
@@ -77,22 +93,23 @@ All LLM rules ship with built-in prompt templates and support custom system prom
 
 ### Streaming support
 
-GuardGuard works with both `RunAsync` and `RunStreamingAsync`. Streaming middleware buffers output chunks and evaluates them against output guardrails before yielding to the caller.
+AgentGuard works with both `RunAsync` and `RunStreamingAsync` when used with MAF. Streaming middleware buffers output chunks and evaluates them against output guardrails before yielding to the caller.
 
 ### Additional features
 
 - **Output validation** — fluent predicate-based assertions on agent responses
 - **Custom rules** — implement `IGuardrailRule` to add your own checks with full access to the conversation context
-- **Composable middleware** — all rules run as MAF middleware; stack them, order them, short-circuit them
+- **Framework-agnostic core** — use the rules engine standalone or plug into MAF, Semantic Kernel, or any framework
 - **Fully testable** — every rule is a pure function; mock the pipeline, assert the behavior
-- **Configuration-driven** — define policies entirely in `appsettings.json` with full support for all 9 rule types, named policies, and DI resolution for LLM/cloud rules
+- **Configuration-driven** — define policies entirely in `appsettings.json` with full support for all rule types, named policies, and DI resolution for LLM/cloud rules
 - **Offline-first** — works without any cloud services; optionally upgrade to Azure AI Content Safety or LLM-based rules for production accuracy
 
 ## Packages
 
 | Package | Description | NuGet |
 |---------|-------------|-------|
-| `AgentGuard.Core` | Core abstractions, rules engine, fluent builder, LLM rules, MAF middleware | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Core.svg)](https://www.nuget.org/packages/AgentGuard.Core) |
+| `AgentGuard.Core` | Framework-agnostic core: abstractions, rules engine, fluent builder, all 14 built-in rules | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Core.svg)](https://www.nuget.org/packages/AgentGuard.Core) |
+| `AgentGuard.AgentFramework` | Microsoft Agent Framework adapter: `UseAgentGuard()` middleware for `AIAgentBuilder` | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.AgentFramework.svg)](https://www.nuget.org/packages/AgentGuard.AgentFramework) |
 | `AgentGuard.Workflows` | Workflow guardrails — decorates MAF `Executor` with guardrails at step boundaries | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Workflows.svg)](https://www.nuget.org/packages/AgentGuard.Workflows) |
 | `AgentGuard.Onnx` | ONNX-based ML classifiers — offline prompt injection detection with DeBERTa v3 | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Onnx.svg)](https://www.nuget.org/packages/AgentGuard.Onnx) |
 | `AgentGuard.Local` | Offline classifiers (keyword similarity, embedding-based topic similarity) | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Local.svg)](https://www.nuget.org/packages/AgentGuard.Local) |
@@ -107,13 +124,40 @@ GuardGuard works with both `RunAsync` and `RunStreamingAsync`. Streaming middlew
 dotnet add package AgentGuard.Core --prerelease
 ```
 
-### Basic Usage (regex-based, offline)
+### Basic Usage (standalone, no framework dependency)
 
 ```csharp
-using Microsoft.Agents.AI;
-using AgentGuard.Core.Middleware;
-using AgentGuard.Core.Rules.PII;
-using AgentGuard.Core.Rules.PromptInjection;
+using AgentGuard.Core.Abstractions;
+using AgentGuard.Core.Builders;
+using AgentGuard.Core.Guardrails;
+using Microsoft.Extensions.Logging.Abstractions;
+
+var policy = new GuardrailPolicyBuilder()
+    .BlockPromptInjection()
+    .RedactPII()
+    .EnforceTopicBoundary("customer-support")
+    .OnViolation(v => v.RejectWithMessage("I can only help with customer support topics."))
+    .Build();
+
+var pipeline = new GuardrailPipeline(policy, NullLogger<GuardrailPipeline>.Instance);
+
+var ctx = new GuardrailContext { Text = userInput, Phase = GuardrailPhase.Input };
+var result = await pipeline.RunAsync(ctx);
+
+if (result.IsBlocked)
+    Console.WriteLine($"Blocked: {result.BlockingResult!.Reason}");
+else if (result.WasModified)
+    Console.WriteLine($"Modified: {result.FinalText}");
+```
+
+### With Microsoft Agent Framework
+
+```bash
+dotnet add package AgentGuard.AgentFramework --prerelease
+```
+
+```csharp
+using AgentGuard.AgentFramework;
 
 var guardedAgent = agent
     .AsBuilder()
@@ -133,22 +177,19 @@ var response = await guardedAgent.RunAsync(messages, session, options);
 
 ```csharp
 using Microsoft.Extensions.AI;
-using AgentGuard.Core.Middleware;
+using AgentGuard.Core.Builders;
 using AgentGuard.Core.Rules.LLM;
 
 // Use any IChatClient — Azure OpenAI, Ollama, etc.
 IChatClient classifier = new OllamaChatClient("llama3");
 
-var guardedAgent = agent
-    .AsBuilder()
-    .UseAgentGuard(g => g
-        .NormalizeInput()                                      // decode evasion encodings first
-        .BlockPromptInjection()                                // regex: fast first pass
-        .BlockPromptInjectionWithLlm(classifier)               // LLM: catches what regex misses
-        .DetectPIIWithLlm(classifier)                          // LLM: catches names, addresses, etc.
-        .EnforceTopicBoundaryWithLlm(classifier, "billing")    // LLM: semantic topic matching
-        .LimitInputTokens(4000)
-    )
+var policy = new GuardrailPolicyBuilder()
+    .NormalizeInput()                                      // decode evasion encodings first
+    .BlockPromptInjection()                                // regex: fast first pass
+    .BlockPromptInjectionWithLlm(classifier)               // LLM: catches what regex misses
+    .DetectPIIWithLlm(classifier)                          // LLM: catches names, addresses, etc.
+    .EnforceTopicBoundaryWithLlm(classifier, "billing")    // LLM: semantic topic matching
+    .LimitInputTokens(4000)
     .Build();
 ```
 
@@ -174,20 +215,18 @@ builder.Services.AddAgentGuard(options =>
 ```csharp
 using Microsoft.Extensions.AI;
 using AgentGuard.Local.Classifiers;
+using AgentGuard.Core.Builders;
 
 // Use any IEmbeddingGenerator — OpenAI, Ollama, local ONNX, etc.
 IEmbeddingGenerator<string, Embedding<float>> embeddings = /* your provider */;
 
-var guardedAgent = agent
-    .AsBuilder()
-    .UseAgentGuard(g => g
-        .BlockPromptInjection()
-        .EnforceTopicBoundary(
-            new EmbeddingSimilarityProvider(embeddings),
-            similarityThreshold: 0.4f,
-            "billing", "returns", "customer support")
-        .LimitInputTokens(4000)
-    )
+var policy = new GuardrailPolicyBuilder()
+    .BlockPromptInjection()
+    .EnforceTopicBoundary(
+        new EmbeddingSimilarityProvider(embeddings),
+        similarityThreshold: 0.4f,
+        "billing", "returns", "customer support")
+    .LimitInputTokens(4000)
     .Build();
 ```
 
@@ -214,13 +253,13 @@ Define guardrail policies entirely in configuration — no code changes needed t
 builder.Services.AddAgentGuard(builder.Configuration.GetSection("AgentGuard"));
 ```
 
-See [Configuration docs](docs/configuration.md) for the full JSON schema covering all 10 rule types.
+See [Configuration docs](docs/configuration.md) for the full JSON schema covering all rule types.
 
 ### Workflow Guardrails
 
 MAF workflows compose multiple `Executor` steps into a DAG. `AgentGuard.Workflows` lets you wrap individual executors with guardrails at step boundaries using the `.WithGuardrails()` decorator:
 
-```csharp
+```bash
 dotnet add package AgentGuard.Workflows --prerelease
 ```
 
@@ -257,6 +296,8 @@ The `ITextExtractor` interface bridges typed workflow messages to string-based g
 ### Custom Rules
 
 ```csharp
+using AgentGuard.Core.Abstractions;
+
 public class NoProfanityRule : IGuardrailRule
 {
     public string Name => "no-profanity";
@@ -274,9 +315,9 @@ public class NoProfanityRule : IGuardrailRule
     }
 }
 
-// Register it
-var guardedAgent = agent.AsBuilder()
-    .UseAgentGuard(g => g.AddRule(new NoProfanityRule()))
+// Register it in a pipeline
+var policy = new GuardrailPolicyBuilder()
+    .AddRule(new NoProfanityRule())
     .Build();
 ```
 
@@ -304,7 +345,7 @@ User Input
 └─────────────┬───────────────┘
               │
               ▼
-     MAF Agent (LLM call)
+     AI Agent (LLM call)
        RunAsync / RunStreamingAsync
               │
               ▼
@@ -316,6 +357,8 @@ User Input
 │  │ Content Safety Filter │  │  ← Blocks harmful content
 │  ├───────────────────────┤  │
 │  │ Output Policy Check   │  │  ← Policy compliance (order 55)
+│  ├───────────────────────┤  │
+│  │ Output Topic Boundary │  │  ← Topic drift detection (order 60)
 │  ├───────────────────────┤  │
 │  │ Groundedness Check    │  │  ← Hallucination detection (order 65)
 │  ├───────────────────────┤  │
@@ -346,13 +389,15 @@ Rules execute in order of their `Order` property (lower = first). Built-in rules
 | 40 | `TokenLimitRule` | Local | Input/Output |
 | 50 | `ContentSafetyRule` | Pluggable | Both |
 | 55 | `LlmOutputPolicyRule` | LLM | Output |
+| 60 | `OutputTopicBoundaryRule` | Embedding | Output |
 | 65 | `LlmGroundednessRule` | LLM | Output |
 | 75 | `LlmCopyrightRule` | LLM | Output |
 | 100 | Custom rules | User-defined | Any |
 
 ## Samples
 
-- [Basic Guardrails](samples/BasicGuardrails/) — minimal setup with common rules
+- [Basic Guardrails](samples/BasicGuardrails/) — standalone rule evaluation, no framework dependency
+- [Agent Framework Integration](samples/AgentFrameworkIntegration/) — `UseAgentGuard()` on a MAF agent with RunAsync and streaming
 - [ONNX Guardrails](samples/OnnxGuardrails/) — offline ML-based prompt injection detection with DeBERTa v3
 - [Custom Rules](samples/CustomRules/) — implementing and composing custom guardrail rules
 - [Azure Integration](samples/AzureIntegration/) — using Azure AI Content Safety for production
@@ -370,7 +415,7 @@ Rules execute in order of their `Order` property (lower = first). Built-in rules
 ## Requirements
 
 - .NET 10.0 or later
-- Microsoft Agent Framework 1.0.0-rc4 or later
+- Microsoft Agent Framework 1.0.0-rc4 or later *(only if using `AgentGuard.AgentFramework` or `AgentGuard.Workflows`)*
 
 
 ## Acknowledgements

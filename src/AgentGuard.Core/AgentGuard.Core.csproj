@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <Description>Declarative guardrails and safety controls for Microsoft Agent Framework. Core abstractions, rules engine, fluent builder, and MAF middleware integration.</Description>
+    <Description>Declarative guardrails and safety controls. Framework-agnostic core: abstractions, rules engine, fluent builder, and 14 built-in rules. No agent framework dependency.</Description>
     <PackageId>AgentGuard.Core</PackageId>
     <RootNamespace>AgentGuard.Core</RootNamespace>
   </PropertyGroup>
@@ -8,7 +8,6 @@
     <InternalsVisibleTo Include="AgentGuard.Core.Tests" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="Microsoft.Agents.AI" />
     <PackageReference Include="Microsoft.Extensions.AI.Abstractions" />
     <PackageReference Include="Microsoft.Extensions.AI" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />

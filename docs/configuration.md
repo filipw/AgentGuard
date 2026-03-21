@@ -16,12 +16,19 @@ builder.Services.AddAgentGuard(options =>
 ### Using Named Policies
 
 ```csharp
+// With MAF integration (requires AgentGuard.AgentFramework)
+using AgentGuard.AgentFramework;
+
 builder.AddAIAgent("BillingAgent", (sp, key) =>
 {
     var guard = sp.GetRequiredService<IAgentGuardFactory>();
     return chatClient.AsAIAgent(name: key, instructions: "...")
         .AsBuilder().UseAgentGuard(guard.GetPolicy("strict")).Build();
 });
+
+// Or use the policy directly with a standalone pipeline
+var guard = sp.GetRequiredService<IAgentGuardFactory>();
+var pipeline = new GuardrailPipeline(guard.GetPolicy("strict"), logger);
 ```
 
 ## appsettings.json Configuration

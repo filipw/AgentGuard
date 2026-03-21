@@ -4,17 +4,46 @@
 
 ```bash
 dotnet add package AgentGuard.Core --prerelease
-dotnet add package AgentGuard.Workflows --prerelease # optional: workflow executor guardrails
-dotnet add package AgentGuard.Onnx --prerelease      # optional: ONNX ML-based classifiers
-dotnet add package AgentGuard.Local --prerelease     # optional: offline classifiers
-dotnet add package AgentGuard.Azure --prerelease     # optional: Azure AI Content Safety
-dotnet add package AgentGuard.Hosting --prerelease   # optional: DI + config binding
+dotnet add package AgentGuard.AgentFramework --prerelease  # optional: MAF middleware integration
+dotnet add package AgentGuard.Workflows --prerelease       # optional: MAF workflow executor guardrails
+dotnet add package AgentGuard.Onnx --prerelease            # optional: ONNX ML-based classifiers
+dotnet add package AgentGuard.Local --prerelease           # optional: offline classifiers
+dotnet add package AgentGuard.Azure --prerelease           # optional: Azure AI Content Safety
+dotnet add package AgentGuard.Hosting --prerelease         # optional: DI + config binding
 ```
 
 ## Your First Guardrail
 
+AgentGuard's core engine is framework-agnostic — use it standalone without any agent framework dependency:
+
 ```csharp
-using AgentGuard.Core.Middleware;
+using AgentGuard.Core.Abstractions;
+using AgentGuard.Core.Builders;
+using AgentGuard.Core.Guardrails;
+using Microsoft.Extensions.Logging.Abstractions;
+
+var policy = new GuardrailPolicyBuilder()
+    .BlockPromptInjection()
+    .RedactPII()
+    .Build();
+
+var pipeline = new GuardrailPipeline(policy, NullLogger<GuardrailPipeline>.Instance);
+
+var ctx = new GuardrailContext { Text = userInput, Phase = GuardrailPhase.Input };
+var result = await pipeline.RunAsync(ctx);
+
+if (result.IsBlocked)
+    Console.WriteLine($"Blocked: {result.BlockingResult!.Reason}");
+else if (result.WasModified)
+    Console.WriteLine($"Redacted: {result.FinalText}");
+```
+
+### With Microsoft Agent Framework
+
+Add the `AgentGuard.AgentFramework` package to integrate as MAF middleware:
+
+```csharp
+using AgentGuard.AgentFramework;
 
 var guardedAgent = agent
     .AsBuilder()
@@ -47,6 +76,7 @@ If any rule blocks, the agent never runs. The user gets a configurable rejection
 | `LimitInputTokens()` / `LimitOutputTokens()` | Input/Output | 40 | Core |
 | `BlockHarmfulContent()` | Both | 50 | Core + Azure |
 | `EnforceOutputPolicy()` | Output | 55 | Core |
+| `EnforceOutputTopicBoundary()` | Output | 60 | Core |
 | `CheckGroundedness()` | Output | 65 | Core |
 | `CheckCopyright()` | Output | 75 | Core |
 | `ValidateInput()` / `ValidateOutput()` | Input/Output | 100 | Core |

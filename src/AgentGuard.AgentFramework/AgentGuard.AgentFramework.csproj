@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Microsoft Agent Framework (MAF) integration for AgentGuard. Provides UseAgentGuard() middleware extension for AIAgentBuilder with RunAsync and streaming support.</Description>
+    <PackageId>AgentGuard.AgentFramework</PackageId>
+    <RootNamespace>AgentGuard.AgentFramework</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="AgentGuard.AgentFramework.Tests" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../AgentGuard.Core/AgentGuard.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Agents.AI" />
+    <PackageReference Include="Microsoft.Extensions.AI" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+  </ItemGroup>
+</Project>

@@ -1,6 +1,6 @@
+using AgentGuard.AgentFramework;
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Builders;
-using AgentGuard.Core.Middleware;
 using FluentAssertions;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
@@ -8,7 +8,7 @@ using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Xunit;
 
-namespace AgentGuard.Core.Tests.Middleware;
+namespace AgentGuard.AgentFramework.Tests.Middleware;
 
 public class AgentGuardMiddlewareTests
 {

@@ -6,10 +6,16 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
-namespace AgentGuard.Core.Middleware;
+namespace AgentGuard.AgentFramework;
 
+/// <summary>
+/// Extension methods for integrating AgentGuard guardrails into the Microsoft Agent Framework pipeline.
+/// </summary>
 public static class AgentGuardMiddlewareExtensions
 {
+    /// <summary>
+    /// Adds AgentGuard guardrails to the MAF agent pipeline using a fluent builder configuration.
+    /// </summary>
     public static AIAgentBuilder UseAgentGuard(
         this AIAgentBuilder builder, Action<GuardrailPolicyBuilder> configure, ILogger<GuardrailPipeline>? logger = null)
     {
@@ -18,6 +24,9 @@ public static class AgentGuardMiddlewareExtensions
         return builder.UseAgentGuard(policyBuilder.Build(), logger);
     }
 
+    /// <summary>
+    /// Adds AgentGuard guardrails to the MAF agent pipeline using a pre-built policy.
+    /// </summary>
     public static AIAgentBuilder UseAgentGuard(
         this AIAgentBuilder builder, IGuardrailPolicy policy, ILogger<GuardrailPipeline>? logger = null)
     {

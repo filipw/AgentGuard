@@ -21,7 +21,13 @@ public class ProfanityFilter : IGuardrailRule
 }
 ```
 
-Register: `.UseAgentGuard(g => g.AddRule(new ProfanityFilter(["word1"])))`
+Register in a pipeline:
+
+```csharp
+var policy = new GuardrailPolicyBuilder()
+    .AddRule(new ProfanityFilter(["word1"]))
+    .Build();
+```
 
 Or use a delegate for simple checks:
 
