@@ -1,4 +1,5 @@
 using AgentGuard.Core.Abstractions;
+using AgentGuard.Core.Streaming;
 
 namespace AgentGuard.Core.Guardrails;
 
@@ -6,16 +7,27 @@ public sealed class GuardrailPolicy : IGuardrailPolicy
 {
     private readonly List<IGuardrailRule> _rules;
 
-    public GuardrailPolicy(string name, IEnumerable<IGuardrailRule> rules, IViolationHandler? violationHandler = null)
+    public GuardrailPolicy(
+        string name,
+        IEnumerable<IGuardrailRule> rules,
+        IViolationHandler? violationHandler = null,
+        ProgressiveStreamingOptions? progressiveStreaming = null)
     {
         Name = name;
         _rules = rules.OrderBy(r => r.Order).ToList();
         ViolationHandler = violationHandler ?? new DefaultViolationHandler();
+        ProgressiveStreaming = progressiveStreaming;
     }
 
     public string Name { get; }
     public IReadOnlyList<IGuardrailRule> Rules => _rules;
     public IViolationHandler ViolationHandler { get; }
+
+    /// <summary>
+    /// Progressive streaming options, if progressive streaming is enabled for this policy.
+    /// When null, streaming uses the default buffer-then-release strategy.
+    /// </summary>
+    public ProgressiveStreamingOptions? ProgressiveStreaming { get; }
 }
 
 public sealed class DefaultViolationHandler : IViolationHandler

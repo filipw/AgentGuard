@@ -6,6 +6,7 @@ using AgentGuard.Core.Rules.PII;
 using AgentGuard.Core.Rules.PromptInjection;
 using AgentGuard.Core.Rules.TokenLimits;
 using AgentGuard.Core.Rules.TopicBoundary;
+using AgentGuard.Core.Streaming;
 using Microsoft.Extensions.AI;
 
 namespace AgentGuard.Core.Builders;
@@ -15,6 +16,7 @@ public sealed class GuardrailPolicyBuilder
     private readonly string _name;
     private readonly List<IGuardrailRule> _rules = [];
     private IViolationHandler? _violationHandler;
+    private ProgressiveStreamingOptions? _progressiveStreaming;
 
     public GuardrailPolicyBuilder(string name = "default") => _name = name;
 
@@ -268,6 +270,28 @@ public sealed class GuardrailPolicyBuilder
         return this;
     }
 
+    /// <summary>
+    /// Enables progressive streaming guardrails. Instead of buffering the entire response
+    /// before evaluating output rules, tokens stream through immediately while guardrails
+    /// evaluate progressively. On violation, retraction/replacement events are emitted.
+    /// </summary>
+    public GuardrailPolicyBuilder UseProgressiveStreaming(Action<ProgressiveStreamingOptions>? configure = null)
+    {
+        var options = new ProgressiveStreamingOptions();
+        configure?.Invoke(options);
+        _progressiveStreaming = options;
+        return this;
+    }
+
+    /// <summary>
+    /// Enables progressive streaming guardrails with the specified options.
+    /// </summary>
+    public GuardrailPolicyBuilder UseProgressiveStreaming(ProgressiveStreamingOptions options)
+    {
+        _progressiveStreaming = options ?? throw new ArgumentNullException(nameof(options));
+        return this;
+    }
+
     public GuardrailPolicyBuilder AddRule(IGuardrailRule rule) { _rules.Add(rule); return this; }
 
     public GuardrailPolicyBuilder AddRule(string name, GuardrailPhase phase,
@@ -285,7 +309,7 @@ public sealed class GuardrailPolicyBuilder
         return this;
     }
 
-    public IGuardrailPolicy Build() => new Guardrails.GuardrailPolicy(_name, _rules, _violationHandler);
+    public IGuardrailPolicy Build() => new Guardrails.GuardrailPolicy(_name, _rules, _violationHandler, _progressiveStreaming);
 }
 
 public sealed class ViolationHandlerBuilder

@@ -93,7 +93,21 @@ All LLM rules ship with built-in prompt templates and support custom system prom
 
 ### Streaming support
 
-AgentGuard works with both `RunAsync` and `RunStreamingAsync` when used with MAF. Streaming middleware buffers output chunks and evaluates them against output guardrails before yielding to the caller.
+AgentGuard works with both `RunAsync` and `RunStreamingAsync` when used with MAF. Two streaming modes are available:
+
+- **Buffer-then-release** (default) — buffers all output chunks, evaluates guardrails on the complete text, then yields original chunks if passed.
+- **Progressive with retraction** — tokens stream through to the user immediately while guardrails evaluate progressively. On violation, retraction/replacement events are emitted so the UI can hide/replace content already shown. Follows the Azure OpenAI content filter pattern.
+
+```csharp
+// Enable progressive streaming
+var policy = new GuardrailPolicyBuilder()
+    .RedactPII()
+    .CheckGroundedness(chatClient)
+    .UseProgressiveStreaming()  // tokens flow immediately, retract on violation
+    .Build();
+```
+
+Fast rules (regex, local) evaluate on every check cycle. Expensive LLM rules only evaluate at the end. Rules can declare their preference via `IStreamingGuardrailRule`.
 
 ### Additional features
 

@@ -1,6 +1,8 @@
+using System.Text;
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Builders;
 using AgentGuard.Core.Guardrails;
+using AgentGuard.Core.Streaming;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -145,9 +147,37 @@ public static class AgentGuardMiddlewareExtensions
             yield break;
         }
 
+        // Use progressive streaming if configured, otherwise buffer-then-release
+        if (policy.ProgressiveStreaming is not null)
+        {
+            await foreach (var update in StreamWithProgressiveGuardrails(
+                pipeline, policy, processedMessages, session, options, innerAgent, ct))
+            {
+                yield return update;
+            }
+        }
+        else
+        {
+            await foreach (var update in StreamWithBufferedGuardrails(
+                pipeline, policy, processedMessages, session, options, innerAgent, ct))
+            {
+                yield return update;
+            }
+        }
+    }
+
+    private static async IAsyncEnumerable<AgentResponseUpdate> StreamWithBufferedGuardrails(
+        GuardrailPipeline pipeline,
+        IGuardrailPolicy policy,
+        IEnumerable<ChatMessage> processedMessages,
+        AgentSession? session,
+        AgentRunOptions? options,
+        AIAgent innerAgent,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+    {
         // Buffer the streaming output so we can run output guardrails
         var chunks = new List<AgentResponseUpdate>();
-        var textBuilder = new System.Text.StringBuilder();
+        var textBuilder = new StringBuilder();
 
         await foreach (var update in innerAgent.RunStreamingAsync(processedMessages, session, options, ct))
         {
@@ -189,6 +219,68 @@ public static class AgentGuardMiddlewareExtensions
         foreach (var chunk in chunks)
         {
             yield return chunk;
+        }
+    }
+
+    /// <summary>
+    /// Well-known key used in <see cref="AgentResponseUpdate.AdditionalProperties"/>
+    /// to carry <see cref="StreamingGuardrailEvent"/> instances during progressive streaming.
+    /// </summary>
+    public const string GuardrailEventPropertyKey = "agentguard.event";
+
+    private static async IAsyncEnumerable<AgentResponseUpdate> StreamWithProgressiveGuardrails(
+        GuardrailPipeline pipeline,
+        IGuardrailPolicy policy,
+        IEnumerable<ChatMessage> processedMessages,
+        AgentSession? session,
+        AgentRunOptions? options,
+        AIAgent innerAgent,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+    {
+        var streamingPipeline = new StreamingGuardrailPipeline(policy, policy.ProgressiveStreaming);
+
+        var outputContext = new GuardrailContext
+        {
+            Text = "", // will be set per-evaluation inside the pipeline
+            Phase = GuardrailPhase.Output,
+            Messages = processedMessages.ToList(),
+            AgentName = innerAgent.Name
+        };
+
+        // Convert MAF stream to IAsyncEnumerable<string>
+        var textStream = ExtractTextStream(innerAgent.RunStreamingAsync(processedMessages, session, options, ct), ct);
+
+        await foreach (var output in streamingPipeline.ProcessStreamAsync(textStream, outputContext, policy.ViolationHandler, ct))
+        {
+            switch (output.Type)
+            {
+                case StreamingOutputType.TextChunk:
+                    yield return new AgentResponseUpdate(ChatRole.Assistant, output.Text);
+                    break;
+
+                case StreamingOutputType.GuardrailEvent:
+                    var eventUpdate = new AgentResponseUpdate(ChatRole.Assistant, output.GuardrailEvent?.ReplacementText ?? "");
+                    eventUpdate.AdditionalProperties ??= [];
+                    eventUpdate.AdditionalProperties[GuardrailEventPropertyKey] = output.GuardrailEvent!;
+                    yield return eventUpdate;
+                    break;
+
+                case StreamingOutputType.Completed:
+                    // If the final result has a replacement, emit it
+                    // (retraction events were already emitted by the pipeline)
+                    break;
+            }
+        }
+    }
+
+    private static async IAsyncEnumerable<string> ExtractTextStream(
+        IAsyncEnumerable<AgentResponseUpdate> updates,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+    {
+        await foreach (var update in updates.WithCancellation(ct))
+        {
+            if (!string.IsNullOrEmpty(update.Text))
+                yield return update.Text;
         }
     }
 }

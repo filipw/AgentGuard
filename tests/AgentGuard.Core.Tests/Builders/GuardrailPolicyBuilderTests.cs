@@ -1,5 +1,6 @@
 using AgentGuard.Core.Builders;
 using AgentGuard.Core.Rules.PII;
+using AgentGuard.Core.Streaming;
 using FluentAssertions;
 using Xunit;
 
@@ -67,5 +68,40 @@ public class GuardrailPolicyBuilderTests
         new GuardrailPolicyBuilder()
             .AddRule("custom", Abstractions.GuardrailPhase.Output, (ctx, ct) => ValueTask.FromResult(Abstractions.GuardrailResult.Passed()))
             .Build().Rules.Should().ContainSingle().Which.Name.Should().Be("custom");
+    }
+
+    [Fact]
+    public void ShouldConfigureProgressiveStreaming()
+    {
+        var policy = new GuardrailPolicyBuilder()
+            .BlockPromptInjection()
+            .UseProgressiveStreaming()
+            .Build();
+
+        policy.ProgressiveStreaming.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void ShouldConfigureProgressiveStreamingWithOptions()
+    {
+        var policy = new GuardrailPolicyBuilder()
+            .BlockPromptInjection()
+            .UseProgressiveStreaming(new ProgressiveStreamingOptions
+            {
+                EvaluationIntervalChars = 100
+            })
+            .Build();
+
+        policy.ProgressiveStreaming.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void ShouldDefaultToNoProgressiveStreaming()
+    {
+        var policy = new GuardrailPolicyBuilder()
+            .BlockPromptInjection()
+            .Build();
+
+        policy.ProgressiveStreaming.Should().BeNull();
     }
 }
