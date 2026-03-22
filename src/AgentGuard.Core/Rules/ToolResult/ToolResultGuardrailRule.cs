@@ -156,6 +156,10 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
         ("RoleHijacking", "System role marker injection",
             new(@"(?i)(?:^|\n)\s*(?:system|assistant|developer)\s*:", RegexOptions.Compiled, RegexTimeout)),
 
+        // Bracket-style role markers
+        ("RoleHijacking", "Bracket role marker injection",
+            new(@"(?i)\[(?:system|assistant|user|admin)\]:", RegexOptions.Compiled, RegexTimeout)),
+
         // Instruction override — classic indirect injection
         ("InstructionOverride", "Instruction override attempt",
             new(@"(?i)(?:ignore|forget|disregard|override|bypass)\s+(?:all\s+)?(?:previous|prior|above|earlier|your|the)\s+(?:instructions|rules|prompts|guidelines|context|directives|constraints|system\s+prompt)",
@@ -176,6 +180,11 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
             new(@"<\s*/?\s*(?:system|assistant|user|instruction|tool_response)\s*>",
                 RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout)),
 
+        // JSON-style injection — fake JSON role/instruction fields
+        ("TokenInjection", "JSON-style role injection",
+            new(@"(?i)""(?:system|role|instruction|prompt)""\s*:\s*""",
+                RegexOptions.Compiled, RegexTimeout)),
+
         // Markdown/HTML hidden content — invisible to user but read by LLM
         ("HiddenContent", "HTML comment with instructions",
             new(@"<!--\s*(?:system|instruction|ignore|override|inject|secret|hidden)\b[^>]*-->",
@@ -186,14 +195,44 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
             new(@"[\u200B\u200C\u200D\u2060\uFEFF]{3,}",
                 RegexOptions.Compiled, RegexTimeout)),
 
+        // Text direction override characters — can reverse visible text to hide payloads
+        ("HiddenContent", "Text direction override characters",
+            new(@"[\u202A-\u202E\u2066-\u2069]",
+                RegexOptions.Compiled, RegexTimeout)),
+
         // Data exfiltration — URLs that may exfiltrate context
         ("DataExfiltration", "Data exfiltration URL pattern",
             new(@"(?i)https?://[^\s]+[?&](?:data|token|key|secret|password|context|prompt|instruction|system)=",
                 RegexOptions.Compiled, RegexTimeout)),
 
         // Prompt leaking instructions
-        ("DataExfiltration", "Prompt leak instruction",
+        ("PromptLeaking", "Prompt leak instruction",
             new(@"(?i)(?:repeat|output|print|echo|show|reveal|display|return)\s+(?:the\s+)?(?:system\s+prompt|instructions|your\s+(?:rules|prompt|instructions|system\s+message))",
+                RegexOptions.Compiled, RegexTimeout)),
+
+        // Print everything above / output initialization
+        ("PromptLeaking", "Print everything above",
+            new(@"(?i)(?:print|output|show|repeat|display)\s+(?:everything|all|the\s+text)\s+(?:above\s+this\s+(?:line|point|message)|before\s+this|so\s+far)",
+                RegexOptions.Compiled, RegexTimeout)),
+
+        // Security bypass — attempts to disable safety systems
+        ("SecurityBypass", "Security bypass attempt",
+            new(@"(?i)(?:bypass|disable|turn\s+off|deactivate|remove)\s+(?:the\s+)?(?:safety|security|content\s+filter|guardrail|restriction|moderation|censorship)",
+                RegexOptions.Compiled, RegexTimeout)),
+
+        // Uncensored/unrestricted mode requests
+        ("SecurityBypass", "Uncensored mode request",
+            new(@"(?i)(?:enable|enter|switch\s+to|activate)\s+(?:uncensored|unrestricted|unfiltered|jailbreak|developer|god|sudo)\s+mode",
+                RegexOptions.Compiled, RegexTimeout)),
+
+        // Command execution — attempts to run commands/code
+        ("CommandExecution", "Command execution directive",
+            new(@"(?i)(?:execute|run|eval)\s+(?:the\s+following\s+)?(?:command|code|script|query|function)\s*[:\(]",
+                RegexOptions.Compiled, RegexTimeout)),
+
+        // Separator injection — long separator lines followed by injection-like keywords
+        ("DelimiterManipulation", "Separator injection",
+            new(@"(?:[-=]{10,}|[─═]{5,})\s*\n\s*(?i)(?:system|instruction|important|new\s+(?:rules|instructions|prompt))\s*:",
                 RegexOptions.Compiled, RegexTimeout)),
     ];
 
@@ -225,6 +264,21 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
         ("PersonaHijacking", "Persona override attempt",
             new(@"(?i)(?:you\s+are\s+(?:now\s+)?(?:a|an|the)|act\s+as\s+(?:a|an|the)|pretend\s+(?:to\s+be|you\s+are))\s+(?:different|new|unrestricted|unfiltered|jailbroken|evil|DAN)\b",
                 RegexOptions.Compiled, RegexTimeout)),
+
+        // Privileged role assumption — claiming admin/root/superuser authority
+        ("PersonaHijacking", "Privileged role assumption",
+            new(@"(?i)(?:you\s+are\s+(?:now\s+)?(?:an?\s+)?|act\s+as\s+(?:an?\s+)?|pretend\s+(?:to\s+be\s+)?(?:an?\s+)?|switch\s+to\s+)(?:admin(?:istrator)?|root|superuser|sudo|operator|moderator)",
+                RegexOptions.Compiled, RegexTimeout)),
+
+        // DAN-style jailbreak — common jailbreak personas
+        ("PersonaHijacking", "DAN jailbreak attempt",
+            new(@"(?i)(?:DAN\s+mode|developer\s+mode)\s+(?:enabled|activated|on)",
+                RegexOptions.Compiled, RegexTimeout)),
+
+        // Leetspeak obfuscation of injection keywords
+        ("Obfuscation", "Leetspeak injection keywords",
+            new(@"(?i)(?:1gn[o0]r[3e]|f[o0]rg[3e]t|byp[a4]ss|syst[3e]m|[o0]v[3e]rr[i1]d[3e]|d[i1]sr[3e]g[a4]rd)\s+(?:pr[3e]v[i1][o0]us|[i1]nstruct[i1][o0]ns|rul[3e]s|pr[o0]mpt)",
+                RegexOptions.Compiled, RegexTimeout)),
     ];
 
     // === Medium-risk patterns: checked for medium and high risk tools ===
@@ -236,6 +290,11 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
             new(@"\[(?:system|hidden|secret|instruction)\]\([^)]*\)",
                 RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout)),
 
+        // Markdown image injection — invisible images with payloads in alt text or URL
+        ("HiddenContent", "Markdown image with injection payload",
+            new(@"!\[(?:system|instruction|override|ignore|hidden)[^\]]*\]\([^)]+\)",
+                RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout)),
+
         // Role playing setup in content
         ("InstructionOverride", "Role-play setup in content",
             new(@"(?i)\[(?:INST|SYS|SYSTEM)\].*?\[/(?:INST|SYS|SYSTEM)\]",
@@ -244,6 +303,26 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
         // Hex-encoded instructions
         ("EncodedPayload", "Hex-encoded content block",
             new(@"(?:\\x[0-9a-fA-F]{2}){8,}",
+                RegexOptions.Compiled, RegexTimeout)),
+
+        // Unicode escape sequences hiding payloads
+        ("EncodedPayload", "Unicode escape sequence block",
+            new(@"(?:\\u[0-9a-fA-F]{4}){6,}",
+                RegexOptions.Compiled, RegexTimeout)),
+
+        // HTML entities hiding payloads
+        ("EncodedPayload", "HTML entity encoded content",
+            new(@"(?:&#(?:x[0-9a-fA-F]{2,4}|\d{2,5});){6,}",
+                RegexOptions.Compiled, RegexTimeout)),
+
+        // ROT13 encoded instructions (common obfuscation)
+        ("Obfuscation", "ROT13 decode instruction",
+            new(@"(?i)(?:rot13|caesar)\s*[:(]\s*[a-zA-Z]{10,}",
+                RegexOptions.Compiled, RegexTimeout)),
+
+        // Fullwidth character obfuscation (U+FF00-U+FFEF used to bypass keyword detection)
+        ("Obfuscation", "Fullwidth character obfuscation",
+            new(@"[\uFF00-\uFFEF]{4,}",
                 RegexOptions.Compiled, RegexTimeout)),
     ];
 
