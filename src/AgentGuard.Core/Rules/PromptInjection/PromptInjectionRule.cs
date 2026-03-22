@@ -37,7 +37,8 @@ public sealed class PromptInjectionRule : IGuardrailRule
         // Role/persona hijacking
         @"you\s+are\s+now\s+a",
         @"pretend\s+(you\s+are|to\s+be)\s+",
-        @"act\s+as\s+(if\s+you\s+are\s+|a\s+)",
+        @"act\s+as\s+if\s+you\s+(are|were)\s+",
+        @"act\s+as\s+an?\s+(malicious|evil|unrestricted|unfiltered|uncensored|compromised|rogue|harmful|dangerous)\b",
 
         // End sequence injection — 8 closure families from the Arcanum taxonomy
         // Token delimiters
@@ -46,9 +47,9 @@ public sealed class PromptInjectionRule : IGuardrailRule
         @"<\|im_end\|>",
         @"<\|eot_id\|>",
         @"<\|start_header_id\|>",
-        // Fake chat roles
-        @"\[system\]",
-        @"<\s*system\s*>",
+        // Fake chat roles (require line-start position to avoid matching in-prose references)
+        @"(?:^|\n)\s*\[system\]",
+        @"(?:^|\n)\s*<\s*system\s*>",
         @"\[\s*INST\s*\]",
         @"\[/\s*INST\s*\]",
         @"<<\s*SYS\s*>>",
@@ -74,7 +75,8 @@ public sealed class PromptInjectionRule : IGuardrailRule
     [
         // System prompt extraction
         @"what\s+(is|are)\s+your\s+(system\s+)?(instructions|prompt|rules)",
-        @"(show|reveal|display|print|output)\s+(\w+\s+)*(system\s+)?(prompt|instructions)",
+        @"(show|reveal|display|print|output)\s+(\w+\s+){0,3}system\s+(prompt|instructions)",
+        @"(reveal|display|print|output|extract|dump|leak)\s+(\w+\s+){0,3}(prompt|instructions)",
         @"repeat\s+(your\s+)?(initial|original|system)\s+(\w+\s+)*(prompt|instructions|message)",
 
         // Jailbreak keywords
