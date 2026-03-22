@@ -1,6 +1,7 @@
 using AgentGuard.AgentFramework;
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Builders;
+using AgentGuard.Core.Rules.ToolCall;
 using FluentAssertions;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
@@ -220,6 +221,110 @@ public class AgentGuardMiddlewareTests
         combined.Should().NotContain("support@internal.example.com");
     }
 
+    // --- Tool call extraction tests ---
+
+    [Fact]
+    public async Task RunAsync_ShouldBlock_WhenToolCallContainsSqlInjection()
+    {
+        var responseMessage = new ChatMessage(ChatRole.Assistant, [
+            new FunctionCallContent("call_1", "query_db", new Dictionary<string, object?>
+            {
+                ["sql"] = "SELECT * FROM users UNION SELECT password FROM admin"
+            })
+        ]);
+        var agent = BuildGuardedAgent(
+            innerFunc: (_, _, _, _) => Task.FromResult(new AgentResponse([responseMessage])),
+            configure: b => b.GuardToolCalls());
+
+        var response = await agent.RunAsync("Run my query", null, null, CancellationToken.None);
+        response.Messages.Last().Text.Should().NotBeNullOrEmpty();
+        // The original FunctionCallContent should be replaced with a violation message
+        response.Messages.Last().Contents.OfType<FunctionCallContent>().Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task RunAsync_ShouldPass_WhenToolCallIsClean()
+    {
+        var responseMessage = new ChatMessage(ChatRole.Assistant, [
+            new FunctionCallContent("call_1", "get_weather", new Dictionary<string, object?>
+            {
+                ["city"] = "Seattle"
+            })
+        ]);
+        var agent = BuildGuardedAgent(
+            innerFunc: (_, _, _, _) => Task.FromResult(new AgentResponse([responseMessage])),
+            configure: b => b.GuardToolCalls());
+
+        var response = await agent.RunAsync("What's the weather?", null, null, CancellationToken.None);
+        // Clean tool call — should pass through unmodified
+        response.Messages[0].Contents.OfType<FunctionCallContent>().Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task RunAsync_ShouldBlock_ToolCallWithPathTraversal()
+    {
+        var responseMessage = new ChatMessage(ChatRole.Assistant, [
+            new FunctionCallContent("call_1", "read_file", new Dictionary<string, object?>
+            {
+                ["path"] = "../../etc/passwd"
+            })
+        ]);
+        var agent = BuildGuardedAgent(
+            innerFunc: (_, _, _, _) => Task.FromResult(new AgentResponse([responseMessage])),
+            configure: b => b.GuardToolCalls());
+
+        var response = await agent.RunAsync("Read the config", null, null, CancellationToken.None);
+        response.Messages.Last().Contents.OfType<FunctionCallContent>().Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task RunAsync_ShouldBlock_ToolCallWithSsrf()
+    {
+        var responseMessage = new ChatMessage(ChatRole.Assistant, [
+            new FunctionCallContent("call_1", "fetch_url", new Dictionary<string, object?>
+            {
+                ["url"] = "http://169.254.169.254/latest/meta-data/"
+            })
+        ]);
+        var agent = BuildGuardedAgent(
+            innerFunc: (_, _, _, _) => Task.FromResult(new AgentResponse([responseMessage])),
+            configure: b => b.GuardToolCalls());
+
+        var response = await agent.RunAsync("Get the data", null, null, CancellationToken.None);
+        response.Messages.Last().Contents.OfType<FunctionCallContent>().Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Streaming_ShouldBlock_WhenToolCallContainsInjection()
+    {
+        var agent = BuildGuardedAgent(
+            streamingFunc: (_, _, _, ct) =>
+            {
+                var updates = new List<AgentResponseUpdate>
+                {
+                    new(ChatRole.Assistant, [
+                        new FunctionCallContent("call_1", "run_query", new Dictionary<string, object?>
+                        {
+                            ["sql"] = "DROP TABLE users"
+                        })
+                    ])
+                };
+                return updates.ToAsyncEnumerable(ct);
+            },
+            configure: b => b.GuardToolCalls());
+
+        var result = new List<string>();
+        await foreach (var update in agent.RunStreamingAsync("Query something", null, null, CancellationToken.None))
+        {
+            if (!string.IsNullOrEmpty(update.Text))
+                result.Add(update.Text);
+        }
+
+        // Should get a violation message, not the tool call
+        result.Should().HaveCount(1);
+        result[0].Should().Contain("injection");
+    }
+
     // --- Helpers ---
 
     private static AIAgent BuildGuardedAgent(
@@ -250,6 +355,21 @@ public class AgentGuardMiddlewareTests
         {
             ct.ThrowIfCancellationRequested();
             yield return new AgentResponseUpdate(ChatRole.Assistant, chunk);
+            await Task.Yield();
+        }
+    }
+}
+
+internal static class TestAsyncEnumerableExtensions
+{
+    public static async IAsyncEnumerable<AgentResponseUpdate> ToAsyncEnumerable(
+        this IEnumerable<AgentResponseUpdate> updates,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        foreach (var update in updates)
+        {
+            ct.ThrowIfCancellationRequested();
+            yield return update;
             await Task.Yield();
         }
     }

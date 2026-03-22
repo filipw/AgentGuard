@@ -2,6 +2,7 @@ using System.Text;
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Builders;
 using AgentGuard.Core.Guardrails;
+using AgentGuard.Core.Rules.ToolCall;
 using AgentGuard.Core.Streaming;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
@@ -104,16 +105,23 @@ public static class AgentGuardMiddlewareExtensions
             .Select(m => m.Text)
             .LastOrDefault() ?? "";
 
-        if (string.IsNullOrEmpty(responseText))
+        // Extract tool calls from the response for ToolCallGuardrailRule
+        var toolCalls = ExtractToolCalls(response.Messages);
+
+        // Nothing to evaluate if no text and no tool calls
+        if (string.IsNullOrEmpty(responseText) && toolCalls.Count == 0)
             return response;
 
         var outputContext = new GuardrailContext
         {
-            Text = responseText,
+            Text = responseText ?? "",
             Phase = GuardrailPhase.Output,
             Messages = messages.ToList(),
             AgentName = agentName
         };
+
+        if (toolCalls.Count > 0)
+            outputContext.Properties[ToolCallGuardrailRule.ToolCallsKey] = toolCalls;
 
         var outputResult = await pipeline.RunAsync(outputContext, ct);
 
@@ -127,6 +135,69 @@ public static class AgentGuardMiddlewareExtensions
             return new AgentResponse([new ChatMessage(ChatRole.Assistant, outputResult.FinalText)]);
 
         return response;
+    }
+
+    /// <summary>
+    /// Extracts <see cref="AgentToolCall"/> instances from MAF response messages by
+    /// reading <see cref="FunctionCallContent"/> items embedded in the message contents.
+    /// </summary>
+    private static List<AgentToolCall> ExtractToolCalls(IEnumerable<ChatMessage> responseMessages)
+    {
+        var toolCalls = new List<AgentToolCall>();
+
+        foreach (var message in responseMessages)
+        {
+            foreach (var fc in message.Contents.OfType<FunctionCallContent>())
+            {
+                var args = new Dictionary<string, string>();
+                if (fc.Arguments is not null)
+                {
+                    foreach (var (key, value) in fc.Arguments)
+                    {
+                        args[key] = value?.ToString() ?? "";
+                    }
+                }
+
+                toolCalls.Add(new AgentToolCall
+                {
+                    ToolName = fc.Name ?? "",
+                    Arguments = args
+                });
+            }
+        }
+
+        return toolCalls;
+    }
+
+    /// <summary>
+    /// Extracts <see cref="AgentToolCall"/> instances from streaming response updates.
+    /// </summary>
+    private static List<AgentToolCall> ExtractToolCallsFromUpdates(IEnumerable<AgentResponseUpdate> updates)
+    {
+        var toolCalls = new List<AgentToolCall>();
+
+        foreach (var update in updates)
+        {
+            foreach (var fc in update.Contents.OfType<FunctionCallContent>())
+            {
+                var args = new Dictionary<string, string>();
+                if (fc.Arguments is not null)
+                {
+                    foreach (var (key, value) in fc.Arguments)
+                    {
+                        args[key] = value?.ToString() ?? "";
+                    }
+                }
+
+                toolCalls.Add(new AgentToolCall
+                {
+                    ToolName = fc.Name ?? "",
+                    Arguments = args
+                });
+            }
+        }
+
+        return toolCalls;
     }
 
     private static async IAsyncEnumerable<AgentResponseUpdate> StreamWithGuardrails(
@@ -188,16 +259,22 @@ public static class AgentGuardMiddlewareExtensions
 
         var fullText = textBuilder.ToString();
 
-        // Run output guardrails on the accumulated text
-        if (!string.IsNullOrEmpty(fullText))
+        // Extract tool calls from streaming chunks
+        var toolCalls = ExtractToolCallsFromUpdates(chunks);
+
+        // Run output guardrails on the accumulated text and/or tool calls
+        if (!string.IsNullOrEmpty(fullText) || toolCalls.Count > 0)
         {
             var outputContext = new GuardrailContext
             {
-                Text = fullText,
+                Text = fullText ?? "",
                 Phase = GuardrailPhase.Output,
                 Messages = processedMessages.ToList(),
                 AgentName = innerAgent.Name
             };
+
+            if (toolCalls.Count > 0)
+                outputContext.Properties[ToolCallGuardrailRule.ToolCallsKey] = toolCalls;
 
             var outputResult = await pipeline.RunAsync(outputContext, ct);
 

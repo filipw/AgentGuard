@@ -4,7 +4,10 @@ using AgentGuard.Core.Rules.LLM;
 using AgentGuard.Core.Rules.Normalization;
 using AgentGuard.Core.Rules.PII;
 using AgentGuard.Core.Rules.PromptInjection;
+using AgentGuard.Core.Rules.Retrieval;
+using AgentGuard.Core.Rules.Secrets;
 using AgentGuard.Core.Rules.TokenLimits;
+using AgentGuard.Core.Rules.ToolCall;
 using AgentGuard.Core.Rules.TopicBoundary;
 using AgentGuard.Core.Streaming;
 using Microsoft.Extensions.AI;
@@ -267,6 +270,46 @@ public sealed class GuardrailPolicyBuilder
     public GuardrailPolicyBuilder BlockHarmfulContent(IContentSafetyClassifier classifier, ContentSafetyOptions? options = null)
     {
         _rules.Add(new ContentSafetyRule(options, classifier));
+        return this;
+    }
+
+    /// <summary>
+    /// Adds secrets detection to block or redact API keys, tokens, connection strings,
+    /// and other sensitive credentials in content.
+    /// </summary>
+    public GuardrailPolicyBuilder DetectSecrets(SecretAction action = SecretAction.Block)
+    {
+        _rules.Add(new SecretsDetectionRule(new SecretsDetectionOptions { Action = action }));
+        return this;
+    }
+
+    /// <summary>
+    /// Adds secrets detection with full options.
+    /// </summary>
+    public GuardrailPolicyBuilder DetectSecrets(SecretsDetectionOptions options)
+    {
+        _rules.Add(new SecretsDetectionRule(options));
+        return this;
+    }
+
+    /// <summary>
+    /// Adds RAG/retrieval guardrails that filter retrieved chunks before they reach the LLM context.
+    /// Place chunks in <c>GuardrailContext.Properties["RetrievalChunks"]</c> as <c>IReadOnlyList&lt;RetrievedChunk&gt;</c>.
+    /// </summary>
+    public GuardrailPolicyBuilder GuardRetrieval(RetrievalGuardrailOptions? options = null)
+    {
+        _rules.Add(new RetrievalGuardrailRule(options));
+        return this;
+    }
+
+    /// <summary>
+    /// Adds tool call injection guardrails that inspect agent tool call arguments
+    /// for SQL injection, code injection, path traversal, command injection, and SSRF.
+    /// Place tool calls in <c>GuardrailContext.Properties["ToolCalls"]</c> as <c>IReadOnlyList&lt;AgentToolCall&gt;</c>.
+    /// </summary>
+    public GuardrailPolicyBuilder GuardToolCalls(ToolCallGuardrailOptions? options = null)
+    {
+        _rules.Add(new ToolCallGuardrailRule(options));
         return this;
     }
 
