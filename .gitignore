@@ -34,6 +34,7 @@ CLAUDE.md
 
 ## Bundled models (committed to repo)
 !eng/models/
+eng/models/deberta-v3-prompt-injection/model.onnx
 
 ## OS
 .DS_Store
