@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AgentGuard — Guardrails for .NET AI Agents</title>
+  <title>AgentGuard - Guardrails for .NET AI Agents</title>
   <meta name="description" content="Declarative guardrails and safety controls for .NET AI agents. Framework-agnostic. Prompt injection, PII redaction, topic enforcement, and more.">
   <link rel="stylesheet" href="style.css">
 </head>
@@ -27,7 +27,7 @@
 <section class="hero">
   <h1>Safety controls for<br>.NET AI agents.</h1>
   <p class="subtitle">
-    Composable, testable, declarative guardrails. Block prompt injections, redact PII, enforce topics, validate outputs — in two lines of code.
+    Composable, testable, declarative guardrails. Block prompt injections, redact PII, enforce topics, validate outputs - in two lines of code.
   </p>
   <div class="cta-row">
     <a href="#quickstart" class="btn btn-primary">Get Started</a>
@@ -45,7 +45,7 @@
   <p class="section-label">Quick Start</p>
   <h2 class="section-title">No framework required.</h2>
   <p class="section-subtitle">
-    The core engine works standalone. Build a policy, run the pipeline, get a result. Use it with any .NET AI stack — or none at all.
+    The core engine works standalone. Build a policy, run the pipeline, get a result. Use it with any .NET AI stack - or none at all.
   </p>
 
   <div class="two-col">
@@ -113,13 +113,13 @@ await foreach (var update in guardedAgent
     <p class="section-label">Features</p>
     <h2 class="section-title">Everything you need.<br>Nothing you don't.</h2>
     <p class="section-subtitle">
-      19 built-in rules covering the full input/output safety lifecycle. Regex for speed, ONNX ML for accuracy, LLM for nuance.
+      20 built-in rules covering the full input/output safety lifecycle. Regex for speed, ONNX ML for accuracy, LLM for nuance.
     </p>
 
     <div class="feature-grid">
       <div class="feature-card">
         <h3>Prompt Injection Detection</h3>
-        <p>Four-tier defense: regex patterns (from Arcanum taxonomy), ONNX ML classifier (DeBERTa v3, ~10ms offline), remote ML classifier (Sentinel-v2 via HTTP, F1 ~0.957), and LLM-as-judge with structured threat classification.</p>
+        <p>Five-tier defense: regex patterns (from Arcanum taxonomy), bundled StackOne Defender ONNX model (F1 ~0.97, ~8ms, no download), optional DeBERTa v3, remote ML classifier (Sentinel-v2 via HTTP), and LLM-as-judge with structured threat classification.</p>
       </div>
       <div class="feature-card">
         <h3>PII Redaction</h3>
@@ -135,7 +135,7 @@ await foreach (var update in guardedAgent
       </div>
       <div class="feature-card">
         <h3>Input Normalization</h3>
-        <p>Decodes evasion tricks — base64, hex escapes, reversed text, Unicode homoglyphs — before any other rule evaluates. Stops encoding-based attacks cold.</p>
+        <p>Decodes evasion tricks - base64, hex escapes, reversed text, Unicode homoglyphs - before any other rule evaluates. Stops encoding-based attacks cold.</p>
       </div>
       <div class="feature-card">
         <h3>Agentic &amp; RAG Guardrails</h3>
@@ -145,10 +145,61 @@ await foreach (var update in guardedAgent
   </div>
 </section>
 
+<!-- ── Benchmark ─────────────────────────────────── -->
+<section id="benchmark">
+  <p class="section-label">Benchmark</p>
+  <h2 class="section-title">Measured, not marketed.</h2>
+  <p class="section-subtitle">
+    Prompt injection detection benchmarked on 500 adversarial samples from
+    <a href="https://huggingface.co/datasets/jayavibhav/prompt-injection-safety">jayavibhav/prompt-injection-safety</a>.
+  </p>
+
+  <table class="benchmark-table">
+    <thead>
+      <tr>
+        <th>Classifier</th>
+        <th>Precision</th>
+        <th>Recall</th>
+        <th>F1</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr class="benchmark-highlight">
+        <td>StackOne Defender (bundled)</td>
+        <td>96.9%</td>
+        <td>97.3%</td>
+        <td><strong>97.1%</strong></td>
+      </tr>
+      <tr>
+        <td>DeBERTa v3 ONNX</td>
+        <td>50.7%</td>
+        <td>99.1%</td>
+        <td>67.1%</td>
+      </tr>
+      <tr>
+        <td>LLM (gpt-oss-20b)</td>
+        <td>100%</td>
+        <td>40.9%</td>
+        <td>58.1%</td>
+      </tr>
+      <tr>
+        <td>Regex (all levels)</td>
+        <td>100%</td>
+        <td>3.6%</td>
+        <td>7.0%</td>
+      </tr>
+    </tbody>
+  </table>
+  <p class="benchmark-note">
+    Defender runs in ~8ms with zero configuration - the model ships inside the NuGet package.
+    Combine tiers for defense in depth: regex short-circuits obvious attacks, Defender catches the rest.
+  </p>
+</section>
+
 <!-- ── Rules ──────────────────────────────────────── -->
 <section id="rules">
   <p class="section-label">Built-in Rules</p>
-  <h2 class="section-title">19 rules. Ordered by cost.</h2>
+  <h2 class="section-title">20 rules. Ordered by cost.</h2>
   <p class="section-subtitle">
     Cheap regex checks run first and short-circuit. Expensive LLM calls only run if needed.
   </p>
@@ -182,9 +233,21 @@ await foreach (var update in guardedAgent
         <td>Input</td>
       </tr>
       <tr>
+        <td>11</td>
+        <td><code>DefenderPromptInjectionRule</code></td>
+        <td><span class="badge badge-onnx">ONNX ML (bundled)</span></td>
+        <td>Input</td>
+      </tr>
+      <tr>
         <td>12</td>
         <td><code>OnnxPromptInjectionRule</code></td>
-        <td><span class="badge badge-onnx">ONNX ML</span></td>
+        <td><span class="badge badge-onnx">ONNX ML (DeBERTa)</span></td>
+        <td>Input</td>
+      </tr>
+      <tr>
+        <td>13</td>
+        <td><code>RemotePromptInjectionRule</code></td>
+        <td><span class="badge badge-onnx">Remote ML</span></td>
         <td>Input</td>
       </tr>
       <tr>
@@ -293,15 +356,15 @@ await foreach (var update in guardedAgent
     <div class="feature-grid">
       <div class="feature-card">
         <h3>1. Input Guardrails</h3>
-        <p>Normalization, RAG chunk filtering, prompt injection detection, PII redaction, secrets detection, topic boundary, token limits — all before the LLM sees the input.</p>
+        <p>Normalization, RAG chunk filtering, prompt injection detection, PII redaction, secrets detection, topic boundary, token limits - all before the LLM sees the input.</p>
       </div>
       <div class="feature-card">
         <h3>2. Agent Execution</h3>
-        <p>Your AI agent runs with the sanitized input. Works with any framework — MAF, Semantic Kernel, or standalone. Supports both RunAsync and streaming.</p>
+        <p>Your AI agent runs with the sanitized input. Works with any framework - MAF, Semantic Kernel, or standalone. Supports both RunAsync and streaming.</p>
       </div>
       <div class="feature-card">
         <h3>3. Output Guardrails</h3>
-        <p>Tool call injection detection, indirect injection in tool results, PII/secrets redaction, policy compliance, groundedness checking, copyright detection — all before the response reaches the user.</p>
+        <p>Tool call injection detection, indirect injection in tool results, PII/secrets redaction, policy compliance, groundedness checking, copyright detection - all before the response reaches the user.</p>
       </div>
     </div>
   </div>
@@ -318,7 +381,7 @@ await foreach (var update in guardedAgent
   <div class="package-grid">
     <div class="package-card">
       <div class="package-name">AgentGuard.Core</div>
-      <div class="package-desc">Framework-agnostic core. Abstractions, rules engine, fluent builder, all 19 built-in rules. No agent framework dependency.</div>
+      <div class="package-desc">Framework-agnostic core. Abstractions, rules engine, fluent builder, 19 built-in rules. No agent framework dependency.</div>
     </div>
     <div class="package-card">
       <div class="package-name">AgentGuard.AgentFramework</div>
@@ -330,7 +393,11 @@ await foreach (var update in guardedAgent
     </div>
     <div class="package-card">
       <div class="package-name">AgentGuard.Onnx</div>
-      <div class="package-desc">ONNX-based ML classifiers. Offline prompt injection detection with DeBERTa v3. ~10ms inference, no cloud needed.</div>
+      <div class="package-desc">ONNX-based ML classifiers. Bundled StackOne Defender model (F1 ~0.97, ~8ms, no download) + optional DeBERTa v3.</div>
+    </div>
+    <div class="package-card">
+      <div class="package-name">AgentGuard.RemoteClassifier</div>
+      <div class="package-desc">Remote ML classifier via HTTP. Call Sentinel-v2, Ollama, vLLM, or custom endpoints for SOTA prompt injection detection.</div>
     </div>
     <div class="package-card">
       <div class="package-name">AgentGuard.RemoteClassifier</div>
@@ -357,16 +424,15 @@ await foreach (var update in guardedAgent
     <p class="section-label">LLM-as-Judge</p>
     <h2 class="section-title">When regex isn't enough.</h2>
     <p class="section-subtitle">
-      Plug in any <code>IChatClient</code> — Azure OpenAI, Ollama, local models. Built-in prompt templates, fail-open on errors.
+      Plug in any <code>IChatClient</code> - Azure OpenAI, Ollama, local models. Built-in prompt templates, fail-open on errors.
     </p>
 <pre><code>using AgentGuard.Onnx;
 
-// Four-tier prompt injection: Regex → ONNX → Remote ML → LLM
+// Multi-tier prompt injection: Regex → Defender → Remote ML → LLM
 var policy = new GuardrailPolicyBuilder()
     .NormalizeInput()
     .BlockPromptInjection()                            // regex (order 10)
-    .BlockPromptInjectionWithOnnx(                     // ONNX (order 12)
-        modelPath, tokenizerPath)
+    .BlockPromptInjectionWithOnnx()                    // Defender ML (order 11, bundled)
     .BlockPromptInjectionWithRemoteClassifier(          // remote ML (order 13)
         "http://localhost:8000/classify")
     .BlockPromptInjectionWithLlm(chatClient)           // LLM (order 15)
@@ -419,6 +485,7 @@ var policy = new GuardrailPolicyBuilder()
   <p>
     AgentGuard is open source under the <a href="https://github.com/filipw/AgentGuard/blob/main/LICENSE">MIT License</a>.
     Prompt injection patterns informed by the <a href="https://github.com/Arcanum-Sec/arc_pi_taxonomy">Arcanum PI Taxonomy</a>.
+    Bundled ML model by <a href="https://github.com/StackOneHQ/defender">StackOne Defender</a> (Apache 2.0).
   </p>
 </footer>
 

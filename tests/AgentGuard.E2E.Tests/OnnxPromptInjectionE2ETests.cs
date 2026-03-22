@@ -11,8 +11,8 @@ namespace AgentGuard.E2E.Tests;
 /// to be downloaded locally.
 ///
 /// Required environment variables:
-///   AGENTGUARD_ONNX_MODEL_PATH     — path to the ONNX model file (e.g. /models/model.onnx)
-///   AGENTGUARD_ONNX_TOKENIZER_PATH — path to the SentencePiece tokenizer (e.g. /models/spm.model)
+///   AGENTGUARD_ONNX_MODEL_PATH     - path to the ONNX model file (e.g. /models/model.onnx)
+///   AGENTGUARD_ONNX_TOKENIZER_PATH - path to the SentencePiece tokenizer (e.g. /models/spm.model)
 /// </summary>
 public class OnnxPromptInjectionE2ETests : IClassFixture<OnnxTestFixture>
 {

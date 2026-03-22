@@ -110,10 +110,10 @@ public sealed class EmbeddingSimilarityE2ETests : IClassFixture<EmbeddingTestFix
     {
         var provider = new EmbeddingSimilarityProvider(_fixture.EmbeddingGenerator!);
 
-        // First call — computes and caches the topic embedding
+        // First call - computes and caches the topic embedding
         var score1 = await provider.ComputeSimilarityAsync("pay my bill", "billing");
 
-        // Second call with same topic — should use cached embedding
+        // Second call with same topic - should use cached embedding
         var score2 = await provider.ComputeSimilarityAsync("invoice payment", "billing");
 
         // Both should return valid similarity scores (caching doesn't break results)

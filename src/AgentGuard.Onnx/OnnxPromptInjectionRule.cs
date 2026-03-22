@@ -6,7 +6,7 @@ namespace AgentGuard.Onnx;
 
 /// <summary>
 /// ONNX-based prompt injection classifier using a fine-tuned DeBERTa v3 model.
-/// Runs fully offline with ~10ms inference time. Order 12 — between regex (10) and LLM (15).
+/// Runs fully offline with ~10ms inference time. Order 12 - between regex (10) and LLM (15).
 /// <para>
 /// Recommended model: <c>protectai/deberta-v3-base-prompt-injection-v2</c> from HuggingFace.
 /// Download the ONNX model and tokenizer.json, then provide paths via <see cref="OnnxPromptInjectionOptions"/>.
@@ -60,7 +60,7 @@ public sealed class OnnxPromptInjectionRule : IGuardrailRule, IDisposable
     }
 
     /// <summary>
-    /// Internal constructor for testing — accepts a pre-built session.
+    /// Internal constructor for testing - accepts a pre-built session.
     /// </summary>
     internal OnnxPromptInjectionRule(OnnxModelSession session, OnnxPromptInjectionOptions options)
     {

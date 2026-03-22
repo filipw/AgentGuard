@@ -104,11 +104,11 @@ public sealed class RetrievalGuardrailOptions
 /// before they are injected into the LLM context. Prevents poisoned, inappropriate, or
 /// low-quality knowledge base content from influencing agent responses.
 ///
-/// This rule operates on the <see cref="GuardrailContext.Properties"/> bag — callers place
+/// This rule operates on the <see cref="GuardrailContext.Properties"/> bag - callers place
 /// retrieved chunks under the <c>RetrievalChunks</c> key, and the rule writes back approved
 /// chunks under <c>ApprovedChunks</c>.
 ///
-/// Order 8 — runs early, before prompt injection detection (order 10), so that poisoned
+/// Order 8 - runs early, before prompt injection detection (order 10), so that poisoned
 /// chunks are removed before downstream rules evaluate the combined context.
 /// </summary>
 public sealed class RetrievalGuardrailRule : IGuardrailRule
@@ -140,7 +140,7 @@ public sealed class RetrievalGuardrailRule : IGuardrailRule
             chunksObj is not IReadOnlyList<RetrievedChunk> chunks ||
             chunks.Count == 0)
         {
-            // No chunks to evaluate — pass through
+            // No chunks to evaluate - pass through
             return ValueTask.FromResult(GuardrailResult.Passed());
         }
 

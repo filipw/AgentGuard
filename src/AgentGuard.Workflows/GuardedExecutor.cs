@@ -68,7 +68,7 @@ public sealed class GuardedExecutor<TInput> : Executor<TInput>
         if (original is ChatMessage chatMessage)
             return (TInput)(object)new ChatMessage(chatMessage.Role, modifiedText);
 
-        // Cannot reconstruct arbitrary types — pass original through
+        // Cannot reconstruct arbitrary types - pass original through
         return original;
     }
 }

@@ -30,7 +30,10 @@ CLAUDE.md
 .env
 
 ## ONNX models (downloaded via eng/download-onnx-model.sh)
-models/
+/models/
+
+## Bundled models (committed to repo)
+!eng/models/
 
 ## OS
 .DS_Store

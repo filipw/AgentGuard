@@ -9,13 +9,13 @@ namespace AgentGuard.Core.Rules.ToolResult;
 /// </summary>
 public enum ToolRiskLevel
 {
-    /// <summary>Low risk — structured data, internal APIs.</summary>
+    /// <summary>Low risk - structured data, internal APIs.</summary>
     Low = 0,
 
-    /// <summary>Medium risk — documents, code, CRM data.</summary>
+    /// <summary>Medium risk - documents, code, CRM data.</summary>
     Medium = 1,
 
-    /// <summary>High risk — email, messaging, user-generated content.</summary>
+    /// <summary>High risk - email, messaging, user-generated content.</summary>
     High = 2
 }
 
@@ -128,10 +128,10 @@ public sealed class ToolResultGuardrailOptions
 /// Callers place tool results under the <c>ToolResults</c> key in
 /// <see cref="GuardrailContext.Properties"/> as <c>IReadOnlyList&lt;ToolResultEntry&gt;</c>.
 ///
-/// Supports tool-specific risk profiles — high-risk tools (email, messaging) are checked
+/// Supports tool-specific risk profiles - high-risk tools (email, messaging) are checked
 /// with additional patterns. Inspired by StackOneHQ/defender's approach to indirect injection.
 ///
-/// Order 47 — runs after tool call argument guardrails (order 45) but before content safety (order 50).
+/// Order 47 - runs after tool call argument guardrails (order 45) but before content safety (order 50).
 /// </summary>
 public sealed class ToolResultGuardrailRule : IGuardrailRule
 {
@@ -152,7 +152,7 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
 
     private static readonly (string Category, string Description, Regex Pattern)[] CorePatterns =
     [
-        // Role/system markers — attempts to hijack the conversation role
+        // Role/system markers - attempts to hijack the conversation role
         ("RoleHijacking", "System role marker injection",
             new(@"(?i)(?:^|\n)\s*(?:system|assistant|developer)\s*:", RegexOptions.Compiled, RegexTimeout)),
 
@@ -160,12 +160,12 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
         ("RoleHijacking", "Bracket role marker injection",
             new(@"(?i)\[(?:system|assistant|user|admin)\]:", RegexOptions.Compiled, RegexTimeout)),
 
-        // Instruction override — classic indirect injection
+        // Instruction override - classic indirect injection
         ("InstructionOverride", "Instruction override attempt",
             new(@"(?i)(?:ignore|forget|disregard|override|bypass)\s+(?:all\s+)?(?:previous|prior|above|earlier|your|the)\s+(?:instructions|rules|prompts|guidelines|context|directives|constraints|system\s+prompt)",
                 RegexOptions.Compiled, RegexTimeout)),
 
-        // New instruction injection — attempt to set new instructions
+        // New instruction injection - attempt to set new instructions
         ("InstructionOverride", "New instruction injection",
             new(@"(?i)(?:your\s+new\s+instructions?\s+(?:are|is)|from\s+now\s+on\s+you\s+(?:are|will|must|should)|you\s+(?:are|will)\s+now\s+(?:act|behave|respond)\s+as)",
                 RegexOptions.Compiled, RegexTimeout)),
@@ -180,27 +180,27 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
             new(@"<\s*/?\s*(?:system|assistant|user|instruction|tool_response)\s*>",
                 RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout)),
 
-        // JSON-style injection — fake JSON role/instruction fields
+        // JSON-style injection - fake JSON role/instruction fields
         ("TokenInjection", "JSON-style role injection",
             new(@"(?i)""(?:system|role|instruction|prompt)""\s*:\s*""",
                 RegexOptions.Compiled, RegexTimeout)),
 
-        // Markdown/HTML hidden content — invisible to user but read by LLM
+        // Markdown/HTML hidden content - invisible to user but read by LLM
         ("HiddenContent", "HTML comment with instructions",
             new(@"<!--\s*(?:system|instruction|ignore|override|inject|secret|hidden)\b[^>]*-->",
                 RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout)),
 
-        // Invisible Unicode — zero-width characters carrying payload
+        // Invisible Unicode - zero-width characters carrying payload
         ("HiddenContent", "Zero-width character sequence",
             new(@"[\u200B\u200C\u200D\u2060\uFEFF]{3,}",
                 RegexOptions.Compiled, RegexTimeout)),
 
-        // Text direction override characters — can reverse visible text to hide payloads
+        // Text direction override characters - can reverse visible text to hide payloads
         ("HiddenContent", "Text direction override characters",
             new(@"[\u202A-\u202E\u2066-\u2069]",
                 RegexOptions.Compiled, RegexTimeout)),
 
-        // Data exfiltration — URLs that may exfiltrate context
+        // Data exfiltration - URLs that may exfiltrate context
         ("DataExfiltration", "Data exfiltration URL pattern",
             new(@"(?i)https?://[^\s]+[?&](?:data|token|key|secret|password|context|prompt|instruction|system)=",
                 RegexOptions.Compiled, RegexTimeout)),
@@ -215,7 +215,7 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
             new(@"(?i)(?:print|output|show|repeat|display)\s+(?:everything|all|the\s+text)\s+(?:above\s+this\s+(?:line|point|message)|before\s+this|so\s+far)",
                 RegexOptions.Compiled, RegexTimeout)),
 
-        // Security bypass — attempts to disable safety systems
+        // Security bypass - attempts to disable safety systems
         ("SecurityBypass", "Security bypass attempt",
             new(@"(?i)(?:bypass|disable|turn\s+off|deactivate|remove)\s+(?:the\s+)?(?:safety|security|content\s+filter|guardrail|restriction|moderation|censorship)",
                 RegexOptions.Compiled, RegexTimeout)),
@@ -225,12 +225,12 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
             new(@"(?i)(?:enable|enter|switch\s+to|activate)\s+(?:uncensored|unrestricted|unfiltered|jailbreak|developer|god|sudo)\s+mode",
                 RegexOptions.Compiled, RegexTimeout)),
 
-        // Command execution — attempts to run commands/code
+        // Command execution - attempts to run commands/code
         ("CommandExecution", "Command execution directive",
             new(@"(?i)(?:execute|run|eval)\s+(?:the\s+following\s+)?(?:command|code|script|query|function)\s*[:\(]",
                 RegexOptions.Compiled, RegexTimeout)),
 
-        // Separator injection — long separator lines followed by injection-like keywords
+        // Separator injection - long separator lines followed by injection-like keywords
         ("DelimiterManipulation", "Separator injection",
             new(@"(?:[-=]{10,}|[─═]{5,})\s*\n\s*(?i)(?:system|instruction|important|new\s+(?:rules|instructions|prompt))\s*:",
                 RegexOptions.Compiled, RegexTimeout)),
@@ -240,37 +240,37 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
 
     private static readonly (string Category, string Description, Regex Pattern)[] HighRiskPatterns =
     [
-        // Encoded payloads in tool results — suspicious in email/messaging content
+        // Encoded payloads in tool results - suspicious in email/messaging content
         ("EncodedPayload", "Base64-encoded instruction block",
             new(@"(?i)(?:base64|decode|atob)\s*[:(]\s*[A-Za-z0-9+/=]{20,}",
                 RegexOptions.Compiled, RegexTimeout)),
 
-        // Action directives — telling the agent to do something
+        // Action directives - telling the agent to do something
         ("ActionDirective", "Tool action directive",
             new(@"(?i)(?:please\s+)?(?:send|forward|reply|compose|draft|create|delete|update|modify|execute|run|call)\s+(?:an?\s+)?(?:email|message|response|reply|request|command|action)\s+(?:to|for|with|that|containing)\b",
                 RegexOptions.Compiled, RegexTimeout)),
 
-        // Social engineering — fake urgency or authority
+        // Social engineering - fake urgency or authority
         ("SocialEngineering", "Fake authority or urgency",
             new(@"(?i)(?:urgent|immediately|critical|mandatory|required|authorized|admin|supervisor|manager|ceo|cto)\s*[:-]\s*(?:you\s+must|please\s+(?:immediately|urgently)|action\s+required|do\s+not\s+ignore)",
                 RegexOptions.Compiled, RegexTimeout)),
 
-        // Delimiter manipulation — pretending to end tool output and start a new context
+        // Delimiter manipulation - pretending to end tool output and start a new context
         ("DelimiterManipulation", "Fake tool output boundary",
             new(@"(?i)(?:---\s*end\s+(?:of\s+)?(?:tool|function|api)\s+(?:output|result|response)\s*---|===\s*(?:tool|function)\s+(?:result|output)\s*===)",
                 RegexOptions.Compiled, RegexTimeout)),
 
-        // Persona hijacking — attempting to make the agent assume a different identity
+        // Persona hijacking - attempting to make the agent assume a different identity
         ("PersonaHijacking", "Persona override attempt",
             new(@"(?i)(?:you\s+are\s+(?:now\s+)?(?:a|an|the)|act\s+as\s+(?:a|an|the)|pretend\s+(?:to\s+be|you\s+are))\s+(?:different|new|unrestricted|unfiltered|jailbroken|evil|DAN)\b",
                 RegexOptions.Compiled, RegexTimeout)),
 
-        // Privileged role assumption — claiming admin/root/superuser authority
+        // Privileged role assumption - claiming admin/root/superuser authority
         ("PersonaHijacking", "Privileged role assumption",
             new(@"(?i)(?:you\s+are\s+(?:now\s+)?(?:an?\s+)?|act\s+as\s+(?:an?\s+)?|pretend\s+(?:to\s+be\s+)?(?:an?\s+)?|switch\s+to\s+)(?:admin(?:istrator)?|root|superuser|sudo|operator|moderator)",
                 RegexOptions.Compiled, RegexTimeout)),
 
-        // DAN-style jailbreak — common jailbreak personas
+        // DAN-style jailbreak - common jailbreak personas
         ("PersonaHijacking", "DAN jailbreak attempt",
             new(@"(?i)(?:DAN\s+mode|developer\s+mode)\s+(?:enabled|activated|on)",
                 RegexOptions.Compiled, RegexTimeout)),
@@ -290,7 +290,7 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
             new(@"\[(?:system|hidden|secret|instruction)\]\([^)]*\)",
                 RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout)),
 
-        // Markdown image injection — invisible images with payloads in alt text or URL
+        // Markdown image injection - invisible images with payloads in alt text or URL
         ("HiddenContent", "Markdown image with injection payload",
             new(@"!\[(?:system|instruction|override|ignore|hidden)[^\]]*\]\([^)]+\)",
                 RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout)),
@@ -333,7 +333,7 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
     public static IReadOnlyDictionary<string, ToolRiskLevel> DefaultToolRiskProfiles { get; } =
         new Dictionary<string, ToolRiskLevel>(StringComparer.OrdinalIgnoreCase)
         {
-            // High risk — user-generated content, external messaging
+            // High risk - user-generated content, external messaging
             ["gmail"] = ToolRiskLevel.High,
             ["email"] = ToolRiskLevel.High,
             ["send_email"] = ToolRiskLevel.High,
@@ -346,7 +346,7 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
             ["message"] = ToolRiskLevel.High,
             ["sms"] = ToolRiskLevel.High,
 
-            // Medium risk — documents, code, CRM
+            // Medium risk - documents, code, CRM
             ["search"] = ToolRiskLevel.Medium,
             ["web_search"] = ToolRiskLevel.Medium,
             ["browse"] = ToolRiskLevel.Medium,
@@ -356,7 +356,7 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
             ["jira"] = ToolRiskLevel.Medium,
             ["confluence"] = ToolRiskLevel.Medium,
 
-            // Low risk — structured data, internal APIs
+            // Low risk - structured data, internal APIs
             ["calculator"] = ToolRiskLevel.Low,
             ["get_weather"] = ToolRiskLevel.Low,
             ["get_time"] = ToolRiskLevel.Low,
@@ -552,7 +552,7 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
             }
             catch (RegexMatchTimeoutException)
             {
-                // Pattern timed out — skip it rather than blocking legitimate content
+                // Pattern timed out - skip it rather than blocking legitimate content
             }
         }
     }

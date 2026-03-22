@@ -1,12 +1,12 @@
-// AgentGuard — Output Guardrails Sample
+// AgentGuard - Output Guardrails Sample
 // Demonstrates LLM-based output validation: policy enforcement, groundedness checking, and copyright detection.
 // These rules run on agent responses (output phase) to catch violations before they reach the user.
 //
 // Requirements:
 //   Set environment variables before running:
-//     AGENTGUARD_LLM_ENDPOINT  — base URL of an OpenAI-compatible API (e.g. http://localhost:1234/v1/)
-//     AGENTGUARD_LLM_MODEL     — model name (e.g. openai/gpt-oss-20b, gpt-4o-mini)
-//     AGENTGUARD_LLM_KEY       — API key (optional, defaults to "unused" for local servers)
+//     AGENTGUARD_LLM_ENDPOINT  - base URL of an OpenAI-compatible API (e.g. http://localhost:1234/v1/)
+//     AGENTGUARD_LLM_MODEL     - model name (e.g. openai/gpt-oss-20b, gpt-4o-mini)
+//     AGENTGUARD_LLM_KEY       - API key (optional, defaults to "unused" for local servers)
 
 using System.ClientModel;
 using AgentGuard.Core.Abstractions;
@@ -33,7 +33,7 @@ var openAiClient = new OpenAIClient(new ApiKeyCredential(key),
 using var chatClient = openAiClient.GetChatClient(model).AsIChatClient();
 var chatOptions = new ChatOptions { MaxOutputTokens = 500, Temperature = 0f };
 
-Console.WriteLine("AgentGuard — Output Guardrails Demo");
+Console.WriteLine("AgentGuard - Output Guardrails Demo");
 Console.WriteLine($"  Endpoint: {endpoint}");
 Console.WriteLine($"  Model:    {model}");
 Console.WriteLine(new string('=', 60));
@@ -56,7 +56,7 @@ var policyPipeline = new GuardrailPipeline(
 var policyScenarios = new (string Label, string Response)[]
 {
     ("Compliant", "AgentCRM offers great reporting features. You can generate custom dashboards from the Analytics tab."),
-    ("Violation", "You might want to try CompetitorCRM — they have a better pricing tier for small teams."),
+    ("Violation", "You might want to try CompetitorCRM - they have a better pricing tier for small teams."),
     ("Compliant", "Our support team can help you migrate your data. Contact us at support@agentcrm.com."),
 };
 
@@ -132,7 +132,7 @@ var copyrightScenarios = new (string Label, string Response)[]
         we had nothing before us, we were all going direct to Heaven, we were all going
         direct the other way.
         """),
-    ("Short quote", "As Dickens wrote, \"it was the best of times\" — a famous opening line."),
+    ("Short quote", "As Dickens wrote, \"it was the best of times\" - a famous opening line."),
 };
 
 foreach (var (label, response) in copyrightScenarios)
@@ -145,7 +145,7 @@ foreach (var (label, response) in copyrightScenarios)
 }
 
 // ─── Example 4: Combined Output Pipeline ────────────────────────────────
-// All three output rules in a single pipeline — rules execute in order (55 → 65 → 75).
+// All three output rules in a single pipeline - rules execute in order (55 → 65 → 75).
 
 Console.WriteLine($"\n\n[4] Combined Output Pipeline (Policy + Groundedness + Copyright)");
 Console.WriteLine(new string('─', 60));

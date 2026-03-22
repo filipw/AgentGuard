@@ -176,7 +176,7 @@ public sealed class GuardrailPolicyBuilder
     }
 
     /// <summary>
-    /// Adds LLM-based topic boundary enforcement. More accurate than keyword matching —
+    /// Adds LLM-based topic boundary enforcement. More accurate than keyword matching -
     /// understands semantic meaning and intent.
     /// </summary>
     public GuardrailPolicyBuilder EnforceTopicBoundaryWithLlm(IChatClient chatClient, LlmTopicGuardrailOptions options, ChatOptions? chatOptions = null)

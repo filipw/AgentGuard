@@ -198,7 +198,7 @@ public class ContentSafetyRuleTests
     }
 
     /// <summary>
-    /// Simulates a classifier written before blocklist support was added — only implements AnalyzeAsync.
+    /// Simulates a classifier written before blocklist support was added - only implements AnalyzeAsync.
     /// The default interface method on AnalyzeWithOptionsAsync delegates to this.
     /// </summary>
     private sealed class LegacyClassifier(IReadOnlyList<ContentSafetyAnalysis> results) : IContentSafetyClassifier
@@ -206,6 +206,6 @@ public class ContentSafetyRuleTests
         public ValueTask<IReadOnlyList<ContentSafetyAnalysis>> AnalyzeAsync(string text, CancellationToken cancellationToken = default)
             => ValueTask.FromResult(results);
 
-        // Intentionally NOT overriding AnalyzeWithOptionsAsync — uses default interface method
+        // Intentionally NOT overriding AnalyzeWithOptionsAsync - uses default interface method
     }
 }

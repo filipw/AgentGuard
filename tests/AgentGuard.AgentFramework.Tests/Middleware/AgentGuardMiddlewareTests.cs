@@ -137,7 +137,7 @@ public class AgentGuardMiddlewareTests
                 result.Add(update.Text);
         }
 
-        // PII redaction modifies text — should get a single modified chunk, not original chunks
+        // PII redaction modifies text - should get a single modified chunk, not original chunks
         result.Should().HaveCount(1);
         var combined = string.Join("", result);
         combined.Should().Contain("[REDACTED]");
@@ -256,7 +256,7 @@ public class AgentGuardMiddlewareTests
             configure: b => b.GuardToolCalls());
 
         var response = await agent.RunAsync("What's the weather?", null, null, CancellationToken.None);
-        // Clean tool call — should pass through unmodified
+        // Clean tool call - should pass through unmodified
         response.Messages[0].Contents.OfType<FunctionCallContent>().Should().ContainSingle();
     }
 

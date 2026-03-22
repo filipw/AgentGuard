@@ -9,8 +9,8 @@ namespace AgentGuard.RemoteClassifier;
 /// Designed for high-accuracy models like Sentinel-v2 running on local model servers
 /// (Ollama, vLLM, HuggingFace TGI) or custom endpoints (FastAPI, etc.).
 ///
-/// Order 13 — between ONNX (12) and LLM (15). Provides ML-grade accuracy without
-/// requiring ONNX Runtime native binaries — just an HTTP endpoint.
+/// Order 13 - between ONNX (12) and LLM (15). Provides ML-grade accuracy without
+/// requiring ONNX Runtime native binaries - just an HTTP endpoint.
 ///
 /// Fails open by default: if the remote classifier is unreachable, the rule passes
 /// and downstream rules (LLM, etc.) continue to evaluate.

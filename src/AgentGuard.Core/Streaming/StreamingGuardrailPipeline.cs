@@ -316,16 +316,16 @@ public sealed partial class StreamingGuardrailPipeline
     [LoggerMessage(Level = LogLevel.Debug, Message = "Progressive streaming started: {ProgressiveCount} progressive rules, {FinalOnlyCount} final-only rules, {AdaptiveCount} adaptive rules")]
     private static partial void LogProgressiveStart(ILogger logger, int progressiveCount, int finalOnlyCount, int adaptiveCount);
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Progressive guardrail violation by '{RuleName}' after {YieldedChars} chars yielded — retracting")]
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Progressive guardrail violation by '{RuleName}' after {YieldedChars} chars yielded - retracting")]
     private static partial void LogProgressiveViolation(ILogger logger, string ruleName, int yieldedChars);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Progressive guardrail modification after {YieldedChars} chars yielded — retracting and replacing")]
+    [LoggerMessage(Level = LogLevel.Information, Message = "Progressive guardrail modification after {YieldedChars} chars yielded - retracting and replacing")]
     private static partial void LogProgressiveModification(ILogger logger, int yieldedChars);
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Final guardrail check violation by '{RuleName}' — retracting all yielded content")]
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Final guardrail check violation by '{RuleName}' - retracting all yielded content")]
     private static partial void LogFinalViolation(ILogger logger, string ruleName);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Final guardrail check modified content — retracting and replacing")]
+    [LoggerMessage(Level = LogLevel.Information, Message = "Final guardrail check modified content - retracting and replacing")]
     private static partial void LogFinalModification(ILogger logger);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Running streaming guardrail rule '{RuleName}' ({Mode})")]

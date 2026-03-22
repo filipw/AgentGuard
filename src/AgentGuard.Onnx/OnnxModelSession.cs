@@ -62,7 +62,7 @@ internal sealed class OnnxModelSession : IDisposable
                 "input_ids" => inputIds,
                 "attention_mask" => attentionMask,
                 "token_type_ids" => tokenTypeIds,
-                _ => inputIds // fallback — some models use different names
+                _ => inputIds // fallback - some models use different names
             };
             inputs.Add(NamedOnnxValue.CreateFromTensor(name, tensor));
         }

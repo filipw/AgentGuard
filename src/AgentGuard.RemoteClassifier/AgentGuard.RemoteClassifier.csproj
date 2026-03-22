@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <Description>Remote model classifier for AgentGuard — call local or cloud-hosted ML models (Ollama, vLLM, HuggingFace TGI, custom endpoints) for prompt injection detection via HTTP. Lightweight, no native dependencies. Supports Sentinel-v2 and other classification models.</Description>
+    <Description>Remote model classifier for AgentGuard - call local or cloud-hosted ML models (Ollama, vLLM, HuggingFace TGI, custom endpoints) for prompt injection detection via HTTP. Lightweight, no native dependencies. Supports Sentinel-v2 and other classification models.</Description>
     <PackageId>AgentGuard.RemoteClassifier</PackageId>
     <RootNamespace>AgentGuard.RemoteClassifier</RootNamespace>
   </PropertyGroup>

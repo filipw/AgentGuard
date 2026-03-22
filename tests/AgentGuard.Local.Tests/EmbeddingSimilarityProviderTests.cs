@@ -18,7 +18,7 @@ public class EmbeddingSimilarityProviderTests
         // Topic embedding
         mock.Setup(g => g.GenerateAsync(It.Is<IEnumerable<string>>(s => s.First() == "billing"), It.IsAny<EmbeddingGenerationOptions?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(CreateEmbeddings([1f, 0f, 0f]));
-        // Input embedding — same direction
+        // Input embedding - same direction
         mock.Setup(g => g.GenerateAsync(It.Is<IEnumerable<string>>(s => s.First() == "invoice question"), It.IsAny<EmbeddingGenerationOptions?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(CreateEmbeddings([2f, 0f, 0f]));
 

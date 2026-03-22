@@ -247,7 +247,7 @@ public class SecretsDetectionRuleTests
         entropy.Should().Be(0);
     }
 
-    // False positive tests — these should NOT trigger
+    // False positive tests - these should NOT trigger
     [Theory]
     [InlineData("The API documentation is available at /docs/api")]
     [InlineData("Please set the access_token_lifetime to 3600 seconds")]

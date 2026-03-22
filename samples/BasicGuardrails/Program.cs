@@ -1,4 +1,4 @@
-// AgentGuard — Basic Guardrails Sample
+// AgentGuard - Basic Guardrails Sample
 // Demonstrates standalone rule evaluation without an LLM.
 
 using AgentGuard.Core.Abstractions;
@@ -8,7 +8,7 @@ using AgentGuard.Core.Rules.PromptInjection;
 var injectionRule = new PromptInjectionRule();
 var piiRule = new PiiRedactionRule();
 
-Console.WriteLine("AgentGuard — Basic Guardrails Demo");
+Console.WriteLine("AgentGuard - Basic Guardrails Demo");
 Console.WriteLine(new string('=', 50));
 
 var inputs = new[]

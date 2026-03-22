@@ -40,7 +40,7 @@ public sealed class PromptInjectionRule : IGuardrailRule
         @"act\s+as\s+if\s+you\s+(are|were)\s+",
         @"act\s+as\s+an?\s+(malicious|evil|unrestricted|unfiltered|uncensored|compromised|rogue|harmful|dangerous)\b",
 
-        // End sequence injection — 8 closure families from the Arcanum taxonomy
+        // End sequence injection - 8 closure families from the Arcanum taxonomy
         // Token delimiters
         @"<\|endoftext\|>",
         @"<\|im_start\|>",
@@ -88,14 +88,14 @@ public sealed class PromptInjectionRule : IGuardrailRule
         @"(new|additional|updated)\s+rule\s*:",
         @"(from\s+now\s+on|henceforth|going\s+forward)\s*,?\s*(you\s+)?(must|should|will|shall)",
 
-        // Anti-harm coercion — pressuring the model to override safety by framing refusal as harmful
+        // Anti-harm coercion - pressuring the model to override safety by framing refusal as harmful
         @"(refusing|failure)\s+to\s+(comply|help|assist|respond)\s+(is|would\s+be|causes?)(\s+\w+)*\s+(harmful|dangerous|unethical|immoral|harm)",
         @"you\s+(must|have\s+to|need\s+to)\s+(comply|obey|help|answer)\s+(or|otherwise)",
         @"it\s+would\s+be\s+(unethical|immoral|wrong|harmful)\s+(not\s+to|to\s+refuse|to\s+decline)",
         @"(ethical|moral)\s+(duty|obligation|imperative)\s+to\s+(help|comply|answer|respond)",
         @"(people|someone|lives?)\s+(will|could|might)\s+(be\s+)?(hurt|harmed|die|suffer)\s+if\s+you\s+(don't|do\s+not|refuse)",
 
-        // Contradiction — presenting conflicting instructions to confuse safety logic
+        // Contradiction - presenting conflicting instructions to confuse safety logic
         @"(your\s+)?(actual|real|true|original)\s+(instructions|rules|purpose)\s+(are|is|say)",
         @"(the\s+)?(previous|above)\s+(instructions?|rules?)\s+(are|were|was)\s+(wrong|incorrect|fake|a\s+test)",
         @"(contrary\s+to|despite|regardless\s+of)\s+(what|your)\s+(you\s+were|previous|system)\s+(told|instructions|prompt)",
@@ -113,7 +113,7 @@ public sealed class PromptInjectionRule : IGuardrailRule
         @"what\s+would\s+you\s+(not|never)\s+do\s+if",
         @"list\s+(the\s+)?(things|topics)\s+you('re|\s+are)\s+(forbidden|not\s+allowed|unable)",
 
-        // Link injection — malicious directives embedded in URLs or references
+        // Link injection - malicious directives embedded in URLs or references
         @"https?://[^\s]*(system_prompt|ignore_rules|jailbreak|override|injection)",
         @"\[.*?\]\(.*?(ignore|override|system|jailbreak|injection).*?\)",
     ];

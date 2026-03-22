@@ -28,7 +28,7 @@ public sealed class RemotePromptInjectionOptions
 
     /// <summary>
     /// Whether to fail open (pass) when the remote classifier is unreachable or returns an error.
-    /// Default: true (fail open — same as LLM rules).
+    /// Default: true (fail open - same as LLM rules).
     /// </summary>
     public bool FailOpen { get; init; } = true;
 

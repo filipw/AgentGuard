@@ -37,11 +37,40 @@ Order 10, Input phase. Patterns informed by the [Arcanum Prompt Injection Taxono
 | Medium (+Medium) | + System prompt extraction, jailbreak keywords, rule addition/modification |
 | High (+High) | + Framing attacks (hypothetical/fictional contexts), inversion/double-negative extraction |
 
-## Prompt Injection Detection (ONNX)
+## Prompt Injection Detection (ONNX - StackOne Defender)
 
-`.BlockPromptInjectionWithOnnx(options)` or `.BlockPromptInjectionWithOnnx(modelPath, tokenizerPath, threshold)`
+`.BlockPromptInjectionWithOnnx()` or `.BlockPromptInjectionWithOnnx(options)`
 
-Order 12, Input phase. Uses a fine-tuned DeBERTa v3 ONNX model for ML-based binary classification. Fully offline, ~10ms inference. Requires `AgentGuard.Onnx` package.
+Order 11, Input phase. Uses the [StackOne Defender](https://github.com/StackOneHQ/defender) fine-tuned MiniLM-L6-v2 ONNX model (~22 MB, int8 quantized) for ML-based binary classification. **F1 ~0.97** on adversarial benchmarks. Fast (~8 ms), accurate, fully offline. The model is **bundled with the NuGet package** - no separate download required.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| Threshold | `float` | 0.5 | Confidence threshold (0.0–1.0) for injection classification |
+| MaxTokenLength | `int` | 256 | Maximum input token length (truncated if longer) |
+| IncludeConfidence | `bool` | true | Include confidence score in result metadata |
+| ModelPath | `string?` | null | Custom model path (if null, bundled model is used) |
+| VocabPath | `string?` | null | Custom vocab path (if null, bundled vocab is used) |
+
+When blocked, result metadata includes:
+- `confidence` - injection probability (0.0–1.0)
+- `model` - `"stackone-defender-minilm-v2"`
+- `threshold` - the configured threshold
+
+```csharp
+using AgentGuard.Onnx;
+
+// Zero-config - bundled model, no download needed
+builder.BlockPromptInjectionWithOnnx()
+
+// Or with custom threshold
+builder.BlockPromptInjectionWithOnnx(new DefenderPromptInjectionOptions { Threshold = 0.8f })
+```
+
+## Prompt Injection Detection (ONNX - DeBERTa v3)
+
+`.BlockPromptInjectionWithDeberta(options)` or `.BlockPromptInjectionWithDeberta(modelPath, tokenizerPath, threshold)`
+
+Order 12, Input phase. Uses a fine-tuned DeBERTa v3 ONNX model (`protectai/deberta-v3-base-prompt-injection-v2`) for ML-based binary classification. Fully offline, ~100ms inference. Requires separate model download. For most use cases, prefer the Defender model above.
 
 **Setup:** Download the model from HuggingFace using the included script:
 ```bash
@@ -57,22 +86,14 @@ Order 12, Input phase. Uses a fine-tuned DeBERTa v3 ONNX model for ML-based bina
 | MaxTokenLength | `int` | 512 | Maximum input token length (truncated if longer) |
 | IncludeConfidence | `bool` | true | Include confidence score in result metadata |
 
-When blocked, result metadata includes:
-- `confidence` — injection probability (0.0–1.0)
-- `model` — `"deberta-v3-prompt-injection-v2"`
-- `threshold` — the configured threshold
-
-**Three-tier detection:**
+**Multi-tier detection:**
 ```csharp
 using AgentGuard.Onnx;
 
-builder.BlockPromptInjection()                     // tier 1: regex (order 10)
-    .BlockPromptInjectionWithOnnx(new OnnxPromptInjectionOptions   // tier 2: ML (order 12)
-    {
-        ModelPath = "./models/model.onnx",
-        TokenizerPath = "./models/spm.model"
-    })
-    .BlockPromptInjectionWithLlm(chatClient)       // tier 3: LLM (order 15)
+builder.BlockPromptInjection()              // tier 1: regex (order 10)
+    .BlockPromptInjectionWithOnnx()         // tier 2: Defender ML (order 11, bundled)
+    .BlockPromptInjectionWithRemoteClassifier(...)  // tier 3: remote ML (order 13)
+    .BlockPromptInjectionWithLlm(chatClient) // tier 4: LLM (order 15)
 ```
 
 ## Prompt Injection Detection (Remote ML)
@@ -93,10 +114,10 @@ Order 13, Input phase. Calls an external model server for ML-based classificatio
 | Timeout | `TimeSpan` | 10s | HTTP request timeout |
 
 When blocked, result metadata includes:
-- `label` — the predicted label (e.g. "jailbreak")
-- `confidence` — classification score (0.0–1.0)
-- `model` — model name (if configured)
-- `threshold` — the configured threshold
+- `label` - the predicted label (e.g. "jailbreak")
+- `confidence` - classification score (0.0–1.0)
+- `model` - model name (if configured)
+- `threshold` - the configured threshold
 
 **Setting up a Sentinel-v2 endpoint:**
 ```bash
@@ -132,10 +153,10 @@ Order 15, Input phase. Uses `IChatClient` as an LLM-as-judge classifier. Catches
 | IncludeClassification | `bool` | true | Return structured threat classification metadata |
 
 When `IncludeClassification` is true, blocked results include `Metadata` with:
-- `technique` — e.g. `direct_override`, `narrative_smuggling`, `cognitive_overload`, `russian_doll`
-- `intent` — e.g. `jailbreak`, `system_prompt_leak`, `data_extraction`
-- `evasion` — e.g. `none`, `base64`, `hex`, `reversed`, `unicode`
-- `confidence` — `high`, `medium`, or `low`
+- `technique` - e.g. `direct_override`, `narrative_smuggling`, `cognitive_overload`, `russian_doll`
+- `intent` - e.g. `jailbreak`, `system_prompt_leak`, `data_extraction`
+- `evasion` - e.g. `none`, `base64`, `hex`, `reversed`, `unicode`
+- `confidence` - `high`, `medium`, or `low`
 
 ## PII Redaction (Regex)
 
@@ -219,7 +240,7 @@ Blocklist matches are checked first and take precedence over category analysis. 
 
 `.GuardToolResults(options?)` or `.GuardToolResults(action)`
 
-Order 47, Output phase. Detects indirect prompt injection in incoming tool call results — emails, documents, API responses — before they reach the LLM. Complements `ToolCallGuardrailRule` (which guards outbound arguments). Inspired by [StackOneHQ/defender](https://github.com/StackOneHQ/defender).
+Order 47, Output phase. Detects indirect prompt injection in incoming tool call results - emails, documents, API responses - before they reach the LLM. Complements `ToolCallGuardrailRule` (which guards outbound arguments). Inspired by [StackOneHQ/defender](https://github.com/StackOneHQ/defender).
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
@@ -385,6 +406,6 @@ AgentGuard's prompt injection detection is informed by the [Arcanum Prompt Injec
 - **20 Evasion Methods**: base64, hex, reversed text, Unicode homoglyphs, emoji, cipher, JSON/XML wrapping, and more
 
 The taxonomy is used at three levels:
-1. **Regex patterns** — `PromptInjectionRule` covers the techniques that can be reliably detected via pattern matching
-2. **LLM prompt templates** — `LlmPromptInjectionRule` enumerates all technique families and evasion methods to give the LLM classifier precise conceptual anchors
-3. **Input normalization** — `InputNormalizationRule` decodes the most common evasion encodings before any other rule evaluates the text
+1. **Regex patterns** - `PromptInjectionRule` covers the techniques that can be reliably detected via pattern matching
+2. **LLM prompt templates** - `LlmPromptInjectionRule` enumerates all technique families and evasion methods to give the LLM classifier precise conceptual anchors
+3. **Input normalization** - `InputNormalizationRule` decodes the most common evasion encodings before any other rule evaluates the text
