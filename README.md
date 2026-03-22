@@ -20,10 +20,13 @@ The core engine is **framework-agnostic** — use it standalone, with Microsoft 
 // Use the guardrail engine standalone — no framework dependency needed
 var policy = new GuardrailPolicyBuilder()
     .NormalizeInput()              // decode base64/hex/unicode evasion tricks
+    .GuardRetrieval()              // filter poisoned RAG chunks
     .BlockPromptInjection()        // regex-based injection detection
     .RedactPII(PiiCategory.Email | PiiCategory.Phone | PiiCategory.SSN)
+    .DetectSecrets()               // block API keys, tokens, connection strings
     .EnforceTopicBoundary("customer-support", "billing", "returns")
     .LimitInputTokens(4000)
+    .GuardToolCalls()              // inspect tool call arguments for injection
     .Build();
 
 var pipeline = new GuardrailPipeline(policy, logger);
@@ -57,7 +60,13 @@ var guardedAgent = agent
 - **PII redaction** — detects and redacts emails, phone numbers, SSNs, credit cards, IP addresses, dates of birth, and custom patterns on input and output
 - **Topic boundary enforcement** — keyword-based topic matching with pluggable `ITopicSimilarityProvider` for embedding-based similarity. `EmbeddingSimilarityProvider` in `AgentGuard.Local` uses any `IEmbeddingGenerator<string, Embedding<float>>` for cosine similarity with automatic topic embedding caching
 - **Token limits** — enforces input/output token budgets using `Microsoft.ML.Tokenizers` (cl100k_base) with configurable overflow strategies (Reject/Truncate/Warn)
+- **Secrets detection** — detects API keys (AWS, GitHub, Azure, Slack), JWT tokens, private keys, connection strings, bearer tokens. Block or redact actions with custom patterns and optional Shannon entropy-based detection
 - **Content safety** — severity-based filtering via pluggable `IContentSafetyClassifier` (Azure AI Content Safety adapter included)
+
+### RAG & Agentic guardrails (zero-cost, offline)
+
+- **Retrieval guardrails** — filters retrieved chunks before they reach the LLM context. Detects prompt injection, secrets, and PII in knowledge base content. Supports relevance score filtering, max chunk limits, remove/sanitize actions, and custom filters. Integrates with MAF via `RetrievalGuardrailContextProvider`
+- **Tool call guardrails** — inspects agent tool call arguments for SQL injection, code injection, path traversal, command injection, SSRF, template injection, and XSS. Per-tool and per-argument allowlists for tools that legitimately accept code/SQL. Automatically extracted from MAF agent responses
 
 ### ONNX ML-based rules (fast, accurate, offline)
 
@@ -122,7 +131,7 @@ Fast rules (regex, local) evaluate on every check cycle. Expensive LLM rules onl
 
 | Package | Description | NuGet |
 |---------|-------------|-------|
-| `AgentGuard.Core` | Framework-agnostic core: abstractions, rules engine, fluent builder, all 14 built-in rules | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Core.svg)](https://www.nuget.org/packages/AgentGuard.Core) |
+| `AgentGuard.Core` | Framework-agnostic core: abstractions, rules engine, fluent builder, all 17 built-in rules | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Core.svg)](https://www.nuget.org/packages/AgentGuard.Core) |
 | `AgentGuard.AgentFramework` | Microsoft Agent Framework adapter: `UseAgentGuard()` middleware for `AIAgentBuilder` | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.AgentFramework.svg)](https://www.nuget.org/packages/AgentGuard.AgentFramework) |
 | `AgentGuard.Workflows` | Workflow guardrails — decorates MAF `Executor` with guardrails at step boundaries | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Workflows.svg)](https://www.nuget.org/packages/AgentGuard.Workflows) |
 | `AgentGuard.Onnx` | ONNX-based ML classifiers — offline prompt injection detection with DeBERTa v3 | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Onnx.svg)](https://www.nuget.org/packages/AgentGuard.Onnx) |
@@ -307,6 +316,61 @@ catch (GuardrailViolationException ex)
 
 The `ITextExtractor` interface bridges typed workflow messages to string-based guardrail rules. The built-in `DefaultTextExtractor` handles `string`, `ChatMessage`, `AgentResponse`, and objects with a `Text` property.
 
+### Tool Call Guardrails
+
+When agents use tools, the LLM generates tool call arguments that are passed to external systems (databases, APIs, file systems). AgentGuard inspects these arguments for injection attacks:
+
+```csharp
+// With MAF — tool calls are automatically extracted from agent responses
+var agent = chatClient
+    .AsAIAgent(instructions: "You are a helpful assistant",
+        tools: [AIFunctionFactory.Create(QueryDatabase), AIFunctionFactory.Create(ReadFile)])
+    .AsBuilder()
+    .UseAgentGuard(g => g
+        .BlockPromptInjection()
+        .GuardToolCalls()  // inspects FunctionCallContent arguments automatically
+    )
+    .Build();
+
+// Or standalone — pass tool calls via the context properties bag
+var rule = new ToolCallGuardrailRule();
+var toolCalls = new List<AgentToolCall>
+{
+    new() { ToolName = "query_db", Arguments = new Dictionary<string, string>
+        { ["sql"] = "SELECT * FROM users UNION SELECT password FROM admin" } }
+};
+var ctx = new GuardrailContext { Text = "", Phase = GuardrailPhase.Output };
+ctx.Properties["ToolCalls"] = (IReadOnlyList<AgentToolCall>)toolCalls;
+var result = await rule.EvaluateAsync(ctx);
+// result.IsBlocked == true, reason: "SQL UNION injection"
+```
+
+Detected injection categories: SQL injection, code injection (Python/JS/.NET/pickle), path traversal, command injection, SSRF, template injection (Jinja2/Handlebars), and XSS. Per-tool and per-argument allowlists let you exempt tools that legitimately accept code or SQL.
+
+### RAG / Retrieval Guardrails
+
+Filter retrieved knowledge base chunks before they reach the LLM context:
+
+```csharp
+// With MAF — use RetrievalGuardrailContextProvider as a context provider
+var agent = chatClient
+    .AsAIAgent(instructions: "You answer questions using the provided context.")
+    .AsBuilder()
+    .UseAIContextProviders(new RetrievalGuardrailContextProvider(new()
+    {
+        RetrievalFunc = async (query, ct) => await vectorStore.SearchAsync(query, ct),
+        GuardrailOptions = new() { DetectPromptInjection = true, DetectSecrets = true }
+    }))
+    .UseAgentGuard(g => g.BlockPromptInjection().RedactPII())
+    .Build();
+
+// Or standalone — evaluate chunks directly
+var rule = new RetrievalGuardrailRule();
+var result = rule.EvaluateChunks(retrievedChunks);
+// result.ApprovedChunks — safe to inject into LLM context
+// result.FilteredCount — how many chunks were removed
+```
+
 ### Custom Rules
 
 ```csharp
@@ -342,14 +406,17 @@ Rules execute in order of their `Order` property (lower = first). Built-in rules
 | Order | Rule | Type | Phase |
 |-------|------|------|-------|
 | 5 | `InputNormalizationRule` | Local | Input |
+| 8 | `RetrievalGuardrailRule` | Regex | Input |
 | 10 | `PromptInjectionRule` | Regex | Input |
 | 12 | `OnnxPromptInjectionRule` | ONNX ML | Input |
 | 15 | `LlmPromptInjectionRule` | LLM | Input |
 | 20 | `PiiRedactionRule` | Regex | Both |
+| 22 | `SecretsDetectionRule` | Regex | Both |
 | 25 | `LlmPiiDetectionRule` | LLM | Both |
 | 30 | `TopicBoundaryRule` | Keywords | Input |
 | 35 | `LlmTopicGuardrailRule` | LLM | Input |
 | 40 | `TokenLimitRule` | Local | Input/Output |
+| 45 | `ToolCallGuardrailRule` | Regex | Output |
 | 50 | `ContentSafetyRule` | Pluggable | Both |
 | 55 | `LlmOutputPolicyRule` | LLM | Output |
 | 60 | `OutputTopicBoundaryRule` | Embedding | Output |
@@ -366,6 +433,7 @@ Rules execute in order of their `Order` property (lower = first). Built-in rules
 - [Azure Integration](samples/AzureIntegration/) — using Azure AI Content Safety for production
 - [Workflow Guardrails](samples/WorkflowGuardrails/) — wrapping MAF workflow executors with `.WithGuardrails()` decorator
 - [Output Guardrails](samples/OutputGuardrails/) — LLM output validation (policy, groundedness, copyright)
+- [Tool Call Guardrails](samples/ToolCallGuardrails/) — blocking SQL injection, path traversal, SSRF in agent tool calls
 
 ## Documentation
 

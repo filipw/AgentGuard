@@ -324,8 +324,11 @@ public static class AgentGuardMiddlewareExtensions
             AgentName = innerAgent.Name
         };
 
-        // Convert MAF stream to IAsyncEnumerable<string>
-        var textStream = ExtractTextStream(innerAgent.RunStreamingAsync(processedMessages, session, options, ct), ct);
+        // Collect tool calls from streaming updates alongside text extraction.
+        // Tool calls are evaluated after the stream completes (FinalOnly semantics).
+        var collectedToolCalls = new List<AgentToolCall>();
+        var textStream = ExtractTextAndToolCalls(
+            innerAgent.RunStreamingAsync(processedMessages, session, options, ct), collectedToolCalls, ct);
 
         await foreach (var output in streamingPipeline.ProcessStreamAsync(textStream, outputContext, policy.ViolationHandler, ct))
         {
@@ -343,19 +346,57 @@ public static class AgentGuardMiddlewareExtensions
                     break;
 
                 case StreamingOutputType.Completed:
-                    // If the final result has a replacement, emit it
-                    // (retraction events were already emitted by the pipeline)
+                    // After stream completes, evaluate any collected tool calls
+                    if (collectedToolCalls.Count > 0)
+                    {
+                        outputContext.Properties[ToolCallGuardrailRule.ToolCallsKey] = (IReadOnlyList<AgentToolCall>)collectedToolCalls;
+                        var toolCallResult = await pipeline.RunAsync(outputContext, ct);
+                        if (toolCallResult.IsBlocked)
+                        {
+                            var msg = await policy.ViolationHandler.HandleViolationAsync(
+                                toolCallResult.BlockingResult!, outputContext, ct);
+                            var retractUpdate = new AgentResponseUpdate(ChatRole.Assistant, msg);
+                            retractUpdate.AdditionalProperties ??= [];
+                            retractUpdate.AdditionalProperties[GuardrailEventPropertyKey] =
+                                StreamingGuardrailEvent.Replace(msg, toolCallResult.BlockingResult!, 0);
+                            yield return retractUpdate;
+                        }
+                    }
                     break;
             }
         }
     }
 
-    private static async IAsyncEnumerable<string> ExtractTextStream(
+    /// <summary>
+    /// Extracts text from streaming updates while also collecting any <see cref="FunctionCallContent"/>
+    /// tool calls into the provided list. This ensures tool calls are not lost during progressive streaming.
+    /// </summary>
+    private static async IAsyncEnumerable<string> ExtractTextAndToolCalls(
         IAsyncEnumerable<AgentResponseUpdate> updates,
+        List<AgentToolCall> collectedToolCalls,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
     {
         await foreach (var update in updates.WithCancellation(ct))
         {
+            // Collect tool calls
+            foreach (var fc in update.Contents.OfType<FunctionCallContent>())
+            {
+                var args = new Dictionary<string, string>();
+                if (fc.Arguments is not null)
+                {
+                    foreach (var (key, value) in fc.Arguments)
+                    {
+                        args[key] = value?.ToString() ?? "";
+                    }
+                }
+                collectedToolCalls.Add(new AgentToolCall
+                {
+                    ToolName = fc.Name ?? "",
+                    Arguments = args
+                });
+            }
+
+            // Yield text chunks
             if (!string.IsNullOrEmpty(update.Text))
                 yield return update.Text;
         }

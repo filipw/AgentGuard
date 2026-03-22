@@ -26,5 +26,6 @@
     <Project Path="samples/OutputGuardrails/OutputGuardrails.csproj" />
     <Project Path="samples/OnnxGuardrails/OnnxGuardrails.csproj" />
     <Project Path="samples/AgentFrameworkIntegration/AgentFrameworkIntegration.csproj" />
+    <Project Path="samples/ToolCallGuardrails/ToolCallGuardrails.csproj" />
   </Folder>
 </Solution>

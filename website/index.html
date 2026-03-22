@@ -113,7 +113,7 @@ await foreach (var update in guardedAgent
     <p class="section-label">Features</p>
     <h2 class="section-title">Everything you need.<br>Nothing you don't.</h2>
     <p class="section-subtitle">
-      14 built-in rules covering the full input/output safety lifecycle. Regex for speed, ONNX ML for accuracy, LLM for nuance.
+      17 built-in rules covering the full input/output safety lifecycle. Regex for speed, ONNX ML for accuracy, LLM for nuance.
     </p>
 
     <div class="feature-grid">
@@ -138,8 +138,8 @@ await foreach (var update in guardedAgent
         <p>Decodes evasion tricks — base64, hex escapes, reversed text, Unicode homoglyphs — before any other rule evaluates. Stops encoding-based attacks cold.</p>
       </div>
       <div class="feature-card">
-        <h3>Progressive Streaming</h3>
-        <p>Tokens stream through to users immediately while guardrails evaluate progressively. On violation, retraction events signal the UI to hide/replace content. Like Azure OpenAI content filters.</p>
+        <h3>Agentic &amp; RAG Guardrails</h3>
+        <p>Guard tool call arguments against SQL injection, code injection, SSRF, path traversal, and more. Filter RAG chunks for prompt injection and secrets before they reach the LLM context.</p>
       </div>
     </div>
   </div>
@@ -148,7 +148,7 @@ await foreach (var update in guardedAgent
 <!-- ── Rules ──────────────────────────────────────── -->
 <section id="rules">
   <p class="section-label">Built-in Rules</p>
-  <h2 class="section-title">14 rules. Ordered by cost.</h2>
+  <h2 class="section-title">17 rules. Ordered by cost.</h2>
   <p class="section-subtitle">
     Cheap regex checks run first and short-circuit. Expensive LLM calls only run if needed.
   </p>
@@ -167,6 +167,12 @@ await foreach (var update in guardedAgent
         <td>5</td>
         <td><code>InputNormalizationRule</code></td>
         <td><span class="badge badge-local">Local</span></td>
+        <td>Input</td>
+      </tr>
+      <tr>
+        <td>8</td>
+        <td><code>RetrievalGuardrailRule</code></td>
+        <td><span class="badge badge-regex">Regex</span></td>
         <td>Input</td>
       </tr>
       <tr>
@@ -194,6 +200,12 @@ await foreach (var update in guardedAgent
         <td>Both</td>
       </tr>
       <tr>
+        <td>22</td>
+        <td><code>SecretsDetectionRule</code></td>
+        <td><span class="badge badge-regex">Regex</span></td>
+        <td>Both</td>
+      </tr>
+      <tr>
         <td>25</td>
         <td><code>LlmPiiDetectionRule</code></td>
         <td><span class="badge badge-llm">LLM</span></td>
@@ -216,6 +228,12 @@ await foreach (var update in guardedAgent
         <td><code>TokenLimitRule</code></td>
         <td><span class="badge badge-local">Local</span></td>
         <td>Input / Output</td>
+      </tr>
+      <tr>
+        <td>45</td>
+        <td><code>ToolCallGuardrailRule</code></td>
+        <td><span class="badge badge-regex">Regex</span></td>
+        <td>Output</td>
       </tr>
       <tr>
         <td>50</td>
@@ -263,7 +281,7 @@ await foreach (var update in guardedAgent
     <div class="feature-grid">
       <div class="feature-card">
         <h3>1. Input Guardrails</h3>
-        <p>Normalization, prompt injection detection, PII redaction, topic boundary enforcement, token limits, and content safety — all before the LLM sees the input.</p>
+        <p>Normalization, RAG chunk filtering, prompt injection detection, PII redaction, secrets detection, topic boundary, token limits — all before the LLM sees the input.</p>
       </div>
       <div class="feature-card">
         <h3>2. Agent Execution</h3>
@@ -271,7 +289,7 @@ await foreach (var update in guardedAgent
       </div>
       <div class="feature-card">
         <h3>3. Output Guardrails</h3>
-        <p>PII redaction, policy compliance, topic drift detection, groundedness checking, copyright detection, and token limits — all before the response reaches the user.</p>
+        <p>Tool call injection detection, PII/secrets redaction, policy compliance, groundedness checking, copyright detection — all before the response reaches the user.</p>
       </div>
     </div>
   </div>
