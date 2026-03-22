@@ -75,6 +75,51 @@ builder.BlockPromptInjection()                     // tier 1: regex (order 10)
     .BlockPromptInjectionWithLlm(chatClient)       // tier 3: LLM (order 15)
 ```
 
+## Prompt Injection Detection (Remote ML)
+
+`.BlockPromptInjectionWithRemoteClassifier(endpointUrl)` or `.BlockPromptInjectionWithRemoteClassifier(classifier, options?)`
+
+Order 13, Input phase. Calls an external model server for ML-based classification. Designed for SOTA models like [Sentinel-v2](https://huggingface.co/rogue-security/prompt-injection-jailbreak-sentinel-v2) (Qwen3-0.6B, F1 ~0.957, 32K context). Requires `AgentGuard.RemoteClassifier` package.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| EndpointUrl | `string` | *(required)* | URL of the classification endpoint |
+| ApiKey | `string?` | null | Optional Bearer token for authenticated endpoints |
+| ModelName | `string?` | null | Model name for result metadata |
+| RequestFormat | `HttpClassifierRequestFormat` | HuggingFace | Request/response format (HuggingFace or Simple) |
+| InjectionLabels | `ISet<string>` | jailbreak, injection, malicious, unsafe, INJECTION | Labels indicating injection |
+| Threshold | `float` | 0.5 | Confidence threshold (0.0–1.0) |
+| FailOpen | `bool` | true | Pass if classifier is unreachable |
+| Timeout | `TimeSpan` | 10s | HTTP request timeout |
+
+When blocked, result metadata includes:
+- `label` — the predicted label (e.g. "jailbreak")
+- `confidence` — classification score (0.0–1.0)
+- `model` — model name (if configured)
+- `threshold` — the configured threshold
+
+**Setting up a Sentinel-v2 endpoint:**
+```bash
+# FastAPI server wrapping the transformers pipeline
+pip install transformers torch fastapi uvicorn
+# See samples/RemoteClassifier/ for a complete server example
+```
+
+```csharp
+using AgentGuard.RemoteClassifier;
+
+var policy = new GuardrailPolicyBuilder()
+    .BlockPromptInjection()                                  // tier 1: regex
+    .BlockPromptInjectionWithRemoteClassifier(               // tier 2: remote ML
+        "http://localhost:8000/classify",
+        modelName: "sentinel-v2",
+        threshold: 0.7f)
+    .BlockPromptInjectionWithLlm(chatClient)                 // tier 3: LLM
+    .Build();
+```
+
+---
+
 ## Prompt Injection Detection (LLM)
 
 `.BlockPromptInjectionWithLlm(chatClient, options?)`

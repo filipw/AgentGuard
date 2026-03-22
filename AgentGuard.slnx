@@ -7,6 +7,7 @@
     <Project Path="src/AgentGuard.Hosting/AgentGuard.Hosting.csproj" />
     <Project Path="src/AgentGuard.Workflows/AgentGuard.Workflows.csproj" />
     <Project Path="src/AgentGuard.Onnx/AgentGuard.Onnx.csproj" />
+    <Project Path="src/AgentGuard.RemoteClassifier/AgentGuard.RemoteClassifier.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/AgentGuard.Core.Tests/AgentGuard.Core.Tests.csproj" />
@@ -17,6 +18,7 @@
     <Project Path="tests/AgentGuard.Integration.Tests/AgentGuard.Integration.Tests.csproj" />
     <Project Path="tests/AgentGuard.Workflows.Tests/AgentGuard.Workflows.Tests.csproj" />
     <Project Path="tests/AgentGuard.Onnx.Tests/AgentGuard.Onnx.Tests.csproj" />
+    <Project Path="tests/AgentGuard.RemoteClassifier.Tests/AgentGuard.RemoteClassifier.Tests.csproj" />
   </Folder>
   <Folder Name="/samples/">
     <Project Path="samples/BasicGuardrails/BasicGuardrails.csproj" />

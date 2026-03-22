@@ -74,6 +74,10 @@ var guardedAgent = agent
 
 - **ONNX prompt injection detection** — uses a fine-tuned DeBERTa v3 model (`protectai/deberta-v3-base-prompt-injection-v2`) for ML-based classification. Runs fully offline with ~10ms inference time. Sits between regex (order 10) and LLM (order 15) at order 12. Returns confidence scores in metadata. Install via `AgentGuard.Onnx` package. Download the model with `./eng/download-onnx-model.sh`.
 
+### Remote ML classifier (SOTA models via HTTP)
+
+- **Remote prompt injection detection** — calls external model servers (Ollama, vLLM, HuggingFace TGI, custom FastAPI endpoints) for ML-based classification. Designed for SOTA models like [Sentinel-v2](https://huggingface.co/rogue-security/prompt-injection-jailbreak-sentinel-v2) (Qwen3-0.6B, F1 ~0.957, 32K context). Lightweight — no native ML dependencies, just `HttpClient`. Pluggable `IRemoteClassifier` abstraction. Order 13, fails open by default. Install via `AgentGuard.RemoteClassifier` package.
+
 ### LLM-based rules (accurate, pluggable via `IChatClient`)
 
 For teams that need higher accuracy than regex, AgentGuard provides LLM-as-judge guardrail rules that work with any `IChatClient` (Azure OpenAI, Ollama, local models, etc.):
@@ -88,12 +92,14 @@ For teams that need higher accuracy than regex, AgentGuard provides LLM-as-judge
 ```csharp
 using AgentGuard.Onnx;
 
-// Three-tier prompt injection detection: Regex → ONNX ML → LLM
+// Four-tier prompt injection detection: Regex → ONNX → Remote ML → LLM
 var policy = new GuardrailPolicyBuilder()
     .BlockPromptInjection()                              // tier 1: fast regex (order 10)
-    .BlockPromptInjectionWithOnnx(                       // tier 2: ML classifier (order 12)
+    .BlockPromptInjectionWithOnnx(                       // tier 2: local ONNX (order 12)
         "./models/model.onnx", "./models/spm.model")
-    .BlockPromptInjectionWithLlm(chatClient)             // tier 3: LLM judge (order 15)
+    .BlockPromptInjectionWithRemoteClassifier(            // tier 3: remote ML (order 13)
+        "http://localhost:8000/classify", modelName: "sentinel-v2")
+    .BlockPromptInjectionWithLlm(chatClient)             // tier 4: LLM judge (order 15)
     .DetectPIIWithLlm(chatClient, new() { Action = PiiAction.Redact })
     .EnforceTopicBoundaryWithLlm(chatClient, "billing", "payments")
     .LimitInputTokens(4000)
@@ -133,10 +139,11 @@ Fast rules (regex, local) evaluate on every check cycle. Expensive LLM rules onl
 
 | Package | Description | NuGet |
 |---------|-------------|-------|
-| `AgentGuard.Core` | Framework-agnostic core: abstractions, rules engine, fluent builder, all 18 built-in rules | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Core.svg)](https://www.nuget.org/packages/AgentGuard.Core) |
+| `AgentGuard.Core` | Framework-agnostic core: abstractions, rules engine, fluent builder, all 19 built-in rules | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Core.svg)](https://www.nuget.org/packages/AgentGuard.Core) |
 | `AgentGuard.AgentFramework` | Microsoft Agent Framework adapter: `UseAgentGuard()` middleware for `AIAgentBuilder` | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.AgentFramework.svg)](https://www.nuget.org/packages/AgentGuard.AgentFramework) |
 | `AgentGuard.Workflows` | Workflow guardrails — decorates MAF `Executor` with guardrails at step boundaries | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Workflows.svg)](https://www.nuget.org/packages/AgentGuard.Workflows) |
 | `AgentGuard.Onnx` | ONNX-based ML classifiers — offline prompt injection detection with DeBERTa v3 | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Onnx.svg)](https://www.nuget.org/packages/AgentGuard.Onnx) |
+| `AgentGuard.RemoteClassifier` | Remote ML classifier via HTTP — call Sentinel-v2, Ollama, vLLM, or custom endpoints | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.RemoteClassifier.svg)](https://www.nuget.org/packages/AgentGuard.RemoteClassifier) |
 | `AgentGuard.Local` | Offline classifiers (keyword similarity, embedding-based topic similarity) | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Local.svg)](https://www.nuget.org/packages/AgentGuard.Local) |
 | `AgentGuard.Azure` | Azure AI Content Safety integration | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Azure.svg)](https://www.nuget.org/packages/AgentGuard.Azure) |
 | `AgentGuard.Hosting` | DI registration, named policy factory, `appsettings.json` config binding | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Hosting.svg)](https://www.nuget.org/packages/AgentGuard.Hosting) |
@@ -411,6 +418,7 @@ Rules execute in order of their `Order` property (lower = first). Built-in rules
 | 8 | `RetrievalGuardrailRule` | Regex | Input |
 | 10 | `PromptInjectionRule` | Regex | Input |
 | 12 | `OnnxPromptInjectionRule` | ONNX ML | Input |
+| 13 | `RemotePromptInjectionRule` | Remote ML | Input |
 | 15 | `LlmPromptInjectionRule` | LLM | Input |
 | 20 | `PiiRedactionRule` | Regex | Both |
 | 22 | `SecretsDetectionRule` | Regex | Both |

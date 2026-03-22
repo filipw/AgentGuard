@@ -113,13 +113,13 @@ await foreach (var update in guardedAgent
     <p class="section-label">Features</p>
     <h2 class="section-title">Everything you need.<br>Nothing you don't.</h2>
     <p class="section-subtitle">
-      18 built-in rules covering the full input/output safety lifecycle. Regex for speed, ONNX ML for accuracy, LLM for nuance.
+      19 built-in rules covering the full input/output safety lifecycle. Regex for speed, ONNX ML for accuracy, LLM for nuance.
     </p>
 
     <div class="feature-grid">
       <div class="feature-card">
         <h3>Prompt Injection Detection</h3>
-        <p>Three-tier defense: regex patterns (from Arcanum taxonomy), ONNX ML classifier (DeBERTa v3, ~10ms offline), and LLM-as-judge with structured threat classification.</p>
+        <p>Four-tier defense: regex patterns (from Arcanum taxonomy), ONNX ML classifier (DeBERTa v3, ~10ms offline), remote ML classifier (Sentinel-v2 via HTTP, F1 ~0.957), and LLM-as-judge with structured threat classification.</p>
       </div>
       <div class="feature-card">
         <h3>PII Redaction</h3>
@@ -148,7 +148,7 @@ await foreach (var update in guardedAgent
 <!-- ── Rules ──────────────────────────────────────── -->
 <section id="rules">
   <p class="section-label">Built-in Rules</p>
-  <h2 class="section-title">18 rules. Ordered by cost.</h2>
+  <h2 class="section-title">19 rules. Ordered by cost.</h2>
   <p class="section-subtitle">
     Cheap regex checks run first and short-circuit. Expensive LLM calls only run if needed.
   </p>
@@ -185,6 +185,12 @@ await foreach (var update in guardedAgent
         <td>12</td>
         <td><code>OnnxPromptInjectionRule</code></td>
         <td><span class="badge badge-onnx">ONNX ML</span></td>
+        <td>Input</td>
+      </tr>
+      <tr>
+        <td>13</td>
+        <td><code>RemotePromptInjectionRule</code></td>
+        <td><span class="badge badge-onnx">Remote ML</span></td>
         <td>Input</td>
       </tr>
       <tr>
@@ -306,13 +312,13 @@ await foreach (var update in guardedAgent
   <p class="section-label">Packages</p>
   <h2 class="section-title">Pick what you need.</h2>
   <p class="section-subtitle">
-    Seven packages, layered. Core is all you need to start. Add framework adapters, cloud integrations, or ML classifiers as needed.
+    Eight packages, layered. Core is all you need to start. Add framework adapters, cloud integrations, or ML classifiers as needed.
   </p>
 
   <div class="package-grid">
     <div class="package-card">
       <div class="package-name">AgentGuard.Core</div>
-      <div class="package-desc">Framework-agnostic core. Abstractions, rules engine, fluent builder, all 18 built-in rules. No agent framework dependency.</div>
+      <div class="package-desc">Framework-agnostic core. Abstractions, rules engine, fluent builder, all 19 built-in rules. No agent framework dependency.</div>
     </div>
     <div class="package-card">
       <div class="package-name">AgentGuard.AgentFramework</div>
@@ -325,6 +331,10 @@ await foreach (var update in guardedAgent
     <div class="package-card">
       <div class="package-name">AgentGuard.Onnx</div>
       <div class="package-desc">ONNX-based ML classifiers. Offline prompt injection detection with DeBERTa v3. ~10ms inference, no cloud needed.</div>
+    </div>
+    <div class="package-card">
+      <div class="package-name">AgentGuard.RemoteClassifier</div>
+      <div class="package-desc">Remote ML classifier via HTTP. Call Sentinel-v2, Ollama, vLLM, or custom endpoints for SOTA prompt injection detection.</div>
     </div>
     <div class="package-card">
       <div class="package-name">AgentGuard.Local</div>
@@ -351,12 +361,14 @@ await foreach (var update in guardedAgent
     </p>
 <pre><code>using AgentGuard.Onnx;
 
-// Three-tier prompt injection: Regex → ONNX → LLM
+// Four-tier prompt injection: Regex → ONNX → Remote ML → LLM
 var policy = new GuardrailPolicyBuilder()
     .NormalizeInput()
     .BlockPromptInjection()                            // regex (order 10)
-    .BlockPromptInjectionWithOnnx(                     // ML (order 12)
+    .BlockPromptInjectionWithOnnx(                     // ONNX (order 12)
         modelPath, tokenizerPath)
+    .BlockPromptInjectionWithRemoteClassifier(          // remote ML (order 13)
+        "http://localhost:8000/classify")
     .BlockPromptInjectionWithLlm(chatClient)           // LLM (order 15)
     .DetectPIIWithLlm(chatClient,
         new() { Action = PiiAction.Redact })
