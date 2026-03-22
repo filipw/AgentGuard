@@ -27,6 +27,7 @@ var policy = new GuardrailPolicyBuilder()
     .EnforceTopicBoundary("customer-support", "billing", "returns")
     .LimitInputTokens(4000)
     .GuardToolCalls()              // inspect tool call arguments for injection
+    .GuardToolResults()            // detect indirect injection in tool results
     .Build();
 
 var pipeline = new GuardrailPipeline(policy, logger);
@@ -67,6 +68,7 @@ var guardedAgent = agent
 
 - **Retrieval guardrails** — filters retrieved chunks before they reach the LLM context. Detects prompt injection, secrets, and PII in knowledge base content. Supports relevance score filtering, max chunk limits, remove/sanitize actions, and custom filters. Integrates with MAF via `RetrievalGuardrailContextProvider`
 - **Tool call guardrails** — inspects agent tool call arguments for SQL injection, code injection, path traversal, command injection, SSRF, template injection, and XSS. Per-tool and per-argument allowlists for tools that legitimately accept code/SQL. Automatically extracted from MAF agent responses
+- **Tool result guardrails** — detects indirect prompt injection hidden in tool call results (emails, documents, API responses). Three-tier risk-based detection with tool-specific risk profiles (email=high, docs=medium, calculator=low). Supports block or sanitize actions, Unicode control character stripping, and custom patterns. Inspired by [StackOneHQ/defender](https://github.com/StackOneHQ/defender)
 
 ### ONNX ML-based rules (fast, accurate, offline)
 
@@ -131,7 +133,7 @@ Fast rules (regex, local) evaluate on every check cycle. Expensive LLM rules onl
 
 | Package | Description | NuGet |
 |---------|-------------|-------|
-| `AgentGuard.Core` | Framework-agnostic core: abstractions, rules engine, fluent builder, all 17 built-in rules | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Core.svg)](https://www.nuget.org/packages/AgentGuard.Core) |
+| `AgentGuard.Core` | Framework-agnostic core: abstractions, rules engine, fluent builder, all 18 built-in rules | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Core.svg)](https://www.nuget.org/packages/AgentGuard.Core) |
 | `AgentGuard.AgentFramework` | Microsoft Agent Framework adapter: `UseAgentGuard()` middleware for `AIAgentBuilder` | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.AgentFramework.svg)](https://www.nuget.org/packages/AgentGuard.AgentFramework) |
 | `AgentGuard.Workflows` | Workflow guardrails — decorates MAF `Executor` with guardrails at step boundaries | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Workflows.svg)](https://www.nuget.org/packages/AgentGuard.Workflows) |
 | `AgentGuard.Onnx` | ONNX-based ML classifiers — offline prompt injection detection with DeBERTa v3 | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Onnx.svg)](https://www.nuget.org/packages/AgentGuard.Onnx) |
@@ -417,6 +419,7 @@ Rules execute in order of their `Order` property (lower = first). Built-in rules
 | 35 | `LlmTopicGuardrailRule` | LLM | Input |
 | 40 | `TokenLimitRule` | Local | Input/Output |
 | 45 | `ToolCallGuardrailRule` | Regex | Output |
+| 47 | `ToolResultGuardrailRule` | Regex | Output |
 | 50 | `ContentSafetyRule` | Pluggable | Both |
 | 55 | `LlmOutputPolicyRule` | LLM | Output |
 | 60 | `OutputTopicBoundaryRule` | Embedding | Output |

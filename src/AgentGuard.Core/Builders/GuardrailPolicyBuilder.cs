@@ -8,6 +8,7 @@ using AgentGuard.Core.Rules.Retrieval;
 using AgentGuard.Core.Rules.Secrets;
 using AgentGuard.Core.Rules.TokenLimits;
 using AgentGuard.Core.Rules.ToolCall;
+using AgentGuard.Core.Rules.ToolResult;
 using AgentGuard.Core.Rules.TopicBoundary;
 using AgentGuard.Core.Streaming;
 using Microsoft.Extensions.AI;
@@ -310,6 +311,27 @@ public sealed class GuardrailPolicyBuilder
     public GuardrailPolicyBuilder GuardToolCalls(ToolCallGuardrailOptions? options = null)
     {
         _rules.Add(new ToolCallGuardrailRule(options));
+        return this;
+    }
+
+    /// <summary>
+    /// Adds tool result guardrails that inspect incoming tool call results for indirect
+    /// prompt injection. Detects hidden instructions, role markers, encoding tricks, and
+    /// social engineering in content returned by tools (emails, documents, API responses).
+    /// Place tool results in <c>GuardrailContext.Properties["ToolResults"]</c> as <c>IReadOnlyList&lt;ToolResultEntry&gt;</c>.
+    /// </summary>
+    public GuardrailPolicyBuilder GuardToolResults(ToolResultGuardrailOptions? options = null)
+    {
+        _rules.Add(new ToolResultGuardrailRule(options));
+        return this;
+    }
+
+    /// <summary>
+    /// Adds tool result guardrails with a specific action (Block or Sanitize).
+    /// </summary>
+    public GuardrailPolicyBuilder GuardToolResults(ToolResultAction action)
+    {
+        _rules.Add(new ToolResultGuardrailRule(new ToolResultGuardrailOptions { Action = action }));
         return this;
     }
 

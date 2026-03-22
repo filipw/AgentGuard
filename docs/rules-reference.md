@@ -170,6 +170,44 @@ Requires an `IContentSafetyClassifier`. Use `AgentGuard.Azure` for Azure AI Cont
 
 Blocklist matches are checked first and take precedence over category analysis. When a blocklist match is found, the result includes metadata with `blocklistName`, `blocklistItemText`, and `totalMatches`.
 
+## Tool Result Guardrails (Indirect Injection)
+
+`.GuardToolResults(options?)` or `.GuardToolResults(action)`
+
+Order 47, Output phase. Detects indirect prompt injection in incoming tool call results — emails, documents, API responses — before they reach the LLM. Complements `ToolCallGuardrailRule` (which guards outbound arguments). Inspired by [StackOneHQ/defender](https://github.com/StackOneHQ/defender).
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| Action | `ToolResultAction` | Block | `Block` to reject, `Sanitize` to strip injections |
+| ToolRiskProfiles | `IDictionary<string, ToolRiskLevel>` | {} | Per-tool risk overrides (Low/Medium/High) |
+| SkippedTools | `ISet<string>` | {} | Tool names to skip entirely |
+| StripUnicodeControl | `bool` | true | Strip zero-width and invisible Unicode characters before evaluation |
+| DetectEncodedPayloads | `bool` | true | Detect base64-encoded injection payloads |
+| SanitizationReplacement | `string` | `[FILTERED]` | Replacement text when sanitizing |
+| CustomPatterns | `IReadOnlyList<(string, string, Regex)>` | [] | Additional (category, description, pattern) tuples |
+
+**Three-tier risk-based detection:**
+
+| Tier | Risk Level | Patterns Checked |
+|------|-----------|-----------------|
+| Core | All tools | Role hijacking, instruction override, ChatML/XML token injection, HTML comment injection, zero-width chars, data exfiltration URLs, prompt leak instructions |
+| Medium | Medium + High | Markdown hidden text, `[INST]` tags, hex-encoded content |
+| High | High only | Action directives, social engineering, delimiter manipulation, persona hijacking, base64-encoded instructions |
+
+**Built-in tool risk profiles:**
+
+| Risk Level | Default Tools |
+|-----------|--------------|
+| High | gmail, email, outlook, slack, teams, discord, chat, message, sms |
+| Medium | search, web_search, browse, read_file, get_document, github, jira, confluence |
+| Low | calculator, get_weather, get_time |
+
+Tools not in the profile default to Medium. Tool names containing "email", "mail", "message", "chat", "slack", or "sms" are heuristically classified as High.
+
+Place tool results in `GuardrailContext.Properties["ToolResults"]` as `IReadOnlyList<ToolResultEntry>`. When action is Sanitize, sanitized results are written to `Properties["SanitizedToolResults"]`. Violations are stored in `Properties["ToolResultViolations"]`.
+
+---
+
 ## Output/Input Validation
 
 `.ValidateOutput(predicate, message)` / `.ValidateInput(predicate, message)`

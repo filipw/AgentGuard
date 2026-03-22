@@ -78,6 +78,8 @@ builder.Services.AddAgentGuard(builder.Configuration.GetSection("AgentGuard"));
 | `PiiRedaction` | `Categories` (Default/All/Email,Phone,...), `Replacement` (default [REDACTED]) | Regex-based redaction |
 | `TopicBoundary` | `AllowedTopics` (string[]), `SimilarityThreshold` (float, default 0.3) | Keyword-based topic matching |
 | `TokenLimit` | `MaxTokens` (int), `Phase` (Input/Output), `OverflowStrategy` (Reject/Truncate/Warn) | Token counting via ML.Tokenizers |
+| `ToolCallGuardrail` | `Categories` (Default/All/SqlInjection,...) | Inspects tool call arguments for injection |
+| `ToolResultGuardrail` | `Action` (Block/Sanitize), `StripUnicodeControl` (bool, default true) | Detects indirect injection in tool results |
 | `ContentSafety` | `MaxAllowedSeverity` (Safe/Low/Medium), `BlocklistNames` (string[]), `HaltOnBlocklistHit` (bool) | Requires `IContentSafetyClassifier` in DI |
 | `LlmPromptInjection` | `IncludeClassification` (bool), `SystemPrompt` (string) | Requires `IChatClient` in DI |
 | `LlmPiiDetection` | `PiiAction` (Block/Redact), `SystemPrompt` (string) | Requires `IChatClient` in DI |

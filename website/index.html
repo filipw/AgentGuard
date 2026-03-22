@@ -113,7 +113,7 @@ await foreach (var update in guardedAgent
     <p class="section-label">Features</p>
     <h2 class="section-title">Everything you need.<br>Nothing you don't.</h2>
     <p class="section-subtitle">
-      17 built-in rules covering the full input/output safety lifecycle. Regex for speed, ONNX ML for accuracy, LLM for nuance.
+      18 built-in rules covering the full input/output safety lifecycle. Regex for speed, ONNX ML for accuracy, LLM for nuance.
     </p>
 
     <div class="feature-grid">
@@ -139,7 +139,7 @@ await foreach (var update in guardedAgent
       </div>
       <div class="feature-card">
         <h3>Agentic &amp; RAG Guardrails</h3>
-        <p>Guard tool call arguments against SQL injection, code injection, SSRF, path traversal, and more. Filter RAG chunks for prompt injection and secrets before they reach the LLM context.</p>
+        <p>Guard tool call arguments against SQL injection, code injection, SSRF, and more. Detect indirect prompt injection in tool results (emails, documents). Filter RAG chunks for injection and secrets before they reach the LLM context.</p>
       </div>
     </div>
   </div>
@@ -148,7 +148,7 @@ await foreach (var update in guardedAgent
 <!-- ── Rules ──────────────────────────────────────── -->
 <section id="rules">
   <p class="section-label">Built-in Rules</p>
-  <h2 class="section-title">17 rules. Ordered by cost.</h2>
+  <h2 class="section-title">18 rules. Ordered by cost.</h2>
   <p class="section-subtitle">
     Cheap regex checks run first and short-circuit. Expensive LLM calls only run if needed.
   </p>
@@ -236,6 +236,12 @@ await foreach (var update in guardedAgent
         <td>Output</td>
       </tr>
       <tr>
+        <td>47</td>
+        <td><code>ToolResultGuardrailRule</code></td>
+        <td><span class="badge badge-regex">Regex</span></td>
+        <td>Output</td>
+      </tr>
+      <tr>
         <td>50</td>
         <td><code>ContentSafetyRule</code></td>
         <td><span class="badge badge-plugin">Pluggable</span></td>
@@ -289,7 +295,7 @@ await foreach (var update in guardedAgent
       </div>
       <div class="feature-card">
         <h3>3. Output Guardrails</h3>
-        <p>Tool call injection detection, PII/secrets redaction, policy compliance, groundedness checking, copyright detection — all before the response reaches the user.</p>
+        <p>Tool call injection detection, indirect injection in tool results, PII/secrets redaction, policy compliance, groundedness checking, copyright detection — all before the response reaches the user.</p>
       </div>
     </div>
   </div>
@@ -306,7 +312,7 @@ await foreach (var update in guardedAgent
   <div class="package-grid">
     <div class="package-card">
       <div class="package-name">AgentGuard.Core</div>
-      <div class="package-desc">Framework-agnostic core. Abstractions, rules engine, fluent builder, all 14 built-in rules. No agent framework dependency.</div>
+      <div class="package-desc">Framework-agnostic core. Abstractions, rules engine, fluent builder, all 18 built-in rules. No agent framework dependency.</div>
     </div>
     <div class="package-card">
       <div class="package-name">AgentGuard.AgentFramework</div>
