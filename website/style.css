@@ -333,6 +333,53 @@ section.alt .feature-card {
 .badge-local { background: #e8e8ed; color: #1d1d1f; }
 .badge-plugin { background: #e8e8ed; color: #1d1d1f; }
 
+/* ── Benchmark ───────────────────────────────────────── */
+
+.benchmark-table {
+  width: 100%;
+  max-width: 640px;
+  margin: 2rem auto;
+  border-collapse: collapse;
+  font-size: 0.9375rem;
+}
+
+.benchmark-table th {
+  text-align: left;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-secondary);
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.benchmark-table td {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.benchmark-table td:last-child {
+  font-family: var(--font-mono);
+}
+
+.benchmark-highlight {
+  background: #f0fdf4;
+}
+
+.benchmark-highlight td {
+  font-weight: 600;
+}
+
+.benchmark-note {
+  max-width: 640px;
+  margin: 1.25rem auto 0;
+  font-size: 0.875rem;
+  color: var(--color-text-secondary);
+  text-align: center;
+  line-height: 1.5;
+}
+
 /* ── Packages ────────────────────────────────────────── */
 
 .package-grid {

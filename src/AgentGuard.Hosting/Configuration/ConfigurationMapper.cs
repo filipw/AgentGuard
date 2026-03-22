@@ -92,12 +92,20 @@ internal static class ConfigurationMapper
                 break;
 
             case "onnxpromptinjection":
-                builder.BlockPromptInjectionWithOnnx(new OnnxPromptInjectionOptions
+            case "defenderpromptinjection":
+                builder.BlockPromptInjectionWithOnnx(new DefenderPromptInjectionOptions
+                {
+                    Threshold = rule.Threshold ?? 0.5f
+                });
+                break;
+
+            case "debertapromptinjection":
+                builder.BlockPromptInjectionWithDeberta(new OnnxPromptInjectionOptions
                 {
                     ModelPath = rule.ModelPath
-                        ?? throw new InvalidOperationException("OnnxPromptInjection requires ModelPath."),
+                        ?? throw new InvalidOperationException("DebertaPromptInjection requires ModelPath."),
                     TokenizerPath = rule.TokenizerPath
-                        ?? throw new InvalidOperationException("OnnxPromptInjection requires TokenizerPath."),
+                        ?? throw new InvalidOperationException("DebertaPromptInjection requires TokenizerPath."),
                     Threshold = rule.Threshold ?? 0.5f
                 });
                 break;

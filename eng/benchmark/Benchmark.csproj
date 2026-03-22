@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/AgentGuard.Core/AgentGuard.Core.csproj" />
+    <ProjectReference Include="../../src/AgentGuard.Onnx/AgentGuard.Onnx.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Parquet.Net" />
+    <PackageReference Include="Microsoft.Extensions.AI.OpenAI" />
+  </ItemGroup>
+</Project>
