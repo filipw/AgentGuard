@@ -8,11 +8,11 @@ namespace AgentGuard.E2E.Tests;
 /// a user-supplied OpenAI-compatible embedding endpoint. Tests that need embeddings use this fixture.
 ///
 /// Required environment variables:
-///   AGENTGUARD_EMBEDDING_ENDPOINT — base URL of the OpenAI-compatible API (e.g. http://localhost:1234/v1/)
-///   AGENTGUARD_EMBEDDING_MODEL    — embedding model name (e.g. jina-embeddings-v5-text-small-retrieval)
+///   AGENTGUARD_EMBEDDING_ENDPOINT - base URL of the OpenAI-compatible API (e.g. http://localhost:1234/v1/)
+///   AGENTGUARD_EMBEDDING_MODEL    - embedding model name (e.g. jina-embeddings-v5-text-small-retrieval)
 ///
 /// Optional:
-///   AGENTGUARD_EMBEDDING_KEY — API key (defaults to "unused" for local servers)
+///   AGENTGUARD_EMBEDDING_KEY - API key (defaults to "unused" for local servers)
 ///
 /// Falls back to AGENTGUARD_LLM_ENDPOINT / AGENTGUARD_LLM_KEY if embedding-specific vars are not set,
 /// since many local servers (LM Studio, Ollama) serve both chat and embedding on the same endpoint.

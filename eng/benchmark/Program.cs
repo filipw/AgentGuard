@@ -166,7 +166,7 @@ if (onnxAvailable)
 }
 else if (includeOnnx)
 {
-    Console.WriteLine($"\nONNX DeBERTa model not found at {modelPath} — skipping.");
+    Console.WriteLine($"\nONNX DeBERTa model not found at {modelPath} - skipping.");
     Console.WriteLine("Run eng/download-onnx-model.sh to download the model.\n");
 }
 
@@ -189,7 +189,7 @@ if (miniLmAvailable)
 }
 else if (includeOnnx)
 {
-    Console.WriteLine($"\nMiniLM model not found at {miniLmModelPath} — skipping.");
+    Console.WriteLine($"\nMiniLM model not found at {miniLmModelPath} - skipping.");
 }
 
 // LLM-as-judge classifier
@@ -203,7 +203,7 @@ if (includeLlm)
 
     if (string.IsNullOrEmpty(llmEndpoint) || string.IsNullOrEmpty(llmModel))
     {
-        Console.WriteLine("\nLLM not configured — set AGENTGUARD_LLM_ENDPOINT and AGENTGUARD_LLM_MODEL.\n");
+        Console.WriteLine("\nLLM not configured - set AGENTGUARD_LLM_ENDPOINT and AGENTGUARD_LLM_MODEL.\n");
     }
     else
     {
@@ -214,7 +214,7 @@ if (includeLlm)
         llmClient = openAiClient.GetChatClient(llmModel).AsIChatClient();
         var chatOptions = new ChatOptions { MaxOutputTokens = llmMaxTokens, Temperature = 0f };
 
-        // Simple classification (no structured output — faster)
+        // Simple classification (no structured output - faster)
         var llmRule = new LlmPromptInjectionRule(llmClient, new LlmPromptInjectionOptions { IncludeClassification = false }, chatOptions);
         var llmDebugCount = 0;
         var capturedClient = llmClient;
@@ -288,7 +288,7 @@ foreach (var (name, classify, disposable) in classifiers)
             }
             catch
             {
-                results[i] = null; // error — treat as pass (fail-open)
+                results[i] = null; // error - treat as pass (fail-open)
             }
             finally
             {

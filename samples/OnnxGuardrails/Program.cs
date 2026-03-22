@@ -1,7 +1,7 @@
-// AgentGuard — ONNX Guardrails Sample
+// AgentGuard - ONNX Guardrails Sample
 // Demonstrates offline ML-based prompt injection detection.
 //
-// The StackOne Defender model is bundled — no download needed for Example 1 and 2.
+// The StackOne Defender model is bundled - no download needed for Example 1 and 2.
 // For Example 3 (DeBERTa v3), download the model first:
 //   ./eng/download-onnx-model.sh
 //   AGENTGUARD_ONNX_MODEL_PATH=./models/deberta-v3-prompt-injection/model.onnx \
@@ -15,11 +15,11 @@ using AgentGuard.Core.Rules.PromptInjection;
 using AgentGuard.Onnx;
 using Microsoft.Extensions.Logging.Abstractions;
 
-Console.WriteLine("AgentGuard — ONNX Guardrails Demo");
+Console.WriteLine("AgentGuard - ONNX Guardrails Demo");
 Console.WriteLine(new string('=', 60));
 
 // ─── Example 1: Standalone Defender Rule ─────────────────────────────────
-// Uses the bundled StackOne Defender model — no download or config needed.
+// Uses the bundled StackOne Defender model - no download or config needed.
 
 Console.WriteLine("\n[1] Standalone Defender Prompt Injection Detection");
 Console.WriteLine(new string('─', 60));
@@ -124,7 +124,7 @@ if (!string.IsNullOrEmpty(modelPath) && !string.IsNullOrEmpty(tokenizerPath))
 }
 else
 {
-    Console.WriteLine("\n\n[3] DeBERTa v3 (skipped — set AGENTGUARD_ONNX_MODEL_PATH and AGENTGUARD_ONNX_TOKENIZER_PATH)");
+    Console.WriteLine("\n\n[3] DeBERTa v3 (skipped - set AGENTGUARD_ONNX_MODEL_PATH and AGENTGUARD_ONNX_TOKENIZER_PATH)");
 }
 
 Console.WriteLine($"\n{new string('=', 60)}");

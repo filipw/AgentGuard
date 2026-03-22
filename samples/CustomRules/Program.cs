@@ -1,4 +1,4 @@
-// AgentGuard — CustomRules Sample
+// AgentGuard - CustomRules Sample
 // Demonstrates how to create and use custom guardrail rules.
 
 using AgentGuard.Core.Abstractions;
@@ -6,7 +6,7 @@ using AgentGuard.Core.Builders;
 using AgentGuard.Core.Guardrails;
 using Microsoft.Extensions.Logging.Abstractions;
 
-Console.WriteLine("AgentGuard — Custom Rules Demo");
+Console.WriteLine("AgentGuard - Custom Rules Demo");
 Console.WriteLine(new string('=', 50));
 
 // 1. Build a policy with a custom IGuardrailRule implementation

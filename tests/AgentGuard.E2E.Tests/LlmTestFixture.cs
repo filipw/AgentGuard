@@ -8,12 +8,12 @@ namespace AgentGuard.E2E.Tests;
 /// OpenAI-compatible endpoint. Tests that need an LLM use this fixture.
 ///
 /// Required environment variables:
-///   AGENTGUARD_LLM_ENDPOINT — base URL of the OpenAI-compatible API (e.g. http://localhost:1234/v1/)
-///   AGENTGUARD_LLM_MODEL    — model name to use (e.g. openai/gpt-oss-20b, gpt-4o-mini)
+///   AGENTGUARD_LLM_ENDPOINT - base URL of the OpenAI-compatible API (e.g. http://localhost:1234/v1/)
+///   AGENTGUARD_LLM_MODEL    - model name to use (e.g. openai/gpt-oss-20b, gpt-4o-mini)
 ///
 /// Optional:
-///   AGENTGUARD_LLM_KEY — API key (defaults to "unused" for local servers that don't require auth)
-///   AGENTGUARD_LLM_MAX_TOKENS — max output tokens (defaults to 1000; increase for reasoning models)
+///   AGENTGUARD_LLM_KEY - API key (defaults to "unused" for local servers that don't require auth)
+///   AGENTGUARD_LLM_MAX_TOKENS - max output tokens (defaults to 1000; increase for reasoning models)
 /// </summary>
 public sealed class LlmTestFixture : IDisposable
 {

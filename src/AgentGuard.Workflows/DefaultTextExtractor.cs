@@ -32,7 +32,7 @@ public sealed class DefaultTextExtractor : ITextExtractor
         if (message is ChatMessage chatMessage)
             return chatMessage.Text;
 
-        // MAF AgentResponse — extract last assistant message text
+        // MAF AgentResponse - extract last assistant message text
         if (message is AgentResponse agentResponse)
         {
             return agentResponse.Messages
@@ -41,7 +41,7 @@ public sealed class DefaultTextExtractor : ITextExtractor
                 .LastOrDefault();
         }
 
-        // IEnumerable<ChatMessage> — last message text
+        // IEnumerable<ChatMessage> - last message text
         if (message is IEnumerable<ChatMessage> messages)
             return messages.LastOrDefault()?.Text;
 

@@ -8,7 +8,7 @@ namespace AgentGuard.Azure.ContentSafety;
 /// <summary>
 /// Wraps Azure AI Content Safety into the <see cref="IContentSafetyClassifier"/> interface.
 /// Supports category-based analysis and server-side blocklist matching.
-/// Fails open on errors — returns empty results so the agent keeps working.
+/// Fails open on errors - returns empty results so the agent keeps working.
 /// </summary>
 public sealed partial class AzureContentSafetyClassifier : IContentSafetyClassifier
 {

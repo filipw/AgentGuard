@@ -9,7 +9,7 @@ public static class OnnxGuardrailBuilderExtensions
 {
     /// <summary>
     /// Adds ONNX-based prompt injection detection using the bundled StackOne Defender model (order 11).
-    /// This is the recommended ONNX classifier — fast (~8 ms), accurate (F1 ~0.97), and requires no separate download.
+    /// This is the recommended ONNX classifier - fast (~8 ms), accurate (F1 ~0.97), and requires no separate download.
     /// Runs before DeBERTa (order 12) and LLM-based detection (order 15).
     /// </summary>
     /// <param name="builder">The policy builder.</param>
@@ -38,7 +38,7 @@ public static class OnnxGuardrailBuilderExtensions
 
     /// <summary>
     /// Adds ONNX-based prompt injection detection (order 12) using the DeBERTa v3 model.
-    /// The ONNX model must be downloaded separately — see <c>eng/download-onnx-model.sh</c>.
+    /// The ONNX model must be downloaded separately - see <c>eng/download-onnx-model.sh</c>.
     /// For most use cases, prefer <see cref="BlockPromptInjectionWithOnnx(GuardrailPolicyBuilder, DefenderPromptInjectionOptions?)"/>
     /// which uses the bundled StackOne Defender model (faster, higher accuracy, no download required).
     /// </summary>
@@ -55,7 +55,7 @@ public static class OnnxGuardrailBuilderExtensions
 
     /// <summary>
     /// Adds ONNX-based prompt injection detection (order 12) using the DeBERTa v3 model.
-    /// The ONNX model must be downloaded separately — see <c>eng/download-onnx-model.sh</c>.
+    /// The ONNX model must be downloaded separately - see <c>eng/download-onnx-model.sh</c>.
     /// </summary>
     /// <param name="builder">The policy builder.</param>
     /// <param name="modelPath">Path to the ONNX model file.</param>

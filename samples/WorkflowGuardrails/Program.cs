@@ -1,4 +1,4 @@
-// AgentGuard — Workflow Guardrails Sample
+// AgentGuard - Workflow Guardrails Sample
 // Demonstrates wrapping MAF workflow Executors with guardrails using .WithGuardrails().
 // Each executor in the workflow gets its own guardrail policy, applied at the step boundary.
 //
@@ -12,13 +12,13 @@ using AgentGuard.Workflows;
 using Microsoft.Agents.AI.Workflows;
 using Microsoft.Extensions.AI;
 
-Console.WriteLine("AgentGuard — Workflow Guardrails Demo");
+Console.WriteLine("AgentGuard - Workflow Guardrails Demo");
 Console.WriteLine(new string('=', 60));
 
 // ─── Define Executors ────────────────────────────────────────────────────
 // These are real MAF Executor subclasses that process messages in a pipeline.
 
-// Step 1: Input sanitization — accepts raw user input, passes cleaned text downstream.
+// Step 1: Input sanitization - accepts raw user input, passes cleaned text downstream.
 // Guardrails: normalize, block injection, redact PII, limit tokens.
 var inputExecutor = new InputSanitizer()
     .WithGuardrails(b => b
@@ -27,7 +27,7 @@ var inputExecutor = new InputSanitizer()
         .RedactPII(PiiCategory.Email | PiiCategory.Phone | PiiCategory.SSN)
         .LimitInputTokens(500));
 
-// Step 2: Data processor — accepts sanitized text, returns a response.
+// Step 2: Data processor - accepts sanitized text, returns a response.
 // Guardrails on output: block responses containing internal-only information.
 var processorExecutor = new DataProcessor()
     .WithGuardrails(b => b
@@ -35,7 +35,7 @@ var processorExecutor = new DataProcessor()
             text => !text.Contains("internal-only", StringComparison.OrdinalIgnoreCase),
             "Response contains internal-only information"));
 
-// Step 3: Topic-scoped executor — only allows billing/returns topics.
+// Step 3: Topic-scoped executor - only allows billing/returns topics.
 var topicExecutor = new TopicRouter()
     .WithGuardrails(b => b
         .EnforceTopicBoundary("billing", "returns", "customer-support"));
@@ -61,18 +61,18 @@ foreach (var (label, input) in scenarios)
 
     try
     {
-        // Step 1: Input sanitization (void executor — passes text to context)
+        // Step 1: Input sanitization (void executor - passes text to context)
         workflowContext.Reset();
         await inputExecutor.HandleAsync(input, workflowContext);
         var sanitizedInput = workflowContext.LastMessage ?? input;
         Console.WriteLine($"  [Step 1 - InputSanitizer] Passed → \"{Truncate(sanitizedInput)}\"");
 
-        // Step 2: Topic routing (void executor — validates topic)
+        // Step 2: Topic routing (void executor - validates topic)
         workflowContext.Reset();
         await topicExecutor.HandleAsync(sanitizedInput, workflowContext);
-        Console.WriteLine("  [Step 2 - TopicRouter] Passed — on-topic");
+        Console.WriteLine("  [Step 2 - TopicRouter] Passed - on-topic");
 
-        // Step 3: Data processing (typed executor — returns response)
+        // Step 3: Data processing (typed executor - returns response)
         var response = await processorExecutor.HandleAsync(sanitizedInput, workflowContext);
         Console.WriteLine($"  [Step 3 - DataProcessor] Response: \"{Truncate(response)}\"");
         Console.WriteLine($"  [Final]: {response}");
@@ -115,7 +115,7 @@ sealed class InputSanitizer : Executor<string>
 }
 
 /// <summary>
-/// Void executor that acts as a topic gate — only allows on-topic messages through.
+/// Void executor that acts as a topic gate - only allows on-topic messages through.
 /// The actual topic enforcement is done by the guardrail, so the executor itself just passes through.
 /// </summary>
 sealed class TopicRouter : Executor<string>

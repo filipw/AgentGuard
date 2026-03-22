@@ -220,7 +220,7 @@ public class GuardedExecutorTests
     [Fact]
     public async Task VoidExecutor_ShouldSkipGuardrails_WhenInputIsNull()
     {
-        // DefaultTextExtractor returns null for null — pipeline is skipped
+        // DefaultTextExtractor returns null for null - pipeline is skipped
         string? received = null;
         var inner = new TestVoidExecutor<string?>("inner", (msg, _) => { received = msg; return ValueTask.CompletedTask; });
         var guarded = inner.WithGuardrails(PolicyWith(BlockingRule()));

@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <Description>ONNX-based ML classifiers for AgentGuard — offline prompt injection detection. Includes the bundled StackOne Defender model (fine-tuned MiniLM-L6-v2, ~22 MB, F1 ~0.97) which requires no separate download. Also supports the optional DeBERTa v3 model (download separately via eng/download-onnx-model.sh). See https://github.com/filipw/AgentGuard for details.</Description>
+    <Description>ONNX-based ML classifiers for AgentGuard - offline prompt injection detection. Includes the bundled StackOne Defender model (fine-tuned MiniLM-L6-v2, ~22 MB, F1 ~0.97) which requires no separate download. Also supports the optional DeBERTa v3 model (download separately via eng/download-onnx-model.sh). See https://github.com/filipw/AgentGuard for details.</Description>
     <PackageId>AgentGuard.Onnx</PackageId>
     <RootNamespace>AgentGuard.Onnx</RootNamespace>
   </PropertyGroup>

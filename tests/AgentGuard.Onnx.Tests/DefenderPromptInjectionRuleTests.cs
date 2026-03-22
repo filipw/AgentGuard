@@ -12,7 +12,7 @@ namespace AgentGuard.Onnx.Tests;
 public class DefenderPromptInjectionRuleTests
 {
     // -----------------------------------------------------------------------
-    // Sigmoid tests — DefenderModelSession.Sigmoid is internal static
+    // Sigmoid tests - DefenderModelSession.Sigmoid is internal static
     // -----------------------------------------------------------------------
 
     [Fact]

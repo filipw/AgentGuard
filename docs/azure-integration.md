@@ -48,13 +48,13 @@ var policy = new GuardrailPolicyBuilder("brand-safe")
 ```
 
 Blocklist matches include metadata in the result:
-- `blocklistName` — which blocklist matched
-- `blocklistItemText` — the specific term that matched
-- `totalMatches` — number of blocklist matches found
+- `blocklistName` - which blocklist matched
+- `blocklistItemText` - the specific term that matched
+- `totalMatches` - number of blocklist matches found
 
 ## Fail-Open Behavior
 
-If Azure is unavailable, the classifier returns empty results — the agent continues. Override by wrapping with your own fail-closed implementation.
+If Azure is unavailable, the classifier returns empty results - the agent continues. Override by wrapping with your own fail-closed implementation.
 
 ## Cost
 

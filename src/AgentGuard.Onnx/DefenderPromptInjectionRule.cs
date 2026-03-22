@@ -5,9 +5,9 @@ namespace AgentGuard.Onnx;
 
 /// <summary>
 /// Prompt injection classifier powered by the StackOne Defender fine-tuned MiniLM-L6-v2 ONNX model.
-/// Runs fully offline with fast inference (~8 ms per sample). Order 11 — runs before DeBERTa (order 12).
+/// Runs fully offline with fast inference (~8 ms per sample). Order 11 - runs before DeBERTa (order 12).
 /// <para>
-/// The model is bundled with this NuGet package — no separate download required.
+/// The model is bundled with this NuGet package - no separate download required.
 /// Based on the <see href="https://github.com/StackOneHQ/defender">StackOne Defender</see> project (Apache 2.0 license).
 /// </para>
 /// </summary>
@@ -43,7 +43,7 @@ public sealed class DefenderPromptInjectionRule : IGuardrailRule, IDisposable
     }
 
     /// <summary>
-    /// Internal constructor for testing — accepts a pre-built session.
+    /// Internal constructor for testing - accepts a pre-built session.
     /// </summary>
     internal DefenderPromptInjectionRule(DefenderModelSession session, DefenderPromptInjectionOptions options)
     {

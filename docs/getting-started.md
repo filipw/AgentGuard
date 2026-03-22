@@ -14,7 +14,7 @@ dotnet add package AgentGuard.Hosting --prerelease         # optional: DI + conf
 
 ## Your First Guardrail
 
-AgentGuard's core engine is framework-agnostic — use it standalone without any agent framework dependency:
+AgentGuard's core engine is framework-agnostic - use it standalone without any agent framework dependency:
 
 ```csharp
 using AgentGuard.Core.Abstractions;
@@ -55,9 +55,9 @@ The agent now blocks injection attempts and redacts PII before the LLM sees it.
 
 ## How It Works
 
-1. **Input guardrails** — injection check, PII redaction, topic enforcement, token limits
-2. **Agent runs** — processes the (potentially modified) input
-3. **Output guardrails** — content safety, PII in responses, output validation
+1. **Input guardrails** - injection check, PII redaction, topic enforcement, token limits
+2. **Agent runs** - processes the (potentially modified) input
+3. **Output guardrails** - content safety, PII in responses, output validation
 
 If any rule blocks, the agent never runs. The user gets a configurable rejection message.
 
@@ -98,13 +98,13 @@ try
 }
 catch (GuardrailViolationException ex)
 {
-    // Guardrail blocked — ex.Phase, ex.ExecutorId, ex.ViolationResult
+    // Guardrail blocked - ex.Phase, ex.ExecutorId, ex.ViolationResult
 }
 ```
 
 ## Next Steps
 
-- [Rule Reference](rules-reference.md) — every option for every built-in rule
-- [Custom Rules Guide](custom-rules.md) — build your own rules
-- [Configuration](configuration.md) — DI, named policies
-- [Azure Integration](azure-integration.md) — production content safety
+- [Rule Reference](rules-reference.md) - every option for every built-in rule
+- [Custom Rules Guide](custom-rules.md) - build your own rules
+- [Configuration](configuration.md) - DI, named policies
+- [Azure Integration](azure-integration.md) - production content safety

@@ -61,7 +61,7 @@ public sealed class SecretsDetectionOptions
 /// <summary>
 /// Detects API keys, tokens, connection strings, private keys, and other secrets in text.
 /// Runs on output by default to prevent the LLM from leaking secrets, but can also guard input.
-/// Order 22 — runs after PII redaction (order 20).
+/// Order 22 - runs after PII redaction (order 20).
 /// </summary>
 public sealed class SecretsDetectionRule : IGuardrailRule
 {

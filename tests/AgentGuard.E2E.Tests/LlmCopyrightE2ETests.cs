@@ -35,7 +35,7 @@ public sealed class LlmCopyrightE2ETests : IClassFixture<LlmTestFixture>
 
         var ctx = new GuardrailContext
         {
-            Text = "As the saying goes, \"to be or not to be\" — Shakespeare's famous line has been quoted for centuries. "
+            Text = "As the saying goes, \"to be or not to be\" - Shakespeare's famous line has been quoted for centuries. "
                  + "The phrase captures the essence of existential doubt.",
             Phase = GuardrailPhase.Output
         };
@@ -61,7 +61,7 @@ public sealed class LlmCopyrightE2ETests : IClassFixture<LlmTestFixture>
                 incredulity, it was the season of Light, it was the season of Darkness, it was
                 the spring of hope, it was the winter of despair, we had everything before us,
                 we had nothing before us, we were all going direct to Heaven, we were all going
-                direct the other way — in short, the period was so far like the present period,
+                direct the other way - in short, the period was so far like the present period,
                 that some of its noisiest authorities insisted on its being received, for good
                 or for evil, in the superlative degree of comparison only.
                 """,

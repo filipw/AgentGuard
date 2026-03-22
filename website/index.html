@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AgentGuard — Guardrails for .NET AI Agents</title>
+  <title>AgentGuard - Guardrails for .NET AI Agents</title>
   <meta name="description" content="Declarative guardrails and safety controls for .NET AI agents. Framework-agnostic. Prompt injection, PII redaction, topic enforcement, and more.">
   <link rel="stylesheet" href="style.css">
 </head>
@@ -27,7 +27,7 @@
 <section class="hero">
   <h1>Safety controls for<br>.NET AI agents.</h1>
   <p class="subtitle">
-    Composable, testable, declarative guardrails. Block prompt injections, redact PII, enforce topics, validate outputs — in two lines of code.
+    Composable, testable, declarative guardrails. Block prompt injections, redact PII, enforce topics, validate outputs - in two lines of code.
   </p>
   <div class="cta-row">
     <a href="#quickstart" class="btn btn-primary">Get Started</a>
@@ -45,7 +45,7 @@
   <p class="section-label">Quick Start</p>
   <h2 class="section-title">No framework required.</h2>
   <p class="section-subtitle">
-    The core engine works standalone. Build a policy, run the pipeline, get a result. Use it with any .NET AI stack — or none at all.
+    The core engine works standalone. Build a policy, run the pipeline, get a result. Use it with any .NET AI stack - or none at all.
   </p>
 
   <div class="two-col">
@@ -135,7 +135,7 @@ await foreach (var update in guardedAgent
       </div>
       <div class="feature-card">
         <h3>Input Normalization</h3>
-        <p>Decodes evasion tricks — base64, hex escapes, reversed text, Unicode homoglyphs — before any other rule evaluates. Stops encoding-based attacks cold.</p>
+        <p>Decodes evasion tricks - base64, hex escapes, reversed text, Unicode homoglyphs - before any other rule evaluates. Stops encoding-based attacks cold.</p>
       </div>
       <div class="feature-card">
         <h3>Agentic &amp; RAG Guardrails</h3>
@@ -191,7 +191,7 @@ await foreach (var update in guardedAgent
     </tbody>
   </table>
   <p class="benchmark-note">
-    Defender runs in ~8ms with zero configuration — the model ships inside the NuGet package.
+    Defender runs in ~8ms with zero configuration - the model ships inside the NuGet package.
     Combine tiers for defense in depth: regex short-circuits obvious attacks, Defender catches the rest.
   </p>
 </section>
@@ -350,15 +350,15 @@ await foreach (var update in guardedAgent
     <div class="feature-grid">
       <div class="feature-card">
         <h3>1. Input Guardrails</h3>
-        <p>Normalization, RAG chunk filtering, prompt injection detection, PII redaction, secrets detection, topic boundary, token limits — all before the LLM sees the input.</p>
+        <p>Normalization, RAG chunk filtering, prompt injection detection, PII redaction, secrets detection, topic boundary, token limits - all before the LLM sees the input.</p>
       </div>
       <div class="feature-card">
         <h3>2. Agent Execution</h3>
-        <p>Your AI agent runs with the sanitized input. Works with any framework — MAF, Semantic Kernel, or standalone. Supports both RunAsync and streaming.</p>
+        <p>Your AI agent runs with the sanitized input. Works with any framework - MAF, Semantic Kernel, or standalone. Supports both RunAsync and streaming.</p>
       </div>
       <div class="feature-card">
         <h3>3. Output Guardrails</h3>
-        <p>Tool call injection detection, indirect injection in tool results, PII/secrets redaction, policy compliance, groundedness checking, copyright detection — all before the response reaches the user.</p>
+        <p>Tool call injection detection, indirect injection in tool results, PII/secrets redaction, policy compliance, groundedness checking, copyright detection - all before the response reaches the user.</p>
       </div>
     </div>
   </div>
@@ -414,7 +414,7 @@ await foreach (var update in guardedAgent
     <p class="section-label">LLM-as-Judge</p>
     <h2 class="section-title">When regex isn't enough.</h2>
     <p class="section-subtitle">
-      Plug in any <code>IChatClient</code> — Azure OpenAI, Ollama, local models. Built-in prompt templates, fail-open on errors.
+      Plug in any <code>IChatClient</code> - Azure OpenAI, Ollama, local models. Built-in prompt templates, fail-open on errors.
     </p>
 <pre><code>using AgentGuard.Onnx;
 

@@ -101,11 +101,11 @@ public sealed class ToolCallGuardrailOptions
 /// for SQL injection, code injection, path traversal, command injection, SSRF, template
 /// injection, and XSS patterns.
 ///
-/// This rule operates on the <see cref="GuardrailContext.Properties"/> bag — callers place
+/// This rule operates on the <see cref="GuardrailContext.Properties"/> bag - callers place
 /// tool calls under the <c>ToolCalls</c> key. The rule evaluates each argument of each
 /// tool call and blocks if any injection pattern is detected.
 ///
-/// Order 45 — runs after content rules but before content safety (order 50).
+/// Order 45 - runs after content rules but before content safety (order 50).
 /// </summary>
 public sealed class ToolCallGuardrailRule : IGuardrailRule
 {

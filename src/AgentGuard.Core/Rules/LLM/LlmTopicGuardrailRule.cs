@@ -22,7 +22,7 @@ public sealed class LlmTopicGuardrailOptions
 
 /// <summary>
 /// Enforces topic boundaries using an LLM classifier.
-/// More accurate than keyword matching — understands semantic meaning and intent.
+/// More accurate than keyword matching - understands semantic meaning and intent.
 /// </summary>
 public sealed class LlmTopicGuardrailRule : LlmGuardrailRule
 {
@@ -48,7 +48,7 @@ public sealed class LlmTopicGuardrailRule : LlmGuardrailRule
 
         Allowed topics: {topicsList}
 
-        Interpret the allowed topics broadly — if the user's message is reasonably related to any allowed topic,
+        Interpret the allowed topics broadly - if the user's message is reasonably related to any allowed topic,
         it should be considered on-topic. Only flag messages that are clearly unrelated to all allowed topics.
 
         Respond with exactly one word:

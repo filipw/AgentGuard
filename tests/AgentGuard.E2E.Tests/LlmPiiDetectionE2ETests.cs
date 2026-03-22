@@ -59,7 +59,7 @@ public class LlmPiiDetectionE2ETests : IClassFixture<LlmTestFixture>
 
         var result = await rule.EvaluateAsync(ctx);
 
-        // The LLM should either redact (Modified) or block — either way it should not pass
+        // The LLM should either redact (Modified) or block - either way it should not pass
         var detected = result.IsBlocked || result.IsModified;
         detected.Should().BeTrue("PII should be detected and redacted or blocked");
 

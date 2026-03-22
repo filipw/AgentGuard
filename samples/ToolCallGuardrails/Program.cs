@@ -1,16 +1,16 @@
-// AgentGuard — Tool Call Guardrails Sample
+// AgentGuard - Tool Call Guardrails Sample
 // Demonstrates how AgentGuard automatically inspects tool call arguments for injection attacks
 // when integrated into the Microsoft Agent Framework (MAF) middleware pipeline.
 //
-// The guardrail sits between the LLM and tool execution — if the LLM generates a malicious
+// The guardrail sits between the LLM and tool execution - if the LLM generates a malicious
 // tool call (e.g. SQL injection, path traversal, SSRF), AgentGuard blocks the response
 // before the tool is ever invoked.
 //
 // Requirements:
 //   Set environment variables before running:
-//     AGENTGUARD_LLM_ENDPOINT  — base URL of an OpenAI-compatible API (e.g. http://localhost:1234/v1/)
-//     AGENTGUARD_LLM_MODEL     — model name (e.g. qwen2.5-7b, llama3.1-8b, etc.)
-//     AGENTGUARD_LLM_KEY       — API key (optional, defaults to "unused" for local servers)
+//     AGENTGUARD_LLM_ENDPOINT  - base URL of an OpenAI-compatible API (e.g. http://localhost:1234/v1/)
+//     AGENTGUARD_LLM_MODEL     - model name (e.g. qwen2.5-7b, llama3.1-8b, etc.)
+//     AGENTGUARD_LLM_KEY       - API key (optional, defaults to "unused" for local servers)
 //
 // NOTE: This sample is designed for local LLMs (Ollama, LM Studio, vLLM, etc.)
 // because cloud endpoints may reject prompts that attempt to elicit malicious tool calls.
@@ -68,7 +68,7 @@ var openAiClient = new OpenAIClient(new ApiKeyCredential(key),
     new OpenAIClientOptions { Endpoint = new Uri(endpoint) });
 var chatClient = openAiClient.GetChatClient(model).AsIChatClient();
 
-Console.WriteLine("AgentGuard — Tool Call Guardrails Demo");
+Console.WriteLine("AgentGuard - Tool Call Guardrails Demo");
 Console.WriteLine($"  Endpoint: {endpoint}");
 Console.WriteLine($"  Model:    {model}");
 Console.WriteLine(new string('=', 60));
@@ -94,7 +94,7 @@ var agent = chatClient
         .NormalizeInput()
         .BlockPromptInjection()
         .GuardToolCalls()  // <-- This is the key addition
-        .OnViolation(v => v.RejectWithMessage("I can't process that request — a safety guardrail was triggered."))
+        .OnViolation(v => v.RejectWithMessage("I can't process that request - a safety guardrail was triggered."))
     )
     .Build();
 
@@ -133,7 +133,7 @@ var sqlInjection = new AgentToolCall
 };
 var sqlResult = await toolCallRule.EvaluateAsync(
     new() { Text = "", Phase = GuardrailPhase.Output, Properties = { [ToolCallGuardrailRule.ToolCallsKey] = (IReadOnlyList<AgentToolCall>)[sqlInjection] } });
-Console.WriteLine($"  SQL injection:    {(sqlResult.IsBlocked ? "BLOCKED" : "PASSED")} — {sqlResult.Reason}");
+Console.WriteLine($"  SQL injection:    {(sqlResult.IsBlocked ? "BLOCKED" : "PASSED")} - {sqlResult.Reason}");
 
 // Path traversal
 var pathTraversal = new AgentToolCall
@@ -143,7 +143,7 @@ var pathTraversal = new AgentToolCall
 };
 var pathResult = await toolCallRule.EvaluateAsync(
     new() { Text = "", Phase = GuardrailPhase.Output, Properties = { [ToolCallGuardrailRule.ToolCallsKey] = (IReadOnlyList<AgentToolCall>)[pathTraversal] } });
-Console.WriteLine($"  Path traversal:   {(pathResult.IsBlocked ? "BLOCKED" : "PASSED")} — {pathResult.Reason}");
+Console.WriteLine($"  Path traversal:   {(pathResult.IsBlocked ? "BLOCKED" : "PASSED")} - {pathResult.Reason}");
 
 // SSRF to cloud metadata
 var ssrf = new AgentToolCall
@@ -153,7 +153,7 @@ var ssrf = new AgentToolCall
 };
 var ssrfResult = await toolCallRule.EvaluateAsync(
     new() { Text = "", Phase = GuardrailPhase.Output, Properties = { [ToolCallGuardrailRule.ToolCallsKey] = (IReadOnlyList<AgentToolCall>)[ssrf] } });
-Console.WriteLine($"  SSRF metadata:    {(ssrfResult.IsBlocked ? "BLOCKED" : "PASSED")} — {ssrfResult.Reason}");
+Console.WriteLine($"  SSRF metadata:    {(ssrfResult.IsBlocked ? "BLOCKED" : "PASSED")} - {ssrfResult.Reason}");
 
 // Command injection
 var cmdInjection = new AgentToolCall
@@ -163,7 +163,7 @@ var cmdInjection = new AgentToolCall
 };
 var cmdResult = await toolCallRule.EvaluateAsync(
     new() { Text = "", Phase = GuardrailPhase.Output, Properties = { [ToolCallGuardrailRule.ToolCallsKey] = (IReadOnlyList<AgentToolCall>)[cmdInjection] } });
-Console.WriteLine($"  Command injection: {(cmdResult.IsBlocked ? "BLOCKED" : "PASSED")} — {cmdResult.Reason}");
+Console.WriteLine($"  Command injection: {(cmdResult.IsBlocked ? "BLOCKED" : "PASSED")} - {cmdResult.Reason}");
 
 // ─── Example 3: Tool Allowlists ────────────────────────────────────────────
 // You can allowlist specific tools or arguments that legitimately accept code/SQL.
@@ -173,9 +173,9 @@ Console.WriteLine(new string('-', 60));
 
 var allowlistedRule = new ToolCallGuardrailRule(new ToolCallGuardrailOptions
 {
-    // The "code_executor" tool legitimately receives code — skip it
+    // The "code_executor" tool legitimately receives code - skip it
     AllowedTools = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "code_executor" },
-    // The "sql" argument on the "analytics" tool is intentional SQL — skip it
+    // The "sql" argument on the "analytics" tool is intentional SQL - skip it
     PerToolAllowedArguments = new Dictionary<string, ISet<string>>(StringComparer.OrdinalIgnoreCase)
     {
         ["analytics"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "query" }

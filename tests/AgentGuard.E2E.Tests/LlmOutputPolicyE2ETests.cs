@@ -38,7 +38,7 @@ public sealed class LlmOutputPolicyE2ETests : IClassFixture<LlmTestFixture>
 
         var ctx = new GuardrailContext
         {
-            Text = "Honestly, for your use case I would recommend switching to Competitor X — they have better pricing and a more mature product than ours.",
+            Text = "Honestly, for your use case I would recommend switching to Competitor X - they have better pricing and a more mature product than ours.",
             Phase = GuardrailPhase.Output
         };
 

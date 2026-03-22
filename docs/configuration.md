@@ -98,6 +98,6 @@ builder.Services.AddSingleton<IChatClient>(sp =>
 builder.Services.AddSingleton<IContentSafetyClassifier>(sp =>
     new AzureContentSafetyClassifier(new ContentSafetyClient(endpoint, credential)));
 
-// Load policies from config — LLM rules will resolve IChatClient from DI
+// Load policies from config - LLM rules will resolve IChatClient from DI
 builder.Services.AddAgentGuard(builder.Configuration.GetSection("AgentGuard"));
 ```

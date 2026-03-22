@@ -8,7 +8,7 @@ namespace AgentGuard.Azure.Tests;
 
 public class AzureContentSafetyClassifierTests
 {
-    // Pure function tests for mapping logic — no mocking, real value
+    // Pure function tests for mapping logic - no mocking, real value
 
     [Theory]
     [InlineData(0, ContentSafetySeverity.Safe)]
@@ -54,7 +54,7 @@ public class AzureContentSafetyClassifierTests
         AzureContentSafetyClassifier.MapCategory(new TextCategory("UnknownCategory")).Should().Be(ContentSafetyCategory.None);
     }
 
-    // Severity boundary tests — verify the exact Azure 0-6 scale boundaries
+    // Severity boundary tests - verify the exact Azure 0-6 scale boundaries
 
     [Fact]
     public void MapSeverity_NegativeValue_ShouldNotCrash()

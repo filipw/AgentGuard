@@ -292,7 +292,7 @@ public static class AgentGuardMiddlewareExtensions
             }
         }
 
-        // Output passed guardrails — yield all original chunks
+        // Output passed guardrails - yield all original chunks
         foreach (var chunk in chunks)
         {
             yield return chunk;

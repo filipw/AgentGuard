@@ -42,7 +42,7 @@ public class InputNormalizationRuleTests
     [Fact]
     public async Task ShouldNotDecode_ShortBase64LikeStrings()
     {
-        // "test" is only 8 chars in base64 — below MinBase64Length threshold
+        // "test" is only 8 chars in base64 - below MinBase64Length threshold
         var result = await _rule.EvaluateAsync(Ctx("The word dGVzdA== is here"));
         result.IsModified.Should().BeFalse();
     }
@@ -213,7 +213,7 @@ public class InputNormalizationRuleTests
     [Fact]
     public void DecodeLeetspeak_ShouldReturnNull_WhenNoNewWordsRevealed()
     {
-        // "h3ll0" → "hello" — not an injection word, original has no injection words either
+        // "h3ll0" → "hello" - not an injection word, original has no injection words either
         InputNormalizationRule.DecodeLeetspeak("h3ll0 w0rld").Should().BeNull();
     }
 

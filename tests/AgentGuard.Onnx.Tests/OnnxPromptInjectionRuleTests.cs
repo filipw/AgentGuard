@@ -12,7 +12,7 @@ namespace AgentGuard.Onnx.Tests;
 public class OnnxPromptInjectionRuleTests
 {
     // -----------------------------------------------------------------------
-    // Softmax tests — OnnxModelSession.Softmax is internal static, accessible
+    // Softmax tests - OnnxModelSession.Softmax is internal static, accessible
     // via InternalsVisibleTo.
     // -----------------------------------------------------------------------
 
@@ -69,7 +69,7 @@ public class OnnxPromptInjectionRuleTests
     }
 
     // -----------------------------------------------------------------------
-    // Rule property tests — use the internal constructor with a null session
+    // Rule property tests - use the internal constructor with a null session
     // guard: we build a minimal fake by supplying null and relying on the fact
     // that property accessors do not touch the session.
     // -----------------------------------------------------------------------
@@ -103,7 +103,7 @@ public class OnnxPromptInjectionRuleTests
     }
 
     // -----------------------------------------------------------------------
-    // Options validation tests — exercise the public constructor which validates
+    // Options validation tests - exercise the public constructor which validates
     // paths and threshold before touching the filesystem / ONNX runtime.
     // -----------------------------------------------------------------------
 
@@ -267,7 +267,7 @@ public class OnnxPromptInjectionRuleTests
     }
 
     // -----------------------------------------------------------------------
-    // EvaluateAsync behaviour tests — use the internal constructor so no
+    // EvaluateAsync behaviour tests - use the internal constructor so no
     // real model files are required. The session is passed as null; we only
     // exercise code paths that return early (null/whitespace text).
     // -----------------------------------------------------------------------

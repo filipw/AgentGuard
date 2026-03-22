@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <Description>Offline classifiers for AgentGuard — topic boundary enforcement without cloud dependencies.</Description>
+    <Description>Offline classifiers for AgentGuard - topic boundary enforcement without cloud dependencies.</Description>
     <PackageId>AgentGuard.Local</PackageId>
     <RootNamespace>AgentGuard.Local</RootNamespace>
   </PropertyGroup>

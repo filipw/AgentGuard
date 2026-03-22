@@ -2,7 +2,7 @@ namespace AgentGuard.Onnx;
 
 /// <summary>
 /// Options for the StackOne Defender prompt injection classifier.
-/// The model is bundled with the AgentGuard.Onnx NuGet package — no separate download required.
+/// The model is bundled with the AgentGuard.Onnx NuGet package - no separate download required.
 /// </summary>
 public sealed class DefenderPromptInjectionOptions
 {

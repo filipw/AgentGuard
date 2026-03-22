@@ -1,9 +1,9 @@
-// AgentGuard — Azure Integration Sample
+// AgentGuard - Azure Integration Sample
 // Demonstrates Azure AI Content Safety integration with category filtering and blocklists.
 //
 // Required environment variables:
-//   AZURE_CONTENT_SAFETY_ENDPOINT — e.g. https://your-resource.cognitiveservices.azure.com/
-//   AZURE_CONTENT_SAFETY_KEY      — your Azure AI Content Safety API key
+//   AZURE_CONTENT_SAFETY_ENDPOINT - e.g. https://your-resource.cognitiveservices.azure.com/
+//   AZURE_CONTENT_SAFETY_KEY      - your Azure AI Content Safety API key
 //
 // Optional: create blocklists named "profanity" and "competitor-names" in the Azure portal
 // to see Example 2 in action. Without them, blocklist checks simply return no matches.
@@ -32,7 +32,7 @@ if (string.IsNullOrEmpty(endpoint) || string.IsNullOrEmpty(key))
 var client = new ContentSafetyClient(new Uri(endpoint), new AzureKeyCredential(key));
 var classifier = new AzureContentSafetyClassifier(client);
 
-Console.WriteLine("AgentGuard — Azure Content Safety Integration Demo");
+Console.WriteLine("AgentGuard - Azure Content Safety Integration Demo");
 Console.WriteLine(new string('=', 55));
 
 // --- Example 1: Category filtering ---
