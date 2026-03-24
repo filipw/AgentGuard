@@ -100,6 +100,34 @@ catch (GuardrailViolationException ex)
 }
 ```
 
+## Re-ask / Self-healing (Experimental)
+
+> **Note:** This feature is experimental. It currently supports non-streaming pipelines only.
+> Streaming re-ask support is planned for a future release.
+
+When output guardrails block a response, you can opt in to re-ask: the pipeline re-prompts the LLM with the failure reason and re-evaluates all output rules on the new response.
+
+```csharp
+var policy = new GuardrailPolicyBuilder()
+    .EnforceOutputPolicy(chatClient, "Never recommend competitors")
+    .CheckGroundedness(chatClient)
+    .EnableReask(chatClient, o =>
+    {
+        o.MaxAttempts = 2;           // retry up to 2 times (default: 1)
+        o.IncludeBlockedResponse = true; // show LLM what to avoid (default: true)
+    })
+    .Build();
+
+var pipeline = new GuardrailPipeline(policy, NullLogger<GuardrailPipeline>.Instance);
+
+var result = await pipeline.RunAsync(outputContext);
+
+if (result.WasReasked)
+    Console.WriteLine($"Self-healed after {result.ReaskAttemptsUsed} attempt(s)");
+```
+
+Re-ask only triggers for output-phase blocks - input guardrails always short-circuit immediately.
+
 ## Next Steps
 
 - [Rule Reference](rules-reference.md) - every option for every built-in rule

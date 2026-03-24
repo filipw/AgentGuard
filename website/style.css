@@ -332,6 +332,7 @@ section.alt .feature-card {
 .badge-llm { background: #0071e3; color: #fff; }
 .badge-local { background: #e8e8ed; color: #1d1d1f; }
 .badge-plugin { background: #e8e8ed; color: #1d1d1f; }
+.badge-experimental { background: #fef3c7; color: #92400e; }
 
 /* ── Benchmark ───────────────────────────────────────── */
 

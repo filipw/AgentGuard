@@ -1,4 +1,5 @@
 using AgentGuard.Core.Abstractions;
+using AgentGuard.Core.Guardrails;
 using AgentGuard.Core.Rules.ContentSafety;
 using AgentGuard.Core.Rules.LLM;
 using AgentGuard.Core.Rules.Normalization;
@@ -21,6 +22,8 @@ public sealed class GuardrailPolicyBuilder
     private readonly List<IGuardrailRule> _rules = [];
     private IViolationHandler? _violationHandler;
     private ProgressiveStreamingOptions? _progressiveStreaming;
+    private ReaskOptions? _reaskOptions;
+    private IChatClient? _reaskChatClient;
 
     public GuardrailPolicyBuilder(string name = "default") => _name = name;
 
@@ -357,6 +360,30 @@ public sealed class GuardrailPolicyBuilder
         return this;
     }
 
+    /// <summary>
+    /// Enables re-ask (self-healing) for output guardrail violations. When an output rule blocks
+    /// a response, the pipeline re-prompts the LLM with the failure reason and re-evaluates all
+    /// output rules on the new response. This is opt-in and only applies to output-phase evaluation.
+    /// </summary>
+    public GuardrailPolicyBuilder EnableReask(IChatClient chatClient, Action<ReaskOptions>? configure = null)
+    {
+        _reaskChatClient = chatClient ?? throw new ArgumentNullException(nameof(chatClient));
+        var options = new ReaskOptions();
+        configure?.Invoke(options);
+        _reaskOptions = options;
+        return this;
+    }
+
+    /// <summary>
+    /// Enables re-ask (self-healing) with explicit options.
+    /// </summary>
+    public GuardrailPolicyBuilder EnableReask(IChatClient chatClient, ReaskOptions options)
+    {
+        _reaskChatClient = chatClient ?? throw new ArgumentNullException(nameof(chatClient));
+        _reaskOptions = options ?? throw new ArgumentNullException(nameof(options));
+        return this;
+    }
+
     public GuardrailPolicyBuilder AddRule(IGuardrailRule rule) { _rules.Add(rule); return this; }
 
     public GuardrailPolicyBuilder AddRule(string name, GuardrailPhase phase,
@@ -374,7 +401,7 @@ public sealed class GuardrailPolicyBuilder
         return this;
     }
 
-    public IGuardrailPolicy Build() => new Guardrails.GuardrailPolicy(_name, _rules, _violationHandler, _progressiveStreaming);
+    public IGuardrailPolicy Build() => new Guardrails.GuardrailPolicy(_name, _rules, _violationHandler, _progressiveStreaming, _reaskOptions, _reaskChatClient);
 }
 
 public sealed class ViolationHandlerBuilder
