@@ -10,10 +10,10 @@
   </PropertyGroup>
 
   <PropertyGroup>
-    <Authors>AgentGuard Contributors</Authors>
+    <Authors>Filip W, AgentGuard Contributors</Authors>
     <Company>AgentGuard</Company>
     <Product>AgentGuard</Product>
-    <Copyright>Copyright (c) 2026 AgentGuard Contributors</Copyright>
+    <Copyright>Copyright (c) 2026 Filip W, AgentGuard Contributors</Copyright>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageProjectUrl>https://github.com/filipw/AgentGuard</PackageProjectUrl>
     <RepositoryUrl>https://github.com/filipw/AgentGuard</RepositoryUrl>
