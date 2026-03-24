@@ -1,5 +1,6 @@
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Streaming;
+using Microsoft.Extensions.AI;
 
 namespace AgentGuard.Core.Guardrails;
 
@@ -11,12 +12,16 @@ public sealed class GuardrailPolicy : IGuardrailPolicy
         string name,
         IEnumerable<IGuardrailRule> rules,
         IViolationHandler? violationHandler = null,
-        ProgressiveStreamingOptions? progressiveStreaming = null)
+        ProgressiveStreamingOptions? progressiveStreaming = null,
+        ReaskOptions? reaskOptions = null,
+        IChatClient? reaskChatClient = null)
     {
         Name = name;
         _rules = rules.OrderBy(r => r.Order).ToList();
         ViolationHandler = violationHandler ?? new DefaultViolationHandler();
         ProgressiveStreaming = progressiveStreaming;
+        ReaskOptions = reaskOptions;
+        ReaskChatClient = reaskChatClient;
     }
 
     public string Name { get; }
@@ -28,6 +33,12 @@ public sealed class GuardrailPolicy : IGuardrailPolicy
     /// When null, streaming uses the default buffer-then-release strategy.
     /// </summary>
     public ProgressiveStreamingOptions? ProgressiveStreaming { get; }
+
+    /// <inheritdoc />
+    public ReaskOptions? ReaskOptions { get; }
+
+    /// <inheritdoc />
+    public IChatClient? ReaskChatClient { get; }
 }
 
 public sealed class DefaultViolationHandler : IViolationHandler

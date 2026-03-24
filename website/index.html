@@ -251,12 +251,6 @@ await foreach (var update in guardedAgent
         <td>Input</td>
       </tr>
       <tr>
-        <td>13</td>
-        <td><code>RemotePromptInjectionRule</code></td>
-        <td><span class="badge badge-onnx">Remote ML</span></td>
-        <td>Input</td>
-      </tr>
-      <tr>
         <td>15</td>
         <td><code>LlmPromptInjectionRule</code></td>
         <td><span class="badge badge-llm">LLM</span></td>
@@ -364,7 +358,7 @@ await foreach (var update in guardedAgent
       </div>
       <div class="feature-card">
         <h3>3. Output Guardrails</h3>
-        <p>Tool call injection detection, indirect injection in tool results, PII/secrets redaction, policy compliance, groundedness checking, copyright detection - all before the response reaches the user.</p>
+        <p>Tool call injection detection, indirect injection in tool results, PII/secrets redaction, policy compliance, groundedness checking, copyright detection - all before the response reaches the user. Optional <em>re-ask</em> re-prompts the LLM on violations for self-healing responses.</p>
       </div>
     </div>
   </div>
@@ -428,6 +422,30 @@ var policy = new GuardrailPolicyBuilder()
     .CheckCopyright(chatClient)
     .Build();</code></pre>
   </div>
+</section>
+
+<!-- ── Re-ask ──────────────────────────────────────── -->
+<section>
+  <p class="section-label">Self-healing <span class="badge badge-experimental">Experimental</span></p>
+  <h2 class="section-title">Re-ask on violation.</h2>
+  <p class="section-subtitle">
+    When output guardrails block a response, the pipeline can re-prompt the LLM with the failure reason
+    and re-evaluate. Opt-in, configurable, non-streaming only for now.
+  </p>
+<pre><code>var policy = new GuardrailPolicyBuilder()
+    .EnforceOutputPolicy(chatClient, "Never recommend competitors")
+    .CheckGroundedness(chatClient)
+    .EnableReask(chatClient, o =&gt;
+    {
+        o.MaxAttempts = 2;
+        o.IncludeBlockedResponse = true;
+    })
+    .Build();
+
+var result = await pipeline.RunAsync(outputContext);
+
+if (result.WasReasked)
+    Console.WriteLine($"Self-healed after {result.ReaskAttemptsUsed} attempt(s)");</code></pre>
 </section>
 
 <!-- ── Custom rules ──────────────────────────────── -->
