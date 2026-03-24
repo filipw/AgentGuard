@@ -3,13 +3,11 @@
 ## Installation
 
 ```bash
-dotnet add package AgentGuard.Core --prerelease
-dotnet add package AgentGuard.AgentFramework --prerelease  # optional: MAF middleware integration
-dotnet add package AgentGuard.Workflows --prerelease       # optional: MAF workflow executor guardrails
-dotnet add package AgentGuard.Onnx --prerelease            # optional: ONNX ML-based classifiers
-dotnet add package AgentGuard.Local --prerelease           # optional: offline classifiers
+dotnet add package AgentGuard --prerelease                 # core + Defender ONNX model + offline classifiers
+dotnet add package AgentGuard.AgentFramework --prerelease  # optional: MAF middleware + workflow guardrails
 dotnet add package AgentGuard.Azure --prerelease           # optional: Azure AI Content Safety
 dotnet add package AgentGuard.Hosting --prerelease         # optional: DI + config binding
+dotnet add package AgentGuard.RemoteClassifier --prerelease # optional: remote ML classifier via HTTP
 ```
 
 ## Your First Guardrail
@@ -83,10 +81,10 @@ If any rule blocks, the agent never runs. The user gets a configurable rejection
 
 ## Workflow Guardrails
 
-For MAF workflows with multiple `Executor` steps, use `AgentGuard.Workflows` to apply guardrails at step boundaries:
+For MAF workflows with multiple `Executor` steps, use `AgentGuard.AgentFramework` to apply guardrails at step boundaries:
 
 ```csharp
-using AgentGuard.Workflows;
+using AgentGuard.AgentFramework.Workflows;
 
 var guardedExecutor = myExecutor.WithGuardrails(b => b
     .BlockPromptInjection()

@@ -3,7 +3,7 @@ using AgentGuard.Core.Guardrails;
 using Microsoft.Agents.AI.Workflows;
 using Microsoft.Extensions.AI;
 
-namespace AgentGuard.Workflows;
+namespace AgentGuard.AgentFramework.Workflows;
 
 /// <summary>
 /// Wraps a void-return executor with input guardrails.

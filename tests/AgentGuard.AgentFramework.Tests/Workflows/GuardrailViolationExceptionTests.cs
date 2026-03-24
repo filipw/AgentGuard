@@ -1,9 +1,9 @@
 using AgentGuard.Core.Abstractions;
-using AgentGuard.Workflows;
+using AgentGuard.AgentFramework.Workflows;
 using FluentAssertions;
 using Xunit;
 
-namespace AgentGuard.Workflows.Tests;
+namespace AgentGuard.AgentFramework.Workflows.Tests;
 
 public class GuardrailViolationExceptionTests
 {

@@ -1,6 +1,6 @@
 using AgentGuard.Core.Abstractions;
 
-namespace AgentGuard.Workflows;
+namespace AgentGuard.AgentFramework.Workflows;
 
 /// <summary>
 /// Thrown when a guardrail blocks execution within a workflow executor.

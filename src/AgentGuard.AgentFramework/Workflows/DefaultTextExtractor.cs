@@ -3,7 +3,7 @@ using System.Reflection;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 
-namespace AgentGuard.Workflows;
+namespace AgentGuard.AgentFramework.Workflows;
 
 /// <summary>
 /// Default text extractor that handles common MAF and .NET types.

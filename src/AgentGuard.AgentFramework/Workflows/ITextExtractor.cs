@@ -1,4 +1,4 @@
-namespace AgentGuard.Workflows;
+namespace AgentGuard.AgentFramework.Workflows;
 
 /// <summary>
 /// Extracts a string representation from a typed workflow message for guardrail evaluation.

@@ -2,7 +2,7 @@ using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Builders;
 using Microsoft.Agents.AI.Workflows;
 
-namespace AgentGuard.Workflows;
+namespace AgentGuard.AgentFramework.Workflows;
 
 /// <summary>
 /// Extension methods for wrapping workflow executors with guardrails.

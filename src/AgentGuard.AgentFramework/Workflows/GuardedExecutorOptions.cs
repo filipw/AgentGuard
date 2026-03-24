@@ -1,6 +1,6 @@
 using Microsoft.Extensions.Logging;
 
-namespace AgentGuard.Workflows;
+namespace AgentGuard.AgentFramework.Workflows;
 
 /// <summary>
 /// Options for configuring a <see cref="GuardedExecutor{TInput}"/> or <see cref="GuardedExecutor{TInput, TOutput}"/>.

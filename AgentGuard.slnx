@@ -1,11 +1,11 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/AgentGuard/AgentGuard.csproj" />
     <Project Path="src/AgentGuard.Core/AgentGuard.Core.csproj" />
     <Project Path="src/AgentGuard.AgentFramework/AgentGuard.AgentFramework.csproj" />
     <Project Path="src/AgentGuard.Local/AgentGuard.Local.csproj" />
     <Project Path="src/AgentGuard.Azure/AgentGuard.Azure.csproj" />
     <Project Path="src/AgentGuard.Hosting/AgentGuard.Hosting.csproj" />
-    <Project Path="src/AgentGuard.Workflows/AgentGuard.Workflows.csproj" />
     <Project Path="src/AgentGuard.Onnx/AgentGuard.Onnx.csproj" />
     <Project Path="src/AgentGuard.RemoteClassifier/AgentGuard.RemoteClassifier.csproj" />
   </Folder>
@@ -16,7 +16,6 @@
     <Project Path="tests/AgentGuard.Azure.Tests/AgentGuard.Azure.Tests.csproj" />
     <Project Path="tests/AgentGuard.E2E.Tests/AgentGuard.E2E.Tests.csproj" />
     <Project Path="tests/AgentGuard.Integration.Tests/AgentGuard.Integration.Tests.csproj" />
-    <Project Path="tests/AgentGuard.Workflows.Tests/AgentGuard.Workflows.Tests.csproj" />
     <Project Path="tests/AgentGuard.Onnx.Tests/AgentGuard.Onnx.Tests.csproj" />
     <Project Path="tests/AgentGuard.RemoteClassifier.Tests/AgentGuard.RemoteClassifier.Tests.csproj" />
   </Folder>

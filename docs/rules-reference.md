@@ -337,7 +337,7 @@ Detects verbatim or near-verbatim reproduction of copyrighted material (song lyr
 
 ## Workflow Guardrails
 
-`AgentGuard.Workflows` applies guardrails at MAF workflow step boundaries using the decorator pattern.
+`AgentGuard.AgentFramework` includes workflow guardrails that apply at MAF workflow step boundaries using the decorator pattern.
 
 ### `.WithGuardrails()` Extension Methods
 

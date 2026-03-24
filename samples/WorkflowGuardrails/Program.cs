@@ -3,12 +3,12 @@
 // Each executor in the workflow gets its own guardrail policy, applied at the step boundary.
 //
 // This sample uses real Executor subclasses from Microsoft.Agents.AI.Workflows,
-// decorated with AgentGuard.Workflows' GuardedExecutor decorator.
+// decorated with AgentGuard.AgentFramework.Workflows' GuardedExecutor decorator.
 
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Rules.PII;
 using AgentGuard.Core.Rules.PromptInjection;
-using AgentGuard.Workflows;
+using AgentGuard.AgentFramework.Workflows;
 using Microsoft.Agents.AI.Workflows;
 using Microsoft.Extensions.AI;
 

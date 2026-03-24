@@ -2,18 +2,18 @@ using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Guardrails;
 using AgentGuard.Core.Rules.PII;
 using AgentGuard.Core.Rules.PromptInjection;
-using AgentGuard.Workflows;
+using AgentGuard.AgentFramework.Workflows;
 using FluentAssertions;
 using Microsoft.Agents.AI.Workflows;
 using Microsoft.Extensions.AI;
 using Moq;
 using Xunit;
 
-namespace AgentGuard.Workflows.Tests;
+namespace AgentGuard.AgentFramework.Workflows.Tests;
 
 public class GuardedExecutorTests
 {
-    // ─── Helpers ─────────────────────────────────────────────────────────
+    // --- Helpers ---
 
     private static GuardrailPolicy PolicyWith(params IGuardrailRule[] rules)
         => new GuardrailPolicy("test", rules);
@@ -27,7 +27,7 @@ public class GuardedExecutorTests
     private static TestRule ModifyingRule(string newText, GuardrailPhase phase = GuardrailPhase.Both)
         => new("modify", phase, _ => ValueTask.FromResult(GuardrailResult.Modified(newText, "modified")));
 
-    // ─── GuardedExecutor<TInput> (void return) ──────────────────────────
+    // --- GuardedExecutor<TInput> (void return) ---
 
     [Fact]
     public async Task VoidExecutor_ShouldPassThrough_WhenNoViolation()
@@ -102,7 +102,7 @@ public class GuardedExecutorTests
         guarded.Id.Should().Be("guarded-my-executor");
     }
 
-    // ─── GuardedExecutor<TInput, TOutput> (typed return) ────────────────
+    // --- GuardedExecutor<TInput, TOutput> (typed return) ---
 
     [Fact]
     public async Task TypedExecutor_ShouldReturnOutput_WhenNoViolation()
@@ -177,7 +177,7 @@ public class GuardedExecutorTests
         result.Should().Be("");
     }
 
-    // ─── Extension method overloads ─────────────────────────────────────
+    // --- Extension method overloads ---
 
     [Fact]
     public async Task ShouldAcceptBuilderConfigure_ForVoidExecutor()
@@ -215,7 +215,7 @@ public class GuardedExecutorTests
         extractorMock.Verify(e => e.ExtractText("anything"), Times.Once);
     }
 
-    // ─── Null input ─────────────────────────────────────────────────────
+    // --- Null input ---
 
     [Fact]
     public async Task VoidExecutor_ShouldSkipGuardrails_WhenInputIsNull()
@@ -230,7 +230,7 @@ public class GuardedExecutorTests
         received.Should().BeNull();
     }
 
-    // ─── Real rule integration ───────────────────────────────────────────
+    // --- Real rule integration ---
 
     [Fact]
     public async Task VoidExecutor_ShouldRedactPii_WhenPiiRedactionRuleIsUsed()
@@ -302,7 +302,7 @@ public class GuardedExecutorTests
         innerCalled.Should().BeFalse();
     }
 
-    // ─── GuardrailViolationException ────────────────────────────────────
+    // --- GuardrailViolationException ---
 
     [Fact]
     public void ViolationException_ShouldContainExpectedProperties()
@@ -316,7 +316,7 @@ public class GuardedExecutorTests
         ex.Message.Should().Contain("exec-1").And.Contain("Output").And.Contain("test reason");
     }
 
-    // ─── Test doubles ───────────────────────────────────────────────────
+    // --- Test doubles ---
 
     private class TestVoidExecutor(string id, Func<string, IWorkflowContext, ValueTask> handler) : Executor<string>(id)
     {

@@ -37,7 +37,7 @@
 
 <!-- ── Install ────────────────────────────────────── -->
 <div class="install-strip">
-  <code>dotnet add package AgentGuard.Core --prerelease</code>
+  <code>dotnet add package AgentGuard --prerelease</code>
 </div>
 
 <!-- ── Standalone example ─────────────────────────── -->
@@ -375,37 +375,21 @@ await foreach (var update in guardedAgent
   <p class="section-label">Packages</p>
   <h2 class="section-title">Pick what you need.</h2>
   <p class="section-subtitle">
-    Eight packages, layered. Core is all you need to start. Add framework adapters, cloud integrations, or ML classifiers as needed.
+    Seven packages, layered. The main <code>AgentGuard</code> package is all you need to start. Add framework adapters, cloud integrations, or remote classifiers as needed.
   </p>
 
   <div class="package-grid">
     <div class="package-card">
-      <div class="package-name">AgentGuard.Core</div>
-      <div class="package-desc">Framework-agnostic core. Abstractions, rules engine, fluent builder, 19 built-in rules. No agent framework dependency.</div>
+      <div class="package-name">AgentGuard</div>
+      <div class="package-desc">All-in-one package. Core rules engine, bundled Defender ONNX model (F1 ~0.97), and offline classifiers. No agent framework dependency.</div>
     </div>
     <div class="package-card">
       <div class="package-name">AgentGuard.AgentFramework</div>
-      <div class="package-desc">Microsoft Agent Framework adapter. <code>UseAgentGuard()</code> middleware for <code>AIAgentBuilder</code> with RunAsync and streaming.</div>
-    </div>
-    <div class="package-card">
-      <div class="package-name">AgentGuard.Workflows</div>
-      <div class="package-desc">MAF workflow guardrails. Decorates <code>Executor&lt;T&gt;</code> with guardrails at step boundaries via <code>.WithGuardrails()</code>.</div>
-    </div>
-    <div class="package-card">
-      <div class="package-name">AgentGuard.Onnx</div>
-      <div class="package-desc">ONNX-based ML classifiers. Bundled StackOne Defender model (F1 ~0.97, ~8ms, no download) + optional DeBERTa v3.</div>
+      <div class="package-desc">Microsoft Agent Framework adapter. <code>UseAgentGuard()</code> middleware + workflow guardrails via <code>.WithGuardrails()</code>.</div>
     </div>
     <div class="package-card">
       <div class="package-name">AgentGuard.RemoteClassifier</div>
       <div class="package-desc">Remote ML classifier via HTTP. Call Sentinel-v2, Ollama, vLLM, or custom endpoints for SOTA prompt injection detection.</div>
-    </div>
-    <div class="package-card">
-      <div class="package-name">AgentGuard.RemoteClassifier</div>
-      <div class="package-desc">Remote ML classifier via HTTP. Call Sentinel-v2, Ollama, vLLM, or custom endpoints for SOTA prompt injection detection.</div>
-    </div>
-    <div class="package-card">
-      <div class="package-name">AgentGuard.Local</div>
-      <div class="package-desc">Offline classifiers. Keyword similarity and embedding-based topic matching for fully local deployments.</div>
     </div>
     <div class="package-card">
       <div class="package-name">AgentGuard.Azure</div>
