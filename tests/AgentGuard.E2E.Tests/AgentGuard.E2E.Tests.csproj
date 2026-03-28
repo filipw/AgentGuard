@@ -4,6 +4,7 @@
     <ProjectReference Include="../../src/AgentGuard.Core/AgentGuard.Core.csproj" />
     <ProjectReference Include="../../src/AgentGuard.Local/AgentGuard.Local.csproj" />
     <ProjectReference Include="../../src/AgentGuard.Onnx/AgentGuard.Onnx.csproj" />
+    <ProjectReference Include="../../src/AgentGuard.Azure/AgentGuard.Azure.csproj" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.AI.OpenAI" />
