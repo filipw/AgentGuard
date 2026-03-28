@@ -345,6 +345,10 @@ if (includePromptShield)
             var ctx = new GuardrailContext { Text = text, Phase = GuardrailPhase.Input };
             var result = await psRule.EvaluateAsync(ctx);
 
+            // Surface client errors so the benchmark counts them as ERR, not as pass
+            if (result.Metadata?.TryGetValue("error", out var isErr) == true && isErr is true)
+                throw new InvalidOperationException("Azure Prompt Shield API call failed (retries exhausted)");
+
             if (Interlocked.Increment(ref psDebugCount) <= 3)
             {
                 var preview = text.Length > 80 ? text[..80] + "..." : text;
@@ -447,6 +451,11 @@ foreach (var (name, classify, disposable) in classifiers)
 
     Console.WriteLine($"{name,-42} {precision,10:P1} {recall,10:P1} {f1,10:P3} {accuracy,10:P1} {sw.Elapsed.TotalSeconds,8:F1}s");
     Console.WriteLine($"{"",42} TP={tp,5} FP={fp,5} FN={fn,5} TN={tn,5}{(errors > 0 ? $" ERR={errors}" : "")}");
+    if (errors > 0)
+    {
+        var pct = (double)errors / texts.Count * 100;
+        Console.WriteLine($"{"",42} *** WARNING: {errors}/{texts.Count} ({pct:F1}%) API calls failed — results may be unreliable ***");
+    }
 
     if (isFirst && showErrors > 0)
     {

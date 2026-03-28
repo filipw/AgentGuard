@@ -4,14 +4,15 @@
 dotnet add package AgentGuard.Azure --prerelease
 ```
 
-Azure AI Content Safety provides two complementary APIs, both integrated in AgentGuard:
+Azure AI Content Safety provides three complementary APIs, all integrated in AgentGuard:
 
 | API | AgentGuard Rule | Purpose | Endpoint |
 |-----|----------------|---------|----------|
 | **Prompt Shields** | `AzurePromptShieldRule` (order 14) | Prompt injection detection (jailbreaks + indirect injection) | `text:shieldPrompt` |
 | **Text Analysis** | `ContentSafetyRule` (order 50) | Harmful content detection (hate, violence, self-harm, sexual) | `text:analyze` |
+| **Protected Material** | `AzureProtectedMaterialRule` (order 76) | Copyright detection for text (lyrics, articles) and code (GitHub repos with license info) | `text:detectProtectedMaterial` / `text:detectProtectedMaterialForCode` |
 
-Both use the same Azure Content Safety endpoint and API key.
+All use the same Azure Content Safety endpoint and API key.
 
 ## Prompt Shields (Prompt Injection Detection)
 
@@ -154,26 +155,77 @@ A well-designed guardrail pipeline uses **both** - Prompt Shields to stop manipu
 
 ### Benchmark: Prompt Injection Dataset
 
-Evaluated on 500 samples from [jayavibhav/prompt-injection-safety](https://huggingface.co/datasets/jayavibhav/prompt-injection-safety):
+Evaluated on 500 samples from [jayavibhav/prompt-injection-safety](https://huggingface.co/datasets/jayavibhav/prompt-injection-safety) (free tier, 5 RPS, ~77s runtime):
 
 | Classifier | Precision | Recall | F1 | Notes |
 |------------|-----------|--------|----|-------|
-| Azure Prompt Shield | 100% | 2.3% | 4.4% | Targets explicit jailbreaks (DAN, role-play, system overrides) |
+| Azure Prompt Shield | 85.9% | 35.6% | 50.3% | 79 TP, 13 FP, 143 FN, 265 TN, 0 errors |
 
-Prompt Shield achieves perfect precision (zero false positives) but low recall on diverse injection datasets. It's tuned for explicit jailbreak patterns - role-play attacks, system prompt overrides, DAN-style prompts, encoding evasion - rather than the full spectrum of subtle prompt injections. This makes it a high-confidence complement to local classifiers like Defender (F1 ~97%) which catch the breadth.
+Prompt Shield achieves strong precision (85.9%) with moderate recall (35.6%) on a diverse prompt injection dataset. It catches a meaningful proportion of attacks — including jailbreaks, role-play persona hijacking, system prompt overrides, and encoding attacks — while keeping false positives low. Combined with local classifiers like Defender (F1 ~97%) for breadth, Prompt Shield adds a complementary cloud-based detection signal.
+
+> **Note on benchmark reliability**: The client includes 429 retry logic (3 attempts with `Retry-After` backoff). Results include an error count (`ERR=N`) — if non-zero, the benchmark prints a warning that results may be unreliable. The numbers above were measured with 0 errors. Runtime is dominated by the free tier's 5 RPS limit; a paid tier would complete significantly faster.
 
 Run the benchmark:
 ```bash
-dotnet run --project eng/benchmark -- --prompt-shield --azure --limit=500
+dotnet run --project eng/benchmark -- --prompt-shield --limit=500
 ```
+
+## Protected Material Detection
+
+Azure Content Safety can detect copyrighted text (song lyrics, articles, recipes) and code from GitHub repositories in LLM-generated output. No C# SDK exists for these APIs — AgentGuard provides the only .NET client.
+
+### Text Detection
+
+Detects known copyrighted text content via `text:detectProtectedMaterial`:
+
+```csharp
+using AgentGuard.Azure.ProtectedMaterial;
+
+var client = new AzureProtectedMaterialClient(endpoint, apiKey);
+var result = await client.AnalyzeTextAsync(generatedText);
+if (result.Detected)
+    Console.WriteLine("Protected text content detected!");
+```
+
+### Code Detection (with Citations)
+
+Detects code from GitHub repositories via `text:detectProtectedMaterialForCode` (preview API). Returns license information and source URLs:
+
+```csharp
+var result = await client.AnalyzeCodeAsync(generatedCode);
+if (result.Detected)
+{
+    foreach (var citation in result.CodeCitations)
+        Console.WriteLine($"License: {citation.License}, Source: {string.Join(", ", citation.SourceUrls)}");
+}
+```
+
+### Using the Rule
+
+The rule runs in the output phase (order 76, after the LLM copyright rule at 75):
+
+```csharp
+var pmClient = new AzureProtectedMaterialClient(endpoint, apiKey);
+
+var policy = new GuardrailPolicyBuilder("safe-agent")
+    .BlockProtectedMaterialWithAzure(pmClient, new AzureProtectedMaterialOptions
+    {
+        AnalyzeCode = true,    // also check code (default: false, text only)
+        Action = ProtectedMaterialAction.Block  // or Warn
+    })
+    .Build();
+```
+
+Code content is taken from `GuardrailContext.Properties["Code"]` (string), or falls back to `GuardrailContext.Text`.
 
 ## Fail-Open Behavior
 
-Both the Prompt Shield client and Content Safety classifier fail open on errors - they return non-blocking results so the agent continues. Override by wrapping with your own fail-closed implementation.
+All Azure clients (Prompt Shield, Content Safety, Protected Material) fail open on errors — they return non-blocking results so the agent continues. Error results include `IsError = true` so callers can distinguish "checked and clean" from "failed to check". Override by wrapping with your own fail-closed implementation.
 
 ## Cost
 
-Azure AI Content Safety bills per API call. The free tier supports 5 RPS for both APIs. Consider:
+Azure AI Content Safety bills per API call. The free tier supports 5 RPS for all APIs. Consider:
 - Running local heuristics (regex, ONNX) first to short-circuit obvious attacks
 - Using Prompt Shield selectively (e.g., only on external-facing inputs)
 - Caching results for repeated inputs
+- The code detection API (`text:detectProtectedMaterialForCode`) is a preview feature (api-version=2024-09-15-preview)

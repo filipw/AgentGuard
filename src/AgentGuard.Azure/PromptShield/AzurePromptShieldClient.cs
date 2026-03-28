@@ -16,6 +16,12 @@ public sealed record PromptShieldResult
 
     /// <summary>Per-document attack detection results.</summary>
     public IReadOnlyList<bool> DocumentAttacksDetected { get; init; } = [];
+
+    /// <summary>
+    /// True when the API call failed (error, timeout, retry exhaustion).
+    /// The result is a fail-open default, not an actual classification.
+    /// </summary>
+    public bool IsError { get; init; }
 }
 
 /// <summary>
@@ -91,7 +97,7 @@ public sealed partial class AzurePromptShieldClient : IDisposable
             };
 
             var url = $"/contentsafety/text:shieldPrompt?api-version={ApiVersion}";
-            var response = await _httpClient.PostAsJsonAsync(url, request, JsonOptions, cancellationToken);
+            var response = await SendWithRetryAsync(url, request, cancellationToken);
             response.EnsureSuccessStatusCode();
 
             var result = await response.Content.ReadFromJsonAsync<ShieldPromptResponse>(JsonOptions, cancellationToken);
@@ -109,7 +115,7 @@ public sealed partial class AzurePromptShieldClient : IDisposable
         catch (Exception ex)
         {
             LogAnalysisFailed(_logger, ex);
-            return new PromptShieldResult(); // fail-open
+            return new PromptShieldResult { IsError = true }; // fail-open
         }
     }
 
@@ -119,8 +125,38 @@ public sealed partial class AzurePromptShieldClient : IDisposable
             _httpClient.Dispose();
     }
 
+    private async Task<HttpResponseMessage> SendWithRetryAsync<TRequest>(
+        string url, TRequest request, CancellationToken cancellationToken)
+    {
+        const int maxRetries = 3;
+        for (var attempt = 0; attempt < maxRetries; attempt++)
+        {
+            var response = await _httpClient.PostAsJsonAsync(url, request, JsonOptions, cancellationToken);
+            if ((int)response.StatusCode != 429)
+                return response;
+
+            if (attempt == maxRetries - 1)
+            {
+                LogRetryExhausted(_logger, maxRetries);
+                return response; // will fail via EnsureSuccessStatusCode → catch → fail-open
+            }
+
+            var retryAfter = response.Headers.RetryAfter?.Delta ?? TimeSpan.FromSeconds(1);
+            LogRateLimited(_logger, attempt + 1, maxRetries, retryAfter);
+            await Task.Delay(retryAfter, cancellationToken);
+        }
+
+        throw new InvalidOperationException();
+    }
+
     [LoggerMessage(Level = LogLevel.Error, Message = "Azure Prompt Shield analysis failed")]
     private static partial void LogAnalysisFailed(ILogger logger, Exception ex);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Azure Prompt Shield rate limited, retry {Attempt}/{MaxRetries} after {RetryAfter}")]
+    private static partial void LogRateLimited(ILogger logger, int attempt, int maxRetries, TimeSpan retryAfter);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Azure Prompt Shield rate limit retries exhausted after {MaxRetries} attempts — failing open")]
+    private static partial void LogRetryExhausted(ILogger logger, int maxRetries);
 
     // --- JSON DTOs ---
 

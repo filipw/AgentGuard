@@ -51,6 +51,15 @@ public sealed class AzurePromptShieldRule : IGuardrailRule
             ? await _client.AnalyzeAsync(context.Text, documents, cancellationToken)
             : await _client.AnalyzeUserPromptAsync(context.Text, cancellationToken);
 
+        if (result.IsError)
+        {
+            return new GuardrailResult
+            {
+                IsBlocked = false, // fail-open
+                Metadata = new Dictionary<string, object> { ["error"] = true }
+            };
+        }
+
         if (result.UserPromptAttackDetected)
         {
             return new GuardrailResult
