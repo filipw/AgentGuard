@@ -46,8 +46,8 @@ public sealed class LlmOutputPolicyRule : LlmGuardrailRule
     private readonly LlmOutputPolicyOptions _options;
     private readonly string _systemPrompt;
 
-    public LlmOutputPolicyRule(IChatClient chatClient, LlmOutputPolicyOptions options, ChatOptions? chatOptions = null)
-        : base(chatClient, chatOptions)
+    public LlmOutputPolicyRule(IChatClient chatClient, LlmOutputPolicyOptions options, ChatOptions? chatOptions = null, ErrorBehavior errorBehavior = ErrorBehavior.FailOpen)
+        : base(chatClient, chatOptions, errorBehavior)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _systemPrompt = _options.SystemPrompt?.Replace("{policy}", _options.PolicyDescription)

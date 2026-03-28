@@ -39,8 +39,8 @@ public sealed class LlmPiiDetectionRule : LlmGuardrailRule
     private readonly LlmPiiDetectionOptions _options;
     private readonly string _systemPrompt;
 
-    public LlmPiiDetectionRule(IChatClient chatClient, LlmPiiDetectionOptions? options = null, ChatOptions? chatOptions = null)
-        : base(chatClient, chatOptions)
+    public LlmPiiDetectionRule(IChatClient chatClient, LlmPiiDetectionOptions? options = null, ChatOptions? chatOptions = null, ErrorBehavior errorBehavior = ErrorBehavior.FailOpen)
+        : base(chatClient, chatOptions, errorBehavior)
     {
         _options = options ?? new();
         _systemPrompt = _options.SystemPrompt ?? GetDefaultPrompt(_options.Action);

@@ -150,11 +150,12 @@ public class RemotePromptInjectionRuleTests
 
         var rule = new RemotePromptInjectionRule(mock.Object, new RemotePromptInjectionOptions
         {
-            FailOpen = true
+            OnError = ErrorBehavior.FailOpen
         });
         var result = await rule.EvaluateAsync(CreateContext("test input"));
 
         result.IsBlocked.Should().BeFalse();
+        result.IsError.Should().BeTrue();
     }
 
     [Fact]
@@ -166,12 +167,13 @@ public class RemotePromptInjectionRuleTests
 
         var rule = new RemotePromptInjectionRule(mock.Object, new RemotePromptInjectionOptions
         {
-            FailOpen = false
+            OnError = ErrorBehavior.FailClosed
         });
         var result = await rule.EvaluateAsync(CreateContext("test input"));
 
         result.IsBlocked.Should().BeTrue();
-        result.Reason.Should().Contain("unavailable");
+        result.IsError.Should().BeTrue();
+        result.Reason.Should().Contain("FailClosed");
     }
 
     [Fact]

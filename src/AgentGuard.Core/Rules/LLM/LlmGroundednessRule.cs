@@ -40,8 +40,8 @@ public sealed class LlmGroundednessRule : LlmGuardrailRule
 {
     private readonly LlmGroundednessOptions _options;
 
-    public LlmGroundednessRule(IChatClient chatClient, LlmGroundednessOptions? options = null, ChatOptions? chatOptions = null)
-        : base(chatClient, chatOptions)
+    public LlmGroundednessRule(IChatClient chatClient, LlmGroundednessOptions? options = null, ChatOptions? chatOptions = null, ErrorBehavior errorBehavior = ErrorBehavior.FailOpen)
+        : base(chatClient, chatOptions, errorBehavior)
     {
         _options = options ?? new();
     }

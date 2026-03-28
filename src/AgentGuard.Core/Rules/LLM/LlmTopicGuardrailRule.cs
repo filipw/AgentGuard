@@ -29,8 +29,8 @@ public sealed class LlmTopicGuardrailRule : LlmGuardrailRule
     private readonly LlmTopicGuardrailOptions _options;
     private readonly string _systemPrompt;
 
-    public LlmTopicGuardrailRule(IChatClient chatClient, LlmTopicGuardrailOptions options, ChatOptions? chatOptions = null)
-        : base(chatClient, chatOptions)
+    public LlmTopicGuardrailRule(IChatClient chatClient, LlmTopicGuardrailOptions options, ChatOptions? chatOptions = null, ErrorBehavior errorBehavior = ErrorBehavior.FailOpen)
+        : base(chatClient, chatOptions, errorBehavior)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         var topicsList = string.Join(", ", _options.AllowedTopics);
