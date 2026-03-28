@@ -190,9 +190,9 @@ await foreach (var update in guardedAgent
       </tr>
       <tr>
         <td>Azure Prompt Shield</td>
-        <td>100%</td>
-        <td>2.3%</td>
-        <td>4.4%</td>
+        <td>85.9%</td>
+        <td>35.6%</td>
+        <td>50.3%</td>
       </tr>
     </tbody>
   </table>
@@ -201,8 +201,8 @@ await foreach (var update in guardedAgent
     Combine tiers for defense in depth: regex short-circuits obvious attacks, Defender catches the rest.
   </p>
   <p class="benchmark-note">
-    Azure Prompt Shield targets explicit jailbreaks (DAN, role-play, system prompt overrides) with 100% precision but low recall on diverse injection datasets.
-    It complements local classifiers - Defender catches the breadth, Prompt Shield adds a high-confidence cloud signal.
+    Azure Prompt Shield (F1 50.3%) provides a complementary cloud-based signal for jailbreaks, role-play attacks, and encoding evasion.
+    Benchmarked on the free tier (5 RPS). All 500 requests succeeded with 0 errors.
   </p>
 </section>
 
@@ -403,7 +403,7 @@ await foreach (var update in guardedAgent
     </div>
     <div class="package-card">
       <div class="package-name">AgentGuard.Azure</div>
-      <div class="package-desc">Azure AI Content Safety integration. Prompt Shields (injection detection), category analysis, severity thresholds, and server-side blocklists.</div>
+      <div class="package-desc">Azure AI Content Safety integration. Prompt Shields (injection detection), protected material detection (text &amp; code with license citations), category analysis, severity thresholds, and server-side blocklists.</div>
     </div>
     <div class="package-card">
       <div class="package-name">AgentGuard.Hosting</div>
