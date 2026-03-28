@@ -110,7 +110,7 @@ Order 13, Input phase. Calls an external model server for ML-based classificatio
 | RequestFormat | `HttpClassifierRequestFormat` | HuggingFace | Request/response format (HuggingFace or Simple) |
 | InjectionLabels | `ISet<string>` | jailbreak, injection, malicious, unsafe, INJECTION | Labels indicating injection |
 | Threshold | `float` | 0.5 | Confidence threshold (0.0–1.0) |
-| FailOpen | `bool` | true | Pass if classifier is unreachable |
+| OnError | `ErrorBehavior` | FailOpen | What to do on error: FailOpen (pass), Warn (pass + metadata), FailClosed (block) |
 | Timeout | `TimeSpan` | 10s | HTTP request timeout |
 
 When blocked, result metadata includes:

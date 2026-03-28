@@ -13,11 +13,13 @@ public abstract class LlmGuardrailRule : IGuardrailRule, IStreamingGuardrailRule
 {
     private readonly IChatClient _chatClient;
     private readonly ChatOptions? _chatOptions;
+    private readonly ErrorBehavior _errorBehavior;
 
-    protected LlmGuardrailRule(IChatClient chatClient, ChatOptions? chatOptions = null)
+    protected LlmGuardrailRule(IChatClient chatClient, ChatOptions? chatOptions = null, ErrorBehavior errorBehavior = ErrorBehavior.FailOpen)
     {
         _chatClient = chatClient ?? throw new ArgumentNullException(nameof(chatClient));
         _chatOptions = chatOptions;
+        _errorBehavior = errorBehavior;
     }
 
     public abstract string Name { get; }
@@ -55,10 +57,9 @@ public abstract class LlmGuardrailRule : IGuardrailRule, IStreamingGuardrailRule
             var responseText = response.Text ?? "";
             return ParseResponse(responseText, context);
         }
-        catch (Exception)
+        catch (Exception ex)
         {
-            // Fail-open: if the LLM call fails, allow the text through
-            return GuardrailResult.Passed();
+            return GuardrailResult.Error(Name, _errorBehavior, ex.Message);
         }
     }
 }

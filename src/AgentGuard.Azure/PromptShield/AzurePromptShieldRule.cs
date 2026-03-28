@@ -13,6 +13,12 @@ public sealed class AzurePromptShieldOptions
     /// Default: false.
     /// </summary>
     public bool AnalyzeDocuments { get; init; }
+
+    /// <summary>
+    /// What to do when the Azure API call fails (timeout, 429 exhaustion, HTTP error).
+    /// Default: <see cref="ErrorBehavior.FailOpen"/>.
+    /// </summary>
+    public ErrorBehavior OnError { get; init; } = ErrorBehavior.FailOpen;
 }
 
 /// <summary>
@@ -52,13 +58,7 @@ public sealed class AzurePromptShieldRule : IGuardrailRule
             : await _client.AnalyzeUserPromptAsync(context.Text, cancellationToken);
 
         if (result.IsError)
-        {
-            return new GuardrailResult
-            {
-                IsBlocked = false, // fail-open
-                Metadata = new Dictionary<string, object> { ["error"] = true }
-            };
-        }
+            return GuardrailResult.Error(Name, _options.OnError);
 
         if (result.UserPromptAttackDetected)
         {

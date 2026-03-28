@@ -104,34 +104,22 @@ public sealed partial class RemotePromptInjectionRule : IGuardrailRule
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             LogTimeout(_logger, _options.Timeout.TotalMilliseconds);
-            return HandleFailure();
+            return HandleFailure($"Timed out after {_options.Timeout.TotalMilliseconds}ms");
         }
         catch (HttpRequestException ex)
         {
             LogHttpError(_logger, ex);
-            return HandleFailure();
+            return HandleFailure(ex.Message);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             LogUnexpectedError(_logger, ex);
-            return HandleFailure();
+            return HandleFailure(ex.Message);
         }
     }
 
-    private GuardrailResult HandleFailure()
-    {
-        if (_options.FailOpen)
-        {
-            return GuardrailResult.Passed();
-        }
-
-        return new GuardrailResult
-        {
-            IsBlocked = true,
-            Reason = "Remote classifier is unavailable and FailOpen is disabled",
-            Severity = GuardrailSeverity.Medium
-        };
-    }
+    private GuardrailResult HandleFailure(string? detail = null) =>
+        GuardrailResult.Error(Name, _options.OnError, detail);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Remote classifier timed out after {TimeoutMs}ms")]
     private static partial void LogTimeout(ILogger logger, double timeoutMs);

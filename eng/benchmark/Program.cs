@@ -254,7 +254,7 @@ if (includeLlm)
             {
                 if (Interlocked.Increment(ref llmDebugCount) <= 5)
                     Console.Error.WriteLine($"\n  [DEBUG] LLM error: {ex.GetType().Name}: {ex.Message}");
-                return false;
+                throw; // let outer catch count as error
             }
         };
         classifiers.Add(($"LLM ({llmModel})", llmClassify, null));
@@ -345,8 +345,8 @@ if (includePromptShield)
             var ctx = new GuardrailContext { Text = text, Phase = GuardrailPhase.Input };
             var result = await psRule.EvaluateAsync(ctx);
 
-            // Surface client errors so the benchmark counts them as ERR, not as pass
-            if (result.Metadata?.TryGetValue("error", out var isErr) == true && isErr is true)
+            // Surface errors so the benchmark counts them as ERR, not as pass
+            if (result.IsError)
                 throw new InvalidOperationException("Azure Prompt Shield API call failed (retries exhausted)");
 
             if (Interlocked.Increment(ref psDebugCount) <= 3)
@@ -363,9 +363,9 @@ if (includePromptShield)
 
 // --- Run benchmarks ---
 Console.WriteLine();
-Console.WriteLine("=".PadRight(95, '='));
-Console.WriteLine($"{"Classifier",-42} {"Precision",10} {"Recall",10} {"F1",10} {"Accuracy",10} {"Time",10}");
-Console.WriteLine("=".PadRight(95, '='));
+Console.WriteLine("=".PadRight(103, '='));
+Console.WriteLine($"{"Classifier",-42} {"Precision",10} {"Recall",10} {"F1",10} {"Accuracy",10} {"Errors",8} {"Time",10}");
+Console.WriteLine("=".PadRight(103, '='));
 
 var isFirst = true;
 foreach (var (name, classify, disposable) in classifiers)
@@ -449,8 +449,8 @@ foreach (var (name, classify, disposable) in classifiers)
     var f1 = precision + recall > 0 ? 2 * precision * recall / (precision + recall) : 0;
     var accuracy = (double)(tp + tn) / (tp + tn + fp + fn);
 
-    Console.WriteLine($"{name,-42} {precision,10:P1} {recall,10:P1} {f1,10:P3} {accuracy,10:P1} {sw.Elapsed.TotalSeconds,8:F1}s");
-    Console.WriteLine($"{"",42} TP={tp,5} FP={fp,5} FN={fn,5} TN={tn,5}{(errors > 0 ? $" ERR={errors}" : "")}");
+    Console.WriteLine($"{name,-42} {precision,10:P1} {recall,10:P1} {f1,10:P3} {accuracy,10:P1} {errors,8} {sw.Elapsed.TotalSeconds,8:F1}s");
+    Console.WriteLine($"{"",42} TP={tp,5} FP={fp,5} FN={fn,5} TN={tn,5}");
     if (errors > 0)
     {
         var pct = (double)errors / texts.Count * 100;
@@ -485,7 +485,7 @@ foreach (var (name, classify, disposable) in classifiers)
     }
 }
 
-Console.WriteLine("=".PadRight(95, '='));
+Console.WriteLine("=".PadRight(103, '='));
 Console.WriteLine($"\nDataset: jayavibhav/prompt-injection-safety (test split, {texts.Count} samples)");
 if (!includeOnnx)
     Console.WriteLine("Tip: pass --onnx to include ONNX DeBERTa v3 benchmarks (slower).");

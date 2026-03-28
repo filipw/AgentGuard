@@ -40,8 +40,8 @@ public sealed class LlmCopyrightRule : LlmGuardrailRule
     private readonly LlmCopyrightOptions _options;
     private readonly string _systemPrompt;
 
-    public LlmCopyrightRule(IChatClient chatClient, LlmCopyrightOptions? options = null, ChatOptions? chatOptions = null)
-        : base(chatClient, chatOptions)
+    public LlmCopyrightRule(IChatClient chatClient, LlmCopyrightOptions? options = null, ChatOptions? chatOptions = null, ErrorBehavior errorBehavior = ErrorBehavior.FailOpen)
+        : base(chatClient, chatOptions, errorBehavior)
     {
         _options = options ?? new();
         _systemPrompt = _options.SystemPrompt ?? DefaultSystemPrompt;

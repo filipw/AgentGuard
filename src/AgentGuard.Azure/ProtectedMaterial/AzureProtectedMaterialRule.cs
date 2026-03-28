@@ -20,6 +20,12 @@ public sealed class AzureProtectedMaterialOptions
     /// Defaults to <see cref="ProtectedMaterialAction.Block"/>.
     /// </summary>
     public ProtectedMaterialAction Action { get; init; } = ProtectedMaterialAction.Block;
+
+    /// <summary>
+    /// What to do when the Azure API call fails (timeout, 429 exhaustion, HTTP error).
+    /// Default: <see cref="ErrorBehavior.FailOpen"/>.
+    /// </summary>
+    public ErrorBehavior OnError { get; init; } = ErrorBehavior.FailOpen;
 }
 
 /// <summary>
@@ -63,7 +69,7 @@ public sealed class AzureProtectedMaterialRule : IGuardrailRule
         // Always check text
         var textResult = await _client.AnalyzeTextAsync(context.Text, cancellationToken);
         if (textResult.IsError)
-            return new GuardrailResult { IsBlocked = false, Metadata = new Dictionary<string, object> { ["error"] = true } };
+            return GuardrailResult.Error(Name, _options.OnError);
         if (textResult.Detected)
         {
             return BuildResult(
@@ -80,7 +86,7 @@ public sealed class AzureProtectedMaterialRule : IGuardrailRule
 
             var codeResult = await _client.AnalyzeCodeAsync(code, cancellationToken);
             if (codeResult.IsError)
-                return new GuardrailResult { IsBlocked = false, Metadata = new Dictionary<string, object> { ["error"] = true } };
+                return GuardrailResult.Error(Name, _options.OnError);
             if (codeResult.Detected)
             {
                 var metadata = new Dictionary<string, object>

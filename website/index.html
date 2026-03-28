@@ -177,10 +177,10 @@ await foreach (var update in guardedAgent
         <td>67.1%</td>
       </tr>
       <tr>
-        <td>LLM (gpt-oss-20b)</td>
+        <td>Local LLM (gpt-oss-20b)</td>
         <td>100%</td>
-        <td>40.9%</td>
-        <td>58.1%</td>
+        <td>40.5%</td>
+        <td>57.7%</td>
       </tr>
       <tr>
         <td>Regex (all levels)</td>
@@ -201,8 +201,8 @@ await foreach (var update in guardedAgent
     Combine tiers for defense in depth: regex short-circuits obvious attacks, Defender catches the rest.
   </p>
   <p class="benchmark-note">
-    Azure Prompt Shield (F1 50.3%) provides a complementary cloud-based signal for jailbreaks, role-play attacks, and encoding evasion.
-    Benchmarked on the free tier (5 RPS). All 500 requests succeeded with 0 errors.
+    All benchmarks on 2020 M1 MacBook Air. Local LLM (gpt-oss-20b) served from 2025 M4 Pro Mac Mini via LM Studio.
+    Azure Prompt Shield on free tier (5 RPS). All classifiers ran with 0 errors across 500 samples.
   </p>
 </section>
 
