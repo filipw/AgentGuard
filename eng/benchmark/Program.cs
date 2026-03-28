@@ -1,9 +1,14 @@
 using System.Diagnostics;
+using AgentGuard.Azure.ContentSafety;
+using AgentGuard.Azure.PromptShield;
 using AgentGuard.Core.Abstractions;
+using AgentGuard.Core.Rules.ContentSafety;
 using AgentGuard.Core.Rules.LLM;
 using AgentGuard.Core.Rules.Normalization;
 using AgentGuard.Core.Rules.PromptInjection;
 using AgentGuard.Onnx;
+using Azure;
+using Azure.AI.ContentSafety;
 using Microsoft.Extensions.AI;
 using OpenAI;
 using Parquet;
@@ -256,6 +261,102 @@ if (includeLlm)
     }
 }
 
+// --- Azure Content Safety classifier ---
+var includeAzure = args.Any(a => a == "--azure");
+if (includeAzure)
+{
+    var azureEndpoint = Environment.GetEnvironmentVariable("AZURE_CONTENT_SAFETY_ENDPOINT");
+    var azureKey = Environment.GetEnvironmentVariable("AZURE_CONTENT_SAFETY_KEY");
+    var azureConcurrency = 5; // default; free tier = 5 RPS
+    foreach (var arg in args)
+    {
+        if (arg.StartsWith("--azure-concurrency=", StringComparison.Ordinal))
+            azureConcurrency = int.Parse(arg["--azure-concurrency=".Length..], System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    if (string.IsNullOrEmpty(azureEndpoint) || string.IsNullOrEmpty(azureKey))
+    {
+        Console.WriteLine("\nAzure Content Safety not configured - set AZURE_CONTENT_SAFETY_ENDPOINT and AZURE_CONTENT_SAFETY_KEY.\n");
+    }
+    else
+    {
+        Console.WriteLine($"\nAzure Content Safety: {azureEndpoint} (concurrency={azureConcurrency})");
+
+        var azureClient = new ContentSafetyClient(
+            new Uri(azureEndpoint), new AzureKeyCredential(azureKey));
+        var azureClassifier = new AzureContentSafetyClassifier(azureClient);
+
+        // Azure Content Safety doesn't detect "prompt injection" per se - it detects harmful content categories.
+        // For the benchmark, we treat any non-Safe severity across all categories as "blocked".
+        // This tests whether harmful prompt injections also trigger content safety (many do contain hate/violence).
+        foreach (var threshold in new[] { ContentSafetySeverity.Safe, ContentSafetySeverity.Low })
+        {
+            var rule = new ContentSafetyRule(
+                new ContentSafetyOptions { MaxAllowedSeverity = threshold },
+                azureClassifier);
+
+            var azureDebugCount = 0;
+            var capturedThreshold = threshold;
+            classifiers.Add(($"Azure Content Safety (max={threshold})", async text =>
+            {
+                var ctx = new GuardrailContext { Text = text, Phase = GuardrailPhase.Input };
+                var result = await rule.EvaluateAsync(ctx).AsTask();
+
+                if (Interlocked.Increment(ref azureDebugCount) <= 3)
+                {
+                    var preview = text.Length > 80 ? text[..80] + "..." : text;
+                    Console.Error.WriteLine($"\n  [DEBUG] Azure Input: {preview.ReplaceLineEndings(" ")}");
+                    Console.Error.WriteLine($"  [DEBUG] Azure result: {(result.IsBlocked ? $"BLOCKED - {result.Reason}" : "PASSED")}");
+                }
+
+                return result.IsBlocked;
+            }, null));
+        }
+    }
+}
+
+// --- Azure Prompt Shield classifier ---
+var includePromptShield = args.Any(a => a == "--prompt-shield");
+if (includePromptShield)
+{
+    var azureEndpoint = Environment.GetEnvironmentVariable("AZURE_CONTENT_SAFETY_ENDPOINT");
+    var azureKey = Environment.GetEnvironmentVariable("AZURE_CONTENT_SAFETY_KEY");
+    var psConcurrency = 5; // default; free tier = 5 RPS
+    foreach (var arg in args)
+    {
+        if (arg.StartsWith("--azure-concurrency=", StringComparison.Ordinal))
+            psConcurrency = int.Parse(arg["--azure-concurrency=".Length..], System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    if (string.IsNullOrEmpty(azureEndpoint) || string.IsNullOrEmpty(azureKey))
+    {
+        Console.WriteLine("\nAzure Prompt Shield not configured - set AZURE_CONTENT_SAFETY_ENDPOINT and AZURE_CONTENT_SAFETY_KEY.\n");
+    }
+    else
+    {
+        Console.WriteLine($"\nAzure Prompt Shield: {azureEndpoint} (concurrency={psConcurrency})");
+
+        var psClient = new AzurePromptShieldClient(azureEndpoint, azureKey);
+        var psRule = new AzurePromptShieldRule(psClient);
+
+        var psDebugCount = 0;
+        classifiers.Add(("Azure Prompt Shield", async text =>
+        {
+            var ctx = new GuardrailContext { Text = text, Phase = GuardrailPhase.Input };
+            var result = await psRule.EvaluateAsync(ctx);
+
+            if (Interlocked.Increment(ref psDebugCount) <= 3)
+            {
+                var preview = text.Length > 80 ? text[..80] + "..." : text;
+                Console.Error.WriteLine($"\n  [DEBUG] PromptShield Input: {preview.ReplaceLineEndings(" ")}");
+                Console.Error.WriteLine($"  [DEBUG] PromptShield result: {(result.IsBlocked ? $"BLOCKED - {result.Reason}" : "PASSED")}");
+            }
+
+            return result.IsBlocked;
+        }, psClient));
+    }
+}
+
 // --- Run benchmarks ---
 Console.WriteLine();
 Console.WriteLine("=".PadRight(95, '='));
@@ -266,16 +367,18 @@ var isFirst = true;
 foreach (var (name, classify, disposable) in classifiers)
 {
     var isLlmClassifier = name.StartsWith("LLM", StringComparison.Ordinal);
+    var isAzureClassifier = name.StartsWith("Azure", StringComparison.Ordinal);
+    var concurrency = isLlmClassifier ? llmConcurrency : isAzureClassifier ? (args.FirstOrDefault(a => a.StartsWith("--azure-concurrency=", StringComparison.Ordinal)) is string ac ? int.Parse(ac["--azure-concurrency=".Length..], System.Globalization.CultureInfo.InvariantCulture) : 5) : 0;
     var sw = Stopwatch.StartNew();
     int tp = 0, fp = 0, tn = 0, fn = 0;
     int errors = 0;
     var fnExamples = new List<string>();
     var fpExamples = new List<string>();
 
-    if (isLlmClassifier && llmConcurrency > 1)
+    if ((isLlmClassifier || isAzureClassifier) && concurrency > 1)
     {
-        // Parallel evaluation for LLM classifiers
-        var semaphore = new SemaphoreSlim(llmConcurrency);
+        // Parallel evaluation for LLM/Azure classifiers
+        var semaphore = new SemaphoreSlim(concurrency);
         var results = new bool?[texts.Count];
         var completed = 0;
 
@@ -379,6 +482,10 @@ if (!includeOnnx)
     Console.WriteLine("Tip: pass --onnx to include ONNX DeBERTa v3 benchmarks (slower).");
 if (!includeLlm)
     Console.WriteLine("Tip: pass --llm to include LLM-as-judge (requires AGENTGUARD_LLM_ENDPOINT + AGENTGUARD_LLM_MODEL).");
+if (!includeAzure)
+    Console.WriteLine("Tip: pass --azure to include Azure Content Safety text:analyze (requires AZURE_CONTENT_SAFETY_ENDPOINT + AZURE_CONTENT_SAFETY_KEY). Use --azure-concurrency=N to control RPS (default 5).");
+if (!includePromptShield)
+    Console.WriteLine("Tip: pass --prompt-shield to include Azure Prompt Shield (requires AZURE_CONTENT_SAFETY_ENDPOINT + AZURE_CONTENT_SAFETY_KEY).");
 if (limit == 0)
     Console.WriteLine("Tip: pass --limit=N for a quick subset run (e.g. --limit=500).");
 

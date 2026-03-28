@@ -40,3 +40,4 @@ eng/models/deberta-v3-prompt-injection/model.onnx
 .DS_Store
 Thumbs.db
 .claude/
+.benchmark-cache/test.parquet

@@ -372,6 +372,13 @@ section.alt .feature-card {
   font-weight: 600;
 }
 
+.benchmark-separator td {
+  font-size: 0.8125rem;
+  color: var(--color-text-secondary);
+  padding-top: 1rem;
+  border-bottom: none;
+}
+
 .benchmark-note {
   max-width: 640px;
   margin: 1.25rem auto 0;
