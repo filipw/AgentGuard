@@ -52,6 +52,13 @@ public sealed partial class GuardrailPipeline
             var taggedResult = result with { RuleName = rule.Name };
             results.Add(taggedResult);
 
+            if (result.IsError)
+            {
+                var errorDetail = result.Metadata?.TryGetValue("errorDetail", out var detail) == true
+                    ? detail?.ToString() : null;
+                LogRuleError(_logger, rule.Name, errorDetail, result.IsBlocked);
+            }
+
             if (result.IsBlocked)
             {
                 LogRuleBlocked(_logger, rule.Name, result.Reason);
@@ -68,6 +75,11 @@ public sealed partial class GuardrailPipeline
             {
                 LogRuleModified(_logger, rule.Name, result.Reason);
                 currentText = result.ModifiedText;
+            }
+
+            if (!result.IsBlocked && !result.IsModified && !result.IsError)
+            {
+                LogRulePassed(_logger, rule.Name);
             }
         }
 
@@ -158,11 +170,17 @@ public sealed partial class GuardrailPipeline
     [LoggerMessage(Level = LogLevel.Debug, Message = "Running guardrail rule '{RuleName}' in phase {Phase}")]
     private static partial void LogRunningRule(ILogger logger, string ruleName, GuardrailPhase phase);
 
+    [LoggerMessage(Level = LogLevel.Trace, Message = "Guardrail rule '{RuleName}' PASSED")]
+    private static partial void LogRulePassed(ILogger logger, string ruleName);
+
     [LoggerMessage(Level = LogLevel.Warning, Message = "Guardrail rule '{RuleName}' BLOCKED: {Reason}")]
     private static partial void LogRuleBlocked(ILogger logger, string ruleName, string? reason);
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Guardrail rule '{RuleName}' modified text: {Reason}")]
     private static partial void LogRuleModified(ILogger logger, string ruleName, string? reason);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Guardrail rule '{RuleName}' encountered an error: {ErrorDetail} (blocked={IsBlocked})")]
+    private static partial void LogRuleError(ILogger logger, string ruleName, string? errorDetail, bool isBlocked);
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Re-ask attempt {Attempt}/{MaxAttempts} - violation: {Reason}")]
     private static partial void LogReaskAttempt(ILogger logger, int attempt, int maxAttempts, string reason);

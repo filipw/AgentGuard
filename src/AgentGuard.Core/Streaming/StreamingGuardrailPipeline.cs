@@ -287,6 +287,13 @@ public sealed partial class StreamingGuardrailPipeline
             var taggedResult = result with { RuleName = rule.Name };
             results.Add(taggedResult);
 
+            if (result.IsError)
+            {
+                var errorDetail = result.Metadata?.TryGetValue("errorDetail", out var detail) == true
+                    ? detail?.ToString() : null;
+                LogRuleError(_logger, rule.Name, errorDetail, result.IsBlocked);
+            }
+
             if (result.IsBlocked)
             {
                 return new GuardrailPipelineResult
@@ -301,6 +308,11 @@ public sealed partial class StreamingGuardrailPipeline
             if (result.IsModified && result.ModifiedText is not null)
             {
                 currentText = result.ModifiedText;
+            }
+
+            if (!result.IsBlocked && !result.IsModified && !result.IsError)
+            {
+                LogRulePassed(_logger, rule.Name);
             }
         }
 
@@ -330,4 +342,10 @@ public sealed partial class StreamingGuardrailPipeline
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Running streaming guardrail rule '{RuleName}' ({Mode})")]
     private static partial void LogRunningRule(ILogger logger, string ruleName, string mode);
+
+    [LoggerMessage(Level = LogLevel.Trace, Message = "Streaming guardrail rule '{RuleName}' PASSED")]
+    private static partial void LogRulePassed(ILogger logger, string ruleName);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Streaming guardrail rule '{RuleName}' encountered an error: {ErrorDetail} (blocked={IsBlocked})")]
+    private static partial void LogRuleError(ILogger logger, string ruleName, string? errorDetail, bool isBlocked);
 }
