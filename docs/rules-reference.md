@@ -2,6 +2,31 @@
 
 Rules execute in order of their `Order` property (lower = first). Cheap regex/local checks run before expensive LLM calls.
 
+## Sensible Defaults
+
+`.UseDefaults()` (requires `AgentGuard.Onnx` package)
+
+Wires up a solid baseline that works fully offline with no additional configuration:
+
+```csharp
+using AgentGuard.Onnx;
+
+var policy = new GuardrailPolicyBuilder()
+    .UseDefaults()    // equivalent to the rules below
+    .Build();
+
+// Expands to:
+//   .NormalizeInput()                    (order 5)
+//   .BlockPromptInjection()             (order 10)
+//   .BlockPromptInjectionWithDefender() (order 11)
+//   .RedactPII()                        (order 20)
+//   .DetectSecrets()                    (order 22)
+//   .GuardToolCalls()                   (order 45)
+//   .GuardToolResults()                 (order 47)
+```
+
+You can chain additional rules after `UseDefaults()` to layer on more protection (e.g. topic boundary, LLM-based rules, token limits).
+
 ## Input Normalization
 
 `.NormalizeInput(options?)`
@@ -39,7 +64,7 @@ Order 10, Input phase. Patterns informed by the [Arcanum Prompt Injection Taxono
 
 ## Prompt Injection Detection (ONNX - StackOne Defender)
 
-`.BlockPromptInjectionWithOnnx()` or `.BlockPromptInjectionWithOnnx(options)`
+`.BlockPromptInjectionWithDefender()` or `.BlockPromptInjectionWithDefender(options)`
 
 Order 11, Input phase. Uses the [StackOne Defender](https://github.com/StackOneHQ/defender) fine-tuned MiniLM-L6-v2 ONNX model (~22 MB, int8 quantized) for ML-based binary classification. **F1 ~0.97** on adversarial benchmarks. Fast (~8 ms), accurate, fully offline. The model is **bundled with the NuGet package** - no separate download required.
 
@@ -60,10 +85,10 @@ When blocked, result metadata includes:
 using AgentGuard.Onnx;
 
 // Zero-config - bundled model, no download needed
-builder.BlockPromptInjectionWithOnnx()
+builder.BlockPromptInjectionWithDefender()
 
 // Or with custom threshold
-builder.BlockPromptInjectionWithOnnx(new DefenderPromptInjectionOptions { Threshold = 0.8f })
+builder.BlockPromptInjectionWithDefender(new DefenderPromptInjectionOptions { Threshold = 0.8f })
 ```
 
 ## Prompt Injection Detection (ONNX - DeBERTa v3)
@@ -91,7 +116,7 @@ Order 12, Input phase. Uses a fine-tuned DeBERTa v3 ONNX model (`protectai/deber
 using AgentGuard.Onnx;
 
 builder.BlockPromptInjection()              // tier 1: regex (order 10)
-    .BlockPromptInjectionWithOnnx()         // tier 2: Defender ML (order 11, bundled)
+    .BlockPromptInjectionWithDefender()         // tier 2: Defender ML (order 11, bundled)
     .BlockPromptInjectionWithRemoteClassifier(...)  // tier 3: remote ML (order 13)
     .BlockPromptInjectionWithLlm(chatClient) // tier 4: LLM (order 15)
 ```

@@ -54,10 +54,19 @@
 <pre><code>using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Builders;
 using AgentGuard.Core.Guardrails;
+using AgentGuard.Onnx;
 
+// Sensible defaults: normalization, regex + Defender ML
+// prompt injection, PII, secrets, tool guardrails
+var policy = new GuardrailPolicyBuilder()
+    .UseDefaults()
+    .Build();
+
+// Or pick and choose individual rules
 var policy = new GuardrailPolicyBuilder()
     .NormalizeInput()
     .BlockPromptInjection()
+    .BlockPromptInjectionWithDefender()
     .RedactPII()
     .EnforceTopicBoundary("billing", "returns")
     .LimitInputTokens(4000)
@@ -80,13 +89,21 @@ else if (result.WasModified)
     <div>
       <p class="code-label">With Microsoft Agent Framework</p>
 <pre><code>using AgentGuard.AgentFramework;
+using AgentGuard.Onnx;
 
-// Two lines to add guardrails
+// Sensible defaults in two lines
+var guardedAgent = agent
+    .AsBuilder()
+    .UseAgentGuard(g => g.UseDefaults())
+    .Build();
+
+// Or configure exactly what you need
 var guardedAgent = agent
     .AsBuilder()
     .UseAgentGuard(g => g
         .NormalizeInput()
         .BlockPromptInjection()
+        .BlockPromptInjectionWithDefender()
         .RedactPII()
         .EnforceTopicBoundary("billing")
         .LimitInputTokens(4000)
@@ -427,7 +444,7 @@ using AgentGuard.Azure.PromptShield;
 var policy = new GuardrailPolicyBuilder()
     .NormalizeInput()
     .BlockPromptInjection()                            // regex (order 10)
-    .BlockPromptInjectionWithOnnx()                    // Defender ML (order 11, bundled)
+    .BlockPromptInjectionWithDefender()                    // Defender ML (order 11, bundled)
     .BlockPromptInjectionWithRemoteClassifier(          // remote ML (order 13)
         "http://localhost:8000/classify")
     .BlockPromptInjectionWithAzurePromptShield(         // Azure Prompt Shield (order 14)
