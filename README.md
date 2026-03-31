@@ -17,7 +17,22 @@ Every AI agent needs the same safety guardrails: PII detection, prompt injection
 The core engine is **framework-agnostic** - use it standalone, with Microsoft Agent Framework, Semantic Kernel, or any other .NET AI stack. Framework-specific adapters (like `AgentGuard.AgentFramework` for MAF) wire guardrails into the host's middleware pipeline.
 
 ```csharp
-// Use the guardrail engine standalone - no framework dependency needed
+// Get started with sensible defaults - fully offline, no configuration needed
+using AgentGuard.Onnx;
+
+var policy = new GuardrailPolicyBuilder()
+    .UseDefaults()    // normalization + regex + Defender ML + PII + secrets + tool guardrails
+    .Build();
+
+var pipeline = new GuardrailPipeline(policy, logger);
+var result = await pipeline.RunAsync(new GuardrailContext { Text = userInput, Phase = GuardrailPhase.Input });
+
+if (result.IsBlocked)
+    Console.WriteLine($"Blocked: {result.BlockingResult!.Reason}");
+```
+
+```csharp
+// Or pick and choose individual rules
 var policy = new GuardrailPolicyBuilder()
     .NormalizeInput()              // decode base64/hex/unicode evasion tricks
     .GuardRetrieval()              // filter poisoned RAG chunks
@@ -29,26 +44,16 @@ var policy = new GuardrailPolicyBuilder()
     .GuardToolCalls()              // inspect tool call arguments for injection
     .GuardToolResults()            // detect indirect injection in tool results
     .Build();
-
-var pipeline = new GuardrailPipeline(policy, logger);
-var result = await pipeline.RunAsync(new GuardrailContext { Text = userInput, Phase = GuardrailPhase.Input });
-
-if (result.IsBlocked)
-    Console.WriteLine($"Blocked: {result.BlockingResult!.Reason}");
 ```
 
 ```csharp
-// Or plug into Microsoft Agent Framework with two lines
+// Plug into Microsoft Agent Framework
 using AgentGuard.AgentFramework;
+using AgentGuard.Onnx;
 
 var guardedAgent = agent
     .AsBuilder()
-    .UseAgentGuard(g => g
-        .BlockPromptInjection()
-        .RedactPII()
-        .EnforceTopicBoundary("customer-support")
-        .OnViolation(v => v.RejectWithMessage("I can only help with customer support topics."))
-    )
+    .UseAgentGuard(g => g.UseDefaults())
     .Build();
 ```
 
@@ -102,7 +107,7 @@ using AgentGuard.Azure.PromptShield;
 // Six-tier prompt injection detection: Regex → Defender → DeBERTa → Remote ML → Prompt Shield → LLM
 var policy = new GuardrailPolicyBuilder()
     .BlockPromptInjection()                              // tier 1: fast regex (order 10)
-    .BlockPromptInjectionWithOnnx()                      // tier 2: Defender ML (order 11, bundled)
+    .BlockPromptInjectionWithDefender()                   // tier 2: Defender ML (order 11, bundled)
     .BlockPromptInjectionWithRemoteClassifier(            // tier 3: remote ML (order 13)
         "http://localhost:8000/classify", modelName: "sentinel-v2")
     .BlockPromptInjectionWithAzurePromptShield(           // tier 4: Azure Prompt Shield (order 14)

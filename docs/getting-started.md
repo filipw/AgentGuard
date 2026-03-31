@@ -12,17 +12,17 @@ dotnet add package AgentGuard.RemoteClassifier --prerelease # optional: remote M
 
 ## Your First Guardrail
 
-AgentGuard's core engine is framework-agnostic - use it standalone without any agent framework dependency:
+The fastest way to get started is `UseDefaults()`, which wires up a solid baseline that works fully offline - input normalization, regex + Defender ML prompt injection detection, PII redaction, secrets detection, and tool call/result guardrails:
 
 ```csharp
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Builders;
 using AgentGuard.Core.Guardrails;
+using AgentGuard.Onnx;
 using Microsoft.Extensions.Logging.Abstractions;
 
 var policy = new GuardrailPolicyBuilder()
-    .BlockPromptInjection()
-    .RedactPII()
+    .UseDefaults()
     .Build();
 
 var pipeline = new GuardrailPipeline(policy, NullLogger<GuardrailPipeline>.Instance);
@@ -36,20 +36,44 @@ else if (result.WasModified)
     Console.WriteLine($"Redacted: {result.FinalText}");
 ```
 
+You can also pick and choose individual rules:
+
+```csharp
+var policy = new GuardrailPolicyBuilder()
+    .BlockPromptInjection()
+    .RedactPII()
+    .EnforceTopicBoundary("billing", "returns")
+    .LimitInputTokens(4000)
+    .Build();
+```
+
 ### With Microsoft Agent Framework
 
 Add the `AgentGuard.AgentFramework` package to integrate as MAF middleware:
 
 ```csharp
 using AgentGuard.AgentFramework;
+using AgentGuard.Onnx;
 
 var guardedAgent = agent
     .AsBuilder()
-    .UseAgentGuard(g => g.BlockPromptInjection().RedactPII())
+    .UseAgentGuard(g => g.UseDefaults())
     .Build();
 ```
 
-The agent now blocks injection attempts and redacts PII before the LLM sees it.
+Or pick specific rules:
+
+```csharp
+var guardedAgent = agent
+    .AsBuilder()
+    .UseAgentGuard(g => g
+        .BlockPromptInjection()
+        .RedactPII()
+        .EnforceTopicBoundary("customer-support")
+        .OnViolation(v => v.RejectWithMessage("I can only help with customer support topics."))
+    )
+    .Build();
+```
 
 ## How It Works
 
@@ -65,13 +89,19 @@ If any rule blocks, the agent never runs. The user gets a configurable rejection
 |------|-------|-------|---------|
 | `NormalizeInput()` | Input | 5 | Core |
 | `BlockPromptInjection()` | Input | 10 | Core |
-| `BlockPromptInjectionWithOnnx()` | Input | 12 | Onnx |
+| `BlockPromptInjectionWithDefender()` | Input | 11 | Onnx |
+| `BlockPromptInjectionWithDeberta()` | Input | 12 | Onnx |
+| `BlockPromptInjectionWithRemoteClassifier()` | Input | 13 | RemoteClassifier |
+| `BlockPromptInjectionWithAzurePromptShield()` | Input | 14 | Azure |
 | `BlockPromptInjectionWithLlm()` | Input | 15 | Core |
+| `DetectSecrets()` | Both | 22 | Core |
 | `RedactPII()` | Both | 20 | Core |
 | `DetectPIIWithLlm()` | Both | 25 | Core |
 | `EnforceTopicBoundary()` | Input | 30 | Core |
 | `EnforceTopicBoundaryWithLlm()` | Input | 35 | Core |
 | `LimitInputTokens()` / `LimitOutputTokens()` | Input/Output | 40 | Core |
+| `GuardToolCalls()` | Output | 45 | Core |
+| `GuardToolResults()` | Output | 47 | Core |
 | `BlockHarmfulContent()` | Both | 50 | Core + Azure |
 | `EnforceOutputPolicy()` | Output | 55 | Core |
 | `EnforceOutputTopicBoundary()` | Output | 60 | Core |

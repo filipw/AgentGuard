@@ -93,7 +93,7 @@ internal static class ConfigurationMapper
 
             case "onnxpromptinjection":
             case "defenderpromptinjection":
-                builder.BlockPromptInjectionWithOnnx(new DefenderPromptInjectionOptions
+                builder.BlockPromptInjectionWithDefender(new DefenderPromptInjectionOptions
                 {
                     Threshold = rule.Threshold ?? 0.5f
                 });

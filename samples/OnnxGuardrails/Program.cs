@@ -58,7 +58,7 @@ var twoTierPipeline = new GuardrailPipeline(
     new GuardrailPolicyBuilder("two-tier")
         .NormalizeInput()
         .BlockPromptInjection(Sensitivity.Medium)
-        .BlockPromptInjectionWithOnnx()
+        .BlockPromptInjectionWithDefender()
         .Build(),
     NullLogger<GuardrailPipeline>.Instance);
 

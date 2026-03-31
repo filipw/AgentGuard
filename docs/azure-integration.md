@@ -86,7 +86,7 @@ using AgentGuard.Onnx;
 var policy = new GuardrailPolicyBuilder("production")
     .NormalizeInput()                                            // order 5
     .BlockPromptInjection()                                     // order 10: regex
-    .BlockPromptInjectionWithOnnx()                             // order 11: Defender ML
+    .BlockPromptInjectionWithDefender()                             // order 11: Defender ML
     .BlockPromptInjectionWithAzurePromptShield(psClient,        // order 14: Prompt Shield
         new AzurePromptShieldOptions { AnalyzeDocuments = true })
     .BlockHarmfulContent(classifier)                            // order 50: content safety

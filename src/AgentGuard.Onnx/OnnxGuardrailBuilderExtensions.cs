@@ -15,7 +15,7 @@ public static class OnnxGuardrailBuilderExtensions
     /// <param name="builder">The policy builder.</param>
     /// <param name="options">Optional configuration. If null, default options with bundled model are used.</param>
     /// <returns>The builder for chaining.</returns>
-    public static GuardrailPolicyBuilder BlockPromptInjectionWithOnnx(
+    public static GuardrailPolicyBuilder BlockPromptInjectionWithDefender(
         this GuardrailPolicyBuilder builder,
         DefenderPromptInjectionOptions? options = null)
     {
@@ -27,19 +27,19 @@ public static class OnnxGuardrailBuilderExtensions
     /// Adds ONNX-based prompt injection detection using the bundled StackOne Defender model (order 11).
     /// </summary>
     /// <param name="builder">The policy builder.</param>
-    /// <param name="threshold">Confidence threshold (0.0–1.0). Default: 0.5.</param>
+    /// <param name="threshold">Confidence threshold (0.0-1.0). Default: 0.5.</param>
     /// <returns>The builder for chaining.</returns>
-    public static GuardrailPolicyBuilder BlockPromptInjectionWithOnnx(
+    public static GuardrailPolicyBuilder BlockPromptInjectionWithDefender(
         this GuardrailPolicyBuilder builder,
         float threshold)
     {
-        return builder.BlockPromptInjectionWithOnnx(new DefenderPromptInjectionOptions { Threshold = threshold });
+        return builder.BlockPromptInjectionWithDefender(new DefenderPromptInjectionOptions { Threshold = threshold });
     }
 
     /// <summary>
     /// Adds ONNX-based prompt injection detection (order 12) using the DeBERTa v3 model.
     /// The ONNX model must be downloaded separately - see <c>eng/download-onnx-model.sh</c>.
-    /// For most use cases, prefer <see cref="BlockPromptInjectionWithOnnx(GuardrailPolicyBuilder, DefenderPromptInjectionOptions?)"/>
+    /// For most use cases, prefer <see cref="BlockPromptInjectionWithDefender(GuardrailPolicyBuilder, DefenderPromptInjectionOptions?)"/>
     /// which uses the bundled StackOne Defender model (faster, higher accuracy, no download required).
     /// </summary>
     /// <param name="builder">The policy builder.</param>
@@ -60,7 +60,7 @@ public static class OnnxGuardrailBuilderExtensions
     /// <param name="builder">The policy builder.</param>
     /// <param name="modelPath">Path to the ONNX model file.</param>
     /// <param name="tokenizerPath">Path to the SentencePiece model file.</param>
-    /// <param name="threshold">Confidence threshold (0.0–1.0). Default: 0.5.</param>
+    /// <param name="threshold">Confidence threshold (0.0-1.0). Default: 0.5.</param>
     /// <returns>The builder for chaining.</returns>
     public static GuardrailPolicyBuilder BlockPromptInjectionWithDeberta(
         this GuardrailPolicyBuilder builder,
@@ -74,5 +74,27 @@ public static class OnnxGuardrailBuilderExtensions
             TokenizerPath = tokenizerPath,
             Threshold = threshold
         });
+    }
+
+    /// <summary>
+    /// Configures a sensible set of default guardrail rules including:
+    /// input normalization (order 5), regex-based prompt injection (order 10),
+    /// Defender ML-based prompt injection (order 11), PII redaction (order 20),
+    /// secrets detection (order 22), tool call guardrails (order 45),
+    /// and tool result guardrails (order 47).
+    /// This provides a solid baseline that works fully offline with no additional configuration.
+    /// </summary>
+    /// <param name="builder">The policy builder.</param>
+    /// <returns>The builder for chaining.</returns>
+    public static GuardrailPolicyBuilder UseDefaults(this GuardrailPolicyBuilder builder)
+    {
+        return builder
+            .NormalizeInput()
+            .BlockPromptInjection()
+            .BlockPromptInjectionWithDefender()
+            .RedactPII()
+            .DetectSecrets()
+            .GuardToolCalls()
+            .GuardToolResults();
     }
 }
