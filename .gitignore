@@ -41,3 +41,4 @@ eng/models/deberta-v3-prompt-injection/model.onnx
 Thumbs.db
 .claude/
 .benchmark-cache/test.parquet
+GEMINI.md
