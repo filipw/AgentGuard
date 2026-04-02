@@ -1,9 +1,11 @@
+using System.Diagnostics;
 using System.Text;
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Builders;
 using AgentGuard.Core.Guardrails;
 using AgentGuard.Core.Rules.ToolCall;
 using AgentGuard.Core.Streaming;
+using AgentGuard.Core.Telemetry;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -60,11 +62,20 @@ public static class AgentGuardMiddlewareExtensions
         string? agentName,
         CancellationToken ct)
     {
+        using var inputActivity = AgentGuardTelemetry.ActivitySource.StartActivity(
+            AgentGuardTelemetry.Spans.MiddlewareInput);
+
+        inputActivity?.SetTag(AgentGuardTelemetry.Tags.AgentName, agentName);
+        inputActivity?.SetTag(AgentGuardTelemetry.Tags.Phase, "input");
+
         var lastMessage = messages.LastOrDefault();
         var inputText = lastMessage?.Text ?? "";
 
         if (string.IsNullOrEmpty(inputText))
+        {
+            inputActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Passed);
             return (null, messages);
+        }
 
         var inputContext = new GuardrailContext
         {
@@ -78,17 +89,21 @@ public static class AgentGuardMiddlewareExtensions
 
         if (inputResult.IsBlocked)
         {
+            inputActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Blocked);
+            inputActivity?.SetStatus(ActivityStatusCode.Error, inputResult.BlockingResult?.Reason);
             var msg = await policy.ViolationHandler.HandleViolationAsync(inputResult.BlockingResult!, inputContext, ct);
             return (new AgentResponse([new ChatMessage(ChatRole.Assistant, msg)]), messages);
         }
 
         if (inputResult.WasModified && lastMessage is not null)
         {
+            inputActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Modified);
             var modified = messages.ToList();
             modified[^1] = new ChatMessage(lastMessage.Role, inputResult.FinalText);
             return (null, modified);
         }
 
+        inputActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Passed);
         return (null, messages);
     }
 
@@ -100,17 +115,27 @@ public static class AgentGuardMiddlewareExtensions
         string? agentName,
         CancellationToken ct)
     {
+        using var outputActivity = AgentGuardTelemetry.ActivitySource.StartActivity(
+            AgentGuardTelemetry.Spans.MiddlewareOutput);
+
+        outputActivity?.SetTag(AgentGuardTelemetry.Tags.AgentName, agentName);
+        outputActivity?.SetTag(AgentGuardTelemetry.Tags.Phase, "output");
+
         var responseText = response.Messages
             .Where(m => m.Role == ChatRole.Assistant)
             .Select(m => m.Text)
             .LastOrDefault() ?? "";
 
-        // Extract tool calls from the response for ToolCallGuardrailRule
+        // extract tool calls from the response for ToolCallGuardrailRule
         var toolCalls = ExtractToolCalls(response.Messages);
+        outputActivity?.SetTag(AgentGuardTelemetry.Tags.ToolCallCount, toolCalls.Count);
 
-        // Nothing to evaluate if no text and no tool calls
+        // nothing to evaluate if no text and no tool calls
         if (string.IsNullOrEmpty(responseText) && toolCalls.Count == 0)
+        {
+            outputActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Passed);
             return response;
+        }
 
         var outputContext = new GuardrailContext
         {
@@ -127,13 +152,19 @@ public static class AgentGuardMiddlewareExtensions
 
         if (outputResult.IsBlocked)
         {
+            outputActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Blocked);
+            outputActivity?.SetStatus(ActivityStatusCode.Error, outputResult.BlockingResult?.Reason);
             var msg = await policy.ViolationHandler.HandleViolationAsync(outputResult.BlockingResult!, outputContext, ct);
             return new AgentResponse([new ChatMessage(ChatRole.Assistant, msg)]);
         }
 
         if (outputResult.WasModified)
+        {
+            outputActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Modified);
             return new AgentResponse([new ChatMessage(ChatRole.Assistant, outputResult.FinalText)]);
+        }
 
+        outputActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Passed);
         return response;
     }
 
@@ -209,18 +240,25 @@ public static class AgentGuardMiddlewareExtensions
         AIAgent innerAgent,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
     {
-        // Run input guardrails before streaming
+        using var streamingActivity = AgentGuardTelemetry.ActivitySource.StartActivity(
+            AgentGuardTelemetry.Spans.MiddlewareStreaming);
+
+        streamingActivity?.SetTag(AgentGuardTelemetry.Tags.AgentName, innerAgent.Name);
+
+        // run input guardrails before streaming
         var (blocked, processedMessages) = await RunInputGuardrails(pipeline, policy, messages, innerAgent.Name, ct);
         if (blocked is not null)
         {
+            streamingActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Blocked);
             var text = blocked.Messages.FirstOrDefault()?.Text ?? "";
             yield return new AgentResponseUpdate(ChatRole.Assistant, text);
             yield break;
         }
 
-        // Use progressive streaming if configured, otherwise buffer-then-release
+        // use progressive streaming if configured, otherwise buffer-then-release
         if (policy.ProgressiveStreaming is not null)
         {
+            streamingActivity?.SetTag(AgentGuardTelemetry.Tags.StreamingStrategy, "progressive");
             await foreach (var update in StreamWithProgressiveGuardrails(
                 pipeline, policy, processedMessages, session, options, innerAgent, ct))
             {
@@ -229,12 +267,15 @@ public static class AgentGuardMiddlewareExtensions
         }
         else
         {
+            streamingActivity?.SetTag(AgentGuardTelemetry.Tags.StreamingStrategy, "buffered");
             await foreach (var update in StreamWithBufferedGuardrails(
                 pipeline, policy, processedMessages, session, options, innerAgent, ct))
             {
                 yield return update;
             }
         }
+
+        streamingActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Passed);
     }
 
     private static async IAsyncEnumerable<AgentResponseUpdate> StreamWithBufferedGuardrails(
@@ -246,7 +287,7 @@ public static class AgentGuardMiddlewareExtensions
         AIAgent innerAgent,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
     {
-        // Buffer the streaming output so we can run output guardrails
+        // buffer the streaming output so we can run output guardrails
         var chunks = new List<AgentResponseUpdate>();
         var textBuilder = new StringBuilder();
 
@@ -259,10 +300,10 @@ public static class AgentGuardMiddlewareExtensions
 
         var fullText = textBuilder.ToString();
 
-        // Extract tool calls from streaming chunks
+        // extract tool calls from streaming chunks
         var toolCalls = ExtractToolCallsFromUpdates(chunks);
 
-        // Run output guardrails on the accumulated text and/or tool calls
+        // run output guardrails on the accumulated text and/or tool calls
         if (!string.IsNullOrEmpty(fullText) || toolCalls.Count > 0)
         {
             var outputContext = new GuardrailContext
@@ -292,7 +333,7 @@ public static class AgentGuardMiddlewareExtensions
             }
         }
 
-        // Output passed guardrails - yield all original chunks
+        // output passed guardrails - yield all original chunks
         foreach (var chunk in chunks)
         {
             yield return chunk;
@@ -324,8 +365,8 @@ public static class AgentGuardMiddlewareExtensions
             AgentName = innerAgent.Name
         };
 
-        // Collect tool calls from streaming updates alongside text extraction.
-        // Tool calls are evaluated after the stream completes (FinalOnly semantics).
+        // collect tool calls from streaming updates alongside text extraction.
+        // tool calls are evaluated after the stream completes (FinalOnly semantics).
         var collectedToolCalls = new List<AgentToolCall>();
         var textStream = ExtractTextAndToolCalls(
             innerAgent.RunStreamingAsync(processedMessages, session, options, ct), collectedToolCalls, ct);
@@ -346,7 +387,7 @@ public static class AgentGuardMiddlewareExtensions
                     break;
 
                 case StreamingOutputType.Completed:
-                    // After stream completes, evaluate any collected tool calls
+                    // after stream completes, evaluate any collected tool calls
                     if (collectedToolCalls.Count > 0)
                     {
                         outputContext.Properties[ToolCallGuardrailRule.ToolCallsKey] = (IReadOnlyList<AgentToolCall>)collectedToolCalls;
@@ -378,7 +419,7 @@ public static class AgentGuardMiddlewareExtensions
     {
         await foreach (var update in updates.WithCancellation(ct))
         {
-            // Collect tool calls
+            // collect tool calls
             foreach (var fc in update.Contents.OfType<FunctionCallContent>())
             {
                 var args = new Dictionary<string, string>();
@@ -396,7 +437,7 @@ public static class AgentGuardMiddlewareExtensions
                 });
             }
 
-            // Yield text chunks
+            // yield text chunks
             if (!string.IsNullOrEmpty(update.Text))
                 yield return update.Text;
         }
