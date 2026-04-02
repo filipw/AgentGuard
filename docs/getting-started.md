@@ -158,9 +158,32 @@ if (result.WasReasked)
 
 Re-ask only triggers for output-phase blocks - input guardrails always short-circuit immediately.
 
+## Observability (OpenTelemetry)
+
+AgentGuard emits OpenTelemetry-compatible spans and metrics out of the box. Register the `ActivitySource` and `Meter` with your OTel pipeline:
+
+```csharp
+using AgentGuard.Hosting;
+
+builder.Services.AddOpenTelemetry()
+    .WithTracing(t => t.AddAgentGuardInstrumentation())
+    .WithMetrics(m => m.AddAgentGuardInstrumentation());
+```
+
+Or without the Hosting package:
+
+```csharp
+builder.Services.AddOpenTelemetry()
+    .WithTracing(t => t.AddSource("AgentGuard"))
+    .WithMetrics(m => m.AddMeter("AgentGuard"));
+```
+
+Every pipeline run, rule evaluation, re-ask attempt, and streaming retraction is traced. See the [Observability docs](observability.md) for the full span and metric reference.
+
 ## Next Steps
 
 - [Rule Reference](rules-reference.md) - every option for every built-in rule
 - [Custom Rules Guide](custom-rules.md) - build your own rules
 - [Configuration](configuration.md) - DI, named policies
+- [Observability](observability.md) - spans, metrics, and sensitive data
 - [Azure Integration](azure-integration.md) - production content safety
