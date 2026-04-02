@@ -148,6 +148,38 @@ Fast rules (regex, local) evaluate on every check cycle. Expensive LLM rules onl
 - **Configuration-driven** - define policies entirely in `appsettings.json` with full support for all rule types, named policies, and DI resolution for LLM/cloud rules
 - **Offline-first** - works without any cloud services; optionally upgrade to Azure AI Content Safety or LLM-based rules for production accuracy
 
+### Observability (OpenTelemetry)
+
+AgentGuard emits OpenTelemetry-compatible **spans** and **metrics** for every pipeline run, rule evaluation, re-ask attempt, and streaming retraction. All instrumentation uses `System.Diagnostics.Activity` and `System.Diagnostics.Metrics` — no SDK dependency in core packages.
+
+```csharp
+// With AgentGuard.Hosting — one-liner registration
+using AgentGuard.Hosting;
+
+builder.Services.AddOpenTelemetry()
+    .WithTracing(t => t.AddAgentGuardInstrumentation())
+    .WithMetrics(m => m.AddAgentGuardInstrumentation());
+```
+
+```csharp
+// Or register manually — works without AgentGuard.Hosting
+builder.Services.AddOpenTelemetry()
+    .WithTracing(t => t.AddSource("AgentGuard"))
+    .WithMetrics(m => m.AddMeter("AgentGuard"));
+```
+
+**Spans** trace every pipeline run (`agentguard.pipeline.run`), individual rule evaluation (`agentguard.rule.evaluate {name}`), re-ask loops (`agentguard.pipeline.reask`), streaming evaluations (`agentguard.streaming.pipeline`), and middleware entry points (`agentguard.middleware.input`, `agentguard.middleware.output`, `agentguard.middleware.streaming`). Each span includes tags for policy name, phase, outcome, and rule-specific metadata.
+
+**Metrics** include counters for pipeline evaluations, rule evaluations, blocks, re-ask attempts, text modifications, and streaming retractions — plus duration histograms for both pipeline and per-rule execution.
+
+**Sensitive data** (input/output text) is **not captured by default**. Opt in via:
+```csharp
+AgentGuardTelemetry.EnableSensitiveData = true;
+// or set environment variable: AGENTGUARD_CAPTURE_CONTENT=true
+```
+
+See the [Observability docs](docs/observability.md) for the full span and metric reference.
+
 ## Packages
 
 | Package | Description | NuGet |
@@ -467,6 +499,7 @@ Rules execute in order of their `Order` property (lower = first). Built-in rules
 - [Rule Reference](docs/rules-reference.md)
 - [Custom Rules Guide](docs/custom-rules.md)
 - [Configuration](docs/configuration.md)
+- [Observability (OpenTelemetry)](docs/observability.md)
 - [Azure Integration](docs/azure-integration.md)
 
 ## Requirements
