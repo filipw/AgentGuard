@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Guardrails;
+using AgentGuard.Core.Telemetry;
 using Microsoft.Agents.AI.Workflows;
 using Microsoft.Extensions.AI;
 
@@ -33,6 +35,13 @@ public sealed class GuardedExecutor<TInput> : Executor<TInput>
 
     public override async ValueTask HandleAsync(TInput message, IWorkflowContext context, CancellationToken cancellationToken = default)
     {
+        using var guardActivity = AgentGuardTelemetry.ActivitySource.StartActivity(
+            AgentGuardTelemetry.Spans.ExecutorGuard);
+
+        guardActivity?.SetTag(AgentGuardTelemetry.Tags.ExecutorId, _inner.Id);
+        guardActivity?.SetTag(AgentGuardTelemetry.Tags.Phase, "input");
+        guardActivity?.SetTag(AgentGuardTelemetry.Tags.MessageType, typeof(TInput).Name);
+
         var text = _textExtractor.ExtractText(message);
 
         if (!string.IsNullOrEmpty(text))
@@ -51,10 +60,25 @@ public sealed class GuardedExecutor<TInput> : Executor<TInput>
             var result = await _pipeline.RunAsync(guardrailContext, cancellationToken);
 
             if (result.IsBlocked)
+            {
+                guardActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Blocked);
+                guardActivity?.SetStatus(ActivityStatusCode.Error, result.BlockingResult?.Reason);
                 throw new GuardrailViolationException(result.BlockingResult!, GuardrailPhase.Input, _inner.Id);
+            }
 
             if (result.WasModified)
+            {
+                guardActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Modified);
                 message = ReconstructInput(message, result.FinalText);
+            }
+            else
+            {
+                guardActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Passed);
+            }
+        }
+        else
+        {
+            guardActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Passed);
         }
 
         await _inner.HandleAsync(message, context, cancellationToken);
@@ -68,7 +92,7 @@ public sealed class GuardedExecutor<TInput> : Executor<TInput>
         if (original is ChatMessage chatMessage)
             return (TInput)(object)new ChatMessage(chatMessage.Role, modifiedText);
 
-        // Cannot reconstruct arbitrary types - pass original through
+        // cannot reconstruct arbitrary types - pass original through
         return original;
     }
 }
@@ -100,7 +124,14 @@ public sealed class GuardedExecutor<TInput, TOutput> : Executor<TInput, TOutput>
 
     public override async ValueTask<TOutput> HandleAsync(TInput message, IWorkflowContext context, CancellationToken cancellationToken = default)
     {
-        // --- Input guardrails ---
+        // --- input guardrails ---
+        using var inputGuardActivity = AgentGuardTelemetry.ActivitySource.StartActivity(
+            $"{AgentGuardTelemetry.Spans.ExecutorGuard} input");
+
+        inputGuardActivity?.SetTag(AgentGuardTelemetry.Tags.ExecutorId, _inner.Id);
+        inputGuardActivity?.SetTag(AgentGuardTelemetry.Tags.Phase, "input");
+        inputGuardActivity?.SetTag(AgentGuardTelemetry.Tags.MessageType, typeof(TInput).Name);
+
         var inputText = _textExtractor.ExtractText(message);
 
         if (!string.IsNullOrEmpty(inputText))
@@ -119,16 +150,40 @@ public sealed class GuardedExecutor<TInput, TOutput> : Executor<TInput, TOutput>
             var inputResult = await _pipeline.RunAsync(inputContext, cancellationToken);
 
             if (inputResult.IsBlocked)
+            {
+                inputGuardActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Blocked);
+                inputGuardActivity?.SetStatus(ActivityStatusCode.Error, inputResult.BlockingResult?.Reason);
                 throw new GuardrailViolationException(inputResult.BlockingResult!, GuardrailPhase.Input, _inner.Id);
+            }
 
             if (inputResult.WasModified)
+            {
+                inputGuardActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Modified);
                 message = ReconstructInput(message, inputResult.FinalText);
+            }
+            else
+            {
+                inputGuardActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Passed);
+            }
+        }
+        else
+        {
+            inputGuardActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Passed);
         }
 
-        // --- Execute inner ---
+        inputGuardActivity?.Dispose();
+
+        // --- execute inner ---
         var output = await _inner.HandleAsync(message, context, cancellationToken);
 
-        // --- Output guardrails ---
+        // --- output guardrails ---
+        using var outputGuardActivity = AgentGuardTelemetry.ActivitySource.StartActivity(
+            $"{AgentGuardTelemetry.Spans.ExecutorGuard} output");
+
+        outputGuardActivity?.SetTag(AgentGuardTelemetry.Tags.ExecutorId, _inner.Id);
+        outputGuardActivity?.SetTag(AgentGuardTelemetry.Tags.Phase, "output");
+        outputGuardActivity?.SetTag(AgentGuardTelemetry.Tags.MessageType, typeof(TOutput).Name);
+
         var outputText = _textExtractor.ExtractText(output);
 
         if (!string.IsNullOrEmpty(outputText))
@@ -147,10 +202,25 @@ public sealed class GuardedExecutor<TInput, TOutput> : Executor<TInput, TOutput>
             var outputResult = await _pipeline.RunAsync(outputContext, cancellationToken);
 
             if (outputResult.IsBlocked)
+            {
+                outputGuardActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Blocked);
+                outputGuardActivity?.SetStatus(ActivityStatusCode.Error, outputResult.BlockingResult?.Reason);
                 throw new GuardrailViolationException(outputResult.BlockingResult!, GuardrailPhase.Output, _inner.Id);
+            }
 
             if (outputResult.WasModified)
+            {
+                outputGuardActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Modified);
                 output = ReconstructOutput(output, outputResult.FinalText);
+            }
+            else
+            {
+                outputGuardActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Passed);
+            }
+        }
+        else
+        {
+            outputGuardActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Passed);
         }
 
         return output;

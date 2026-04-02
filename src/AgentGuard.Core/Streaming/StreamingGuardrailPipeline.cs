@@ -1,8 +1,10 @@
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text;
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Guardrails;
 using AgentGuard.Core.Rules.LLM;
+using AgentGuard.Core.Telemetry;
 using Microsoft.Extensions.Logging;
 
 namespace AgentGuard.Core.Streaming;
@@ -55,6 +57,11 @@ public sealed partial class StreamingGuardrailPipeline
         IViolationHandler? violationHandler = null,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
+        using var streamingActivity = AgentGuardTelemetry.ActivitySource.StartActivity(
+            AgentGuardTelemetry.Spans.StreamingPipeline);
+
+        streamingActivity?.SetTag(AgentGuardTelemetry.Tags.PolicyName, _policy.Name);
+
         var handler = violationHandler ?? _policy.ViolationHandler;
         var accumulatedText = new StringBuilder();
         var charsSinceLastCheck = 0;
@@ -63,10 +70,13 @@ public sealed partial class StreamingGuardrailPipeline
         var firstCheckDone = false;
         var totalYieldedChars = 0;
 
-        // Classify rules into progressive and final-only
+        // classify rules into progressive and final-only
         var (progressiveRules, finalOnlyRules, adaptiveRules) = ClassifyOutputRules();
 
         LogProgressiveStart(_logger, progressiveRules.Count, finalOnlyRules.Count, adaptiveRules.Count);
+        streamingActivity?.SetTag("agentguard.streaming.progressive_rules", progressiveRules.Count);
+        streamingActivity?.SetTag("agentguard.streaming.final_only_rules", finalOnlyRules.Count);
+        streamingActivity?.SetTag("agentguard.streaming.adaptive_rules", adaptiveRules.Count);
 
         await foreach (var chunk in textChunks.WithCancellation(cancellationToken))
         {
@@ -77,15 +87,15 @@ public sealed partial class StreamingGuardrailPipeline
             charsSinceLastCheck += chunk.Length;
             totalYieldedChars += chunk.Length;
 
-            // Yield the chunk immediately
+            // yield the chunk immediately
             yield return StreamingPipelineOutput.Chunk(chunk);
 
-            // Check if progressive evaluation is due
+            // check if progressive evaluation is due
             if (ShouldEvaluate(accumulatedText.Length, charsSinceLastCheck, lastCheckTime, firstCheckDone))
             {
                 var currentText = accumulatedText.ToString();
 
-                // Build the set of rules to evaluate this cycle
+                // build the set of rules to evaluate this cycle
                 var rulesToRun = GetRulesForThisCycle(
                     progressiveRules, adaptiveRules, adaptiveRuleLastCheckChars, accumulatedText.Length);
 
@@ -97,8 +107,14 @@ public sealed partial class StreamingGuardrailPipeline
                     {
                         LogProgressiveViolation(_logger, result.BlockingResult!.RuleName, totalYieldedChars);
 
+                        AgentGuardTelemetry.StreamingRetractions.Add(1,
+                            new KeyValuePair<string, object?>(AgentGuardTelemetry.Tags.PolicyName, _policy.Name));
+
                         var replacementText = await handler.HandleViolationAsync(
                             result.BlockingResult!, baseContext, cancellationToken);
+
+                        streamingActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Blocked);
+                        streamingActivity?.SetStatus(ActivityStatusCode.Error, result.BlockingResult!.Reason);
 
                         yield return StreamingPipelineOutput.Event(
                             StreamingGuardrailEvent.Retract(result.BlockingResult!, totalYieldedChars));
@@ -109,13 +125,20 @@ public sealed partial class StreamingGuardrailPipeline
                         yield break;
                     }
 
-                    // Handle modifications mid-stream (retract and replace with modified text)
+                    // handle modifications mid-stream (retract and replace with modified text)
                     if (result.WasModified)
                     {
                         var modifyingResult = result.AllResults.FirstOrDefault(r => r.IsModified)
                             ?? GuardrailResult.Passed();
 
                         LogProgressiveModification(_logger, totalYieldedChars);
+
+                        AgentGuardTelemetry.StreamingRetractions.Add(1,
+                            new KeyValuePair<string, object?>(AgentGuardTelemetry.Tags.PolicyName, _policy.Name));
+                        AgentGuardTelemetry.Modifications.Add(1,
+                            new KeyValuePair<string, object?>(AgentGuardTelemetry.Tags.PolicyName, _policy.Name));
+
+                        streamingActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Modified);
 
                         yield return StreamingPipelineOutput.Event(
                             StreamingGuardrailEvent.Retract(modifyingResult, totalYieldedChars));
@@ -133,7 +156,7 @@ public sealed partial class StreamingGuardrailPipeline
             }
         }
 
-        // Final check: run ALL output rules (including FinalOnly) on the complete text
+        // final check: run ALL output rules (including FinalOnly) on the complete text
         if (_options.RunFinalCheck && accumulatedText.Length > 0)
         {
             var fullText = accumulatedText.ToString();
@@ -148,8 +171,14 @@ public sealed partial class StreamingGuardrailPipeline
             {
                 LogFinalViolation(_logger, finalResult.BlockingResult!.RuleName);
 
+                AgentGuardTelemetry.StreamingRetractions.Add(1,
+                    new KeyValuePair<string, object?>(AgentGuardTelemetry.Tags.PolicyName, _policy.Name));
+
                 var replacementText = await handler.HandleViolationAsync(
                     finalResult.BlockingResult!, baseContext, cancellationToken);
+
+                streamingActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Blocked);
+                streamingActivity?.SetStatus(ActivityStatusCode.Error, finalResult.BlockingResult!.Reason);
 
                 yield return StreamingPipelineOutput.Event(
                     StreamingGuardrailEvent.Retract(finalResult.BlockingResult!, totalYieldedChars));
@@ -163,6 +192,13 @@ public sealed partial class StreamingGuardrailPipeline
             if (finalResult.WasModified)
             {
                 LogFinalModification(_logger);
+
+                AgentGuardTelemetry.StreamingRetractions.Add(1,
+                    new KeyValuePair<string, object?>(AgentGuardTelemetry.Tags.PolicyName, _policy.Name));
+                AgentGuardTelemetry.Modifications.Add(1,
+                    new KeyValuePair<string, object?>(AgentGuardTelemetry.Tags.PolicyName, _policy.Name));
+
+                streamingActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Modified);
 
                 yield return StreamingPipelineOutput.Event(
                     StreamingGuardrailEvent.Retract(
@@ -179,20 +215,21 @@ public sealed partial class StreamingGuardrailPipeline
             }
         }
 
+        streamingActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Passed);
         yield return StreamingPipelineOutput.Complete(StreamingFinalResult.Pass());
     }
 
     private bool ShouldEvaluate(int totalChars, int charsSinceLastCheck, DateTime lastCheckTime, bool firstCheckDone)
     {
-        // Haven't accumulated enough for the first check
+        // haven't accumulated enough for the first check
         if (!firstCheckDone && totalChars < _options.MinCharsBeforeFirstCheck)
             return false;
 
-        // Character interval
+        // character interval
         if (charsSinceLastCheck >= _options.EvaluationIntervalChars)
             return true;
 
-        // Time interval
+        // time interval
         if (_options.EvaluationIntervalTime.HasValue &&
             DateTime.UtcNow - lastCheckTime >= _options.EvaluationIntervalTime.Value)
             return true;
@@ -228,11 +265,11 @@ public sealed partial class StreamingGuardrailPipeline
 
     private static StreamingEvaluationMode GetStreamingMode(IGuardrailRule rule)
     {
-        // If the rule explicitly declares its streaming mode, use it
+        // if the rule explicitly declares its streaming mode, use it
         if (rule is IStreamingGuardrailRule streamingRule)
             return streamingRule.StreamingMode;
 
-        // Default heuristic: LLM rules are FinalOnly, all others are EveryCheck
+        // default heuristic: LLM rules are FinalOnly, all others are EveryCheck
         if (rule is LlmGuardrailRule)
             return StreamingEvaluationMode.FinalOnly;
 
@@ -252,7 +289,7 @@ public sealed partial class StreamingGuardrailPipeline
             if (!adaptiveLastCheck.TryGetValue(rule.Name, out var lastCheck))
                 lastCheck = 0;
 
-            // Check MinTokensBeforeFirstCheck
+            // check MinTokensBeforeFirstCheck
             if (rule is IStreamingGuardrailRule streamingRule &&
                 currentTotalChars < streamingRule.MinTokensBeforeFirstCheck * 4) // rough char-to-token heuristic
                 continue;
@@ -283,7 +320,35 @@ public sealed partial class StreamingGuardrailPipeline
             LogRunningRule(_logger, rule.Name, "progressive");
 
             var context = baseContext with { Text = currentText };
+
+            using var ruleActivity = AgentGuardTelemetry.ActivitySource.StartActivity(
+                $"{AgentGuardTelemetry.Spans.RuleEvaluate} {rule.Name}");
+
+            ruleActivity?.SetTag(AgentGuardTelemetry.Tags.RuleName, rule.Name);
+            ruleActivity?.SetTag(AgentGuardTelemetry.Tags.Phase, "output");
+            ruleActivity?.SetTag(AgentGuardTelemetry.Tags.RuleOrder, rule.Order);
+            ruleActivity?.SetTag(AgentGuardTelemetry.Tags.StreamingStrategy, "progressive");
+
+            var stopwatch = ValueStopwatch.StartNew();
             var result = await rule.EvaluateAsync(context, cancellationToken);
+            var elapsed = stopwatch.GetElapsedMilliseconds();
+
+            var outcome = result.IsBlocked ? AgentGuardTelemetry.Outcomes.Blocked
+                : result.IsModified ? AgentGuardTelemetry.Outcomes.Modified
+                : result.IsError ? AgentGuardTelemetry.Outcomes.Error
+                : AgentGuardTelemetry.Outcomes.Passed;
+
+            ruleActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, outcome);
+
+            AgentGuardTelemetry.RuleEvaluations.Add(1,
+                new KeyValuePair<string, object?>(AgentGuardTelemetry.Tags.RuleName, rule.Name),
+                new KeyValuePair<string, object?>(AgentGuardTelemetry.Tags.Phase, "output"),
+                new KeyValuePair<string, object?>(AgentGuardTelemetry.Tags.Outcome, outcome));
+
+            AgentGuardTelemetry.RuleDuration.Record(elapsed,
+                new KeyValuePair<string, object?>(AgentGuardTelemetry.Tags.RuleName, rule.Name),
+                new KeyValuePair<string, object?>(AgentGuardTelemetry.Tags.Phase, "output"));
+
             var taggedResult = result with { RuleName = rule.Name };
             results.Add(taggedResult);
 
@@ -296,6 +361,12 @@ public sealed partial class StreamingGuardrailPipeline
 
             if (result.IsBlocked)
             {
+                ruleActivity?.SetStatus(ActivityStatusCode.Error, result.Reason);
+
+                AgentGuardTelemetry.RuleBlocks.Add(1,
+                    new KeyValuePair<string, object?>(AgentGuardTelemetry.Tags.RuleName, rule.Name),
+                    new KeyValuePair<string, object?>(AgentGuardTelemetry.Tags.Severity, result.Severity.ToString().ToLowerInvariant()));
+
                 return new GuardrailPipelineResult
                 {
                     IsBlocked = true,
