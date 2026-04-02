@@ -27,8 +27,8 @@
   </ItemGroup>
 
   <PropertyGroup>
-    <VersionPrefix>0.2.0</VersionPrefix>
-    <VersionSuffix>preview.2</VersionSuffix>
+    <VersionPrefix>0.2.1</VersionPrefix>
+    <VersionSuffix>preview.1</VersionSuffix>
   </PropertyGroup>
 
   <PropertyGroup>
