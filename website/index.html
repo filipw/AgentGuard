@@ -158,6 +158,10 @@ await foreach (var update in guardedAgent
         <h3>Agentic &amp; RAG Guardrails</h3>
         <p>Guard tool call arguments against SQL injection, code injection, SSRF, and more. Detect indirect prompt injection in tool results (emails, documents). Filter RAG chunks for injection and secrets before they reach the LLM context.</p>
       </div>
+      <div class="feature-card">
+        <h3>Observability (OpenTelemetry)</h3>
+        <p>Built-in spans and metrics for every pipeline run, rule evaluation, re-ask attempt, and streaming retraction. Uses <code>System.Diagnostics</code> &mdash; no SDK dependency. Works with Aspire Dashboard, Jaeger, Zipkin, and any OTel collector.</p>
+      </div>
     </div>
   </div>
 </section>
@@ -482,6 +486,37 @@ var result = await pipeline.RunAsync(outputContext);
 
 if (result.WasReasked)
     Console.WriteLine($"Self-healed after {result.ReaskAttemptsUsed} attempt(s)");</code></pre>
+</section>
+
+<!-- ── Observability ───────────────────────────────── -->
+<section class="alt">
+  <div class="section-inner">
+    <p class="section-label">Observability</p>
+    <h2 class="section-title">See every rule fire.</h2>
+    <p class="section-subtitle">
+      OpenTelemetry-compatible spans and metrics out of the box. Register with one line &mdash; works with Aspire, Jaeger, Zipkin, and any OTel collector.
+    </p>
+<pre><code>using AgentGuard.Hosting;
+
+// Register AgentGuard telemetry with OpenTelemetry
+builder.Services.AddOpenTelemetry()
+    .WithTracing(t =&gt; t.AddAgentGuardInstrumentation())
+    .WithMetrics(m =&gt; m.AddAgentGuardInstrumentation());
+
+// Spans emitted:
+//   agentguard.pipeline.run          (policy, phase, outcome)
+//   agentguard.rule.evaluate {name}  (rule, phase, order, outcome)
+//   agentguard.pipeline.reask        (attempts, outcome)
+//   agentguard.middleware.input      (agent, outcome)
+//   agentguard.middleware.output     (agent, outcome, tool calls)
+//
+// Metrics emitted:
+//   agentguard.pipeline.evaluations  (counter)
+//   agentguard.rule.evaluations      (counter)
+//   agentguard.rule.blocks           (counter)
+//   agentguard.pipeline.duration     (histogram, ms)
+//   agentguard.rule.duration         (histogram, ms)</code></pre>
+  </div>
 </section>
 
 <!-- ── Custom rules ──────────────────────────────── -->

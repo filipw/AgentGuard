@@ -1,4 +1,6 @@
+using System.Diagnostics;
 using AgentGuard.Core.Abstractions;
+using AgentGuard.Core.Telemetry;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 
@@ -34,6 +36,22 @@ public sealed partial class GuardrailPipeline
     private async ValueTask<GuardrailPipelineResult> RunCoreAsync(
         GuardrailContext context, CancellationToken cancellationToken)
     {
+        using var pipelineActivity = AgentGuardTelemetry.ActivitySource.StartActivity(
+            AgentGuardTelemetry.Spans.PipelineRun);
+
+        pipelineActivity?.SetTag(AgentGuardTelemetry.Tags.PolicyName, _policy.Name);
+        pipelineActivity?.SetTag(AgentGuardTelemetry.Tags.Phase, context.Phase.ToString().ToLowerInvariant());
+        if (context.AgentName is not null)
+            pipelineActivity?.SetTag(AgentGuardTelemetry.Tags.AgentName, context.AgentName);
+
+        if (AgentGuardTelemetry.EnableSensitiveData)
+            pipelineActivity?.AddEvent(new ActivityEvent("agentguard.input", tags: new ActivityTagsCollection
+            {
+                ["text"] = context.Text
+            }));
+
+        var stopwatch = ValueStopwatch.StartNew();
+
         var results = new List<GuardrailResult>();
         var currentText = context.Text;
 
@@ -48,7 +66,7 @@ public sealed partial class GuardrailPipeline
             LogRunningRule(_logger, rule.Name, context.Phase);
 
             var ruleContext = context with { Text = currentText };
-            var result = await rule.EvaluateAsync(ruleContext, cancellationToken);
+            var result = await EvaluateRuleWithTelemetry(rule, ruleContext, cancellationToken);
             var taggedResult = result with { RuleName = rule.Name };
             results.Add(taggedResult);
 
@@ -62,13 +80,18 @@ public sealed partial class GuardrailPipeline
             if (result.IsBlocked)
             {
                 LogRuleBlocked(_logger, rule.Name, result.Reason);
-                return new GuardrailPipelineResult
+
+                var pipelineResult = new GuardrailPipelineResult
                 {
                     IsBlocked = true,
                     BlockingResult = taggedResult,
                     AllResults = results,
                     FinalText = currentText
                 };
+
+                RecordPipelineCompletion(pipelineActivity, stopwatch, context.Phase, AgentGuardTelemetry.Outcomes.Blocked);
+                pipelineActivity?.SetStatus(ActivityStatusCode.Error, result.Reason);
+                return pipelineResult;
             }
 
             if (result.IsModified && result.ModifiedText is not null)
@@ -83,13 +106,103 @@ public sealed partial class GuardrailPipeline
             }
         }
 
+        var wasModified = currentText != context.Text;
+        var outcome = wasModified ? AgentGuardTelemetry.Outcomes.Modified : AgentGuardTelemetry.Outcomes.Passed;
+        RecordPipelineCompletion(pipelineActivity, stopwatch, context.Phase, outcome);
+
+        if (wasModified)
+        {
+            AgentGuardTelemetry.Modifications.Add(1,
+                new KeyValuePair<string, object?>(AgentGuardTelemetry.Tags.PolicyName, _policy.Name),
+                new KeyValuePair<string, object?>(AgentGuardTelemetry.Tags.Phase, context.Phase.ToString().ToLowerInvariant()));
+        }
+
+        if (AgentGuardTelemetry.EnableSensitiveData)
+            pipelineActivity?.AddEvent(new ActivityEvent("agentguard.output", tags: new ActivityTagsCollection
+            {
+                ["text"] = currentText
+            }));
+
         return new GuardrailPipelineResult
         {
             IsBlocked = false,
             AllResults = results,
             FinalText = currentText,
-            WasModified = currentText != context.Text
+            WasModified = wasModified
         };
+    }
+
+    private static async ValueTask<GuardrailResult> EvaluateRuleWithTelemetry(
+        IGuardrailRule rule, GuardrailContext context, CancellationToken cancellationToken)
+    {
+        using var ruleActivity = AgentGuardTelemetry.ActivitySource.StartActivity(
+            $"{AgentGuardTelemetry.Spans.RuleEvaluate} {rule.Name}");
+
+        ruleActivity?.SetTag(AgentGuardTelemetry.Tags.RuleName, rule.Name);
+        ruleActivity?.SetTag(AgentGuardTelemetry.Tags.Phase, context.Phase.ToString().ToLowerInvariant());
+        ruleActivity?.SetTag(AgentGuardTelemetry.Tags.RuleOrder, rule.Order);
+
+        var stopwatch = ValueStopwatch.StartNew();
+        var result = await rule.EvaluateAsync(context, cancellationToken);
+        var elapsed = stopwatch.GetElapsedMilliseconds();
+
+        var outcome = result.IsBlocked ? AgentGuardTelemetry.Outcomes.Blocked
+            : result.IsModified ? AgentGuardTelemetry.Outcomes.Modified
+            : result.IsError ? AgentGuardTelemetry.Outcomes.Error
+            : AgentGuardTelemetry.Outcomes.Passed;
+
+        ruleActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, outcome);
+
+        if (result.IsBlocked)
+        {
+            ruleActivity?.SetStatus(ActivityStatusCode.Error, result.Reason);
+            ruleActivity?.SetTag(AgentGuardTelemetry.Tags.BlockedReason, result.Reason);
+            ruleActivity?.SetTag(AgentGuardTelemetry.Tags.Severity, result.Severity.ToString().ToLowerInvariant());
+            ruleActivity?.AddEvent(new ActivityEvent("agentguard.rule.blocked", tags: new ActivityTagsCollection
+            {
+                ["reason"] = result.Reason ?? "",
+                ["severity"] = result.Severity.ToString().ToLowerInvariant()
+            }));
+
+            AgentGuardTelemetry.RuleBlocks.Add(1,
+                new KeyValuePair<string, object?>(AgentGuardTelemetry.Tags.RuleName, rule.Name),
+                new KeyValuePair<string, object?>(AgentGuardTelemetry.Tags.Severity, result.Severity.ToString().ToLowerInvariant()));
+        }
+
+        if (result.IsError)
+        {
+            var errorDetail = result.Metadata?.TryGetValue("errorDetail", out var detail) == true
+                ? detail?.ToString() : null;
+            ruleActivity?.SetTag(AgentGuardTelemetry.Tags.ErrorType, errorDetail ?? "unknown");
+        }
+
+        AgentGuardTelemetry.RuleEvaluations.Add(1,
+            new KeyValuePair<string, object?>(AgentGuardTelemetry.Tags.RuleName, rule.Name),
+            new KeyValuePair<string, object?>(AgentGuardTelemetry.Tags.Phase, context.Phase.ToString().ToLowerInvariant()),
+            new KeyValuePair<string, object?>(AgentGuardTelemetry.Tags.Outcome, outcome));
+
+        AgentGuardTelemetry.RuleDuration.Record(elapsed,
+            new KeyValuePair<string, object?>(AgentGuardTelemetry.Tags.RuleName, rule.Name),
+            new KeyValuePair<string, object?>(AgentGuardTelemetry.Tags.Phase, context.Phase.ToString().ToLowerInvariant()));
+
+        return result;
+    }
+
+    private void RecordPipelineCompletion(Activity? activity, ValueStopwatch stopwatch, GuardrailPhase phase, string outcome)
+    {
+        var elapsed = stopwatch.GetElapsedMilliseconds();
+
+        activity?.SetTag(AgentGuardTelemetry.Tags.Outcome, outcome);
+
+        AgentGuardTelemetry.PipelineEvaluations.Add(1,
+            new KeyValuePair<string, object?>(AgentGuardTelemetry.Tags.PolicyName, _policy.Name),
+            new KeyValuePair<string, object?>(AgentGuardTelemetry.Tags.Phase, phase.ToString().ToLowerInvariant()),
+            new KeyValuePair<string, object?>(AgentGuardTelemetry.Tags.Outcome, outcome));
+
+        AgentGuardTelemetry.PipelineDuration.Record(elapsed,
+            new KeyValuePair<string, object?>(AgentGuardTelemetry.Tags.PolicyName, _policy.Name),
+            new KeyValuePair<string, object?>(AgentGuardTelemetry.Tags.Phase, phase.ToString().ToLowerInvariant()),
+            new KeyValuePair<string, object?>(AgentGuardTelemetry.Tags.Outcome, outcome));
     }
 
     private async ValueTask<GuardrailPipelineResult> RunReaskLoopAsync(
@@ -99,6 +212,12 @@ public sealed partial class GuardrailPipeline
         IChatClient chatClient,
         CancellationToken cancellationToken)
     {
+        using var reaskActivity = AgentGuardTelemetry.ActivitySource.StartActivity(
+            AgentGuardTelemetry.Spans.PipelineReask);
+
+        reaskActivity?.SetTag(AgentGuardTelemetry.Tags.ReaskMaxAttempts, options.MaxAttempts);
+        reaskActivity?.SetTag(AgentGuardTelemetry.Tags.PolicyName, _policy.Name);
+
         var currentBlockedResult = blockedResult;
 
         for (var attempt = 0; attempt < options.MaxAttempts; attempt++)
@@ -107,6 +226,9 @@ public sealed partial class GuardrailPipeline
 
             var violationReason = currentBlockedResult.BlockingResult?.Reason ?? "Output was blocked by a guardrail.";
             LogReaskAttempt(_logger, attempt + 1, options.MaxAttempts, violationReason);
+
+            AgentGuardTelemetry.ReaskAttempts.Add(1,
+                new KeyValuePair<string, object?>(AgentGuardTelemetry.Tags.PolicyName, _policy.Name));
 
             var reaskMessages = BuildReaskMessages(originalContext, currentBlockedResult, options);
             var response = await chatClient.GetResponseAsync(reaskMessages, options.ChatOptions, cancellationToken);
@@ -118,6 +240,8 @@ public sealed partial class GuardrailPipeline
             if (!reaskResult.IsBlocked)
             {
                 LogReaskSuccess(_logger, attempt + 1);
+                reaskActivity?.SetTag(AgentGuardTelemetry.Tags.ReaskAttemptsUsed, attempt + 1);
+                reaskActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Passed);
                 return reaskResult with
                 {
                     WasReasked = true,
@@ -129,6 +253,9 @@ public sealed partial class GuardrailPipeline
         }
 
         LogReaskExhausted(_logger, options.MaxAttempts);
+        reaskActivity?.SetTag(AgentGuardTelemetry.Tags.ReaskAttemptsUsed, options.MaxAttempts);
+        reaskActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Blocked);
+        reaskActivity?.SetStatus(ActivityStatusCode.Error, "Re-ask exhausted all attempts");
         return currentBlockedResult with
         {
             WasReasked = true,
@@ -150,13 +277,13 @@ public sealed partial class GuardrailPipeline
 
         messages.Add(new ChatMessage(ChatRole.System, systemPrompt));
 
-        // Include the original conversation context if available
+        // include the original conversation context if available
         if (originalContext.Messages is { Count: > 0 } contextMessages)
         {
             messages.AddRange(contextMessages);
         }
 
-        // Include the blocked response so the LLM knows what to avoid
+        // include the blocked response so the LLM knows what to avoid
         if (options.IncludeBlockedResponse)
         {
             messages.Add(new ChatMessage(ChatRole.Assistant, blockedResult.FinalText));
@@ -209,4 +336,19 @@ public sealed record GuardrailPipelineResult
     /// Number of re-ask attempts used. Zero when re-ask is not enabled or the first response passed.
     /// </summary>
     public int ReaskAttemptsUsed { get; init; }
+}
+
+/// <summary>
+/// Lightweight stopwatch using <see cref="Stopwatch.GetTimestamp"/> to avoid allocations.
+/// </summary>
+internal readonly struct ValueStopwatch
+{
+    private readonly long _startTimestamp;
+
+    private ValueStopwatch(long startTimestamp) => _startTimestamp = startTimestamp;
+
+    public static ValueStopwatch StartNew() => new(Stopwatch.GetTimestamp());
+
+    public double GetElapsedMilliseconds() =>
+        Stopwatch.GetElapsedTime(_startTimestamp).TotalMilliseconds;
 }

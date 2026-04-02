@@ -101,3 +101,31 @@ builder.Services.AddSingleton<IContentSafetyClassifier>(sp =>
 // Load policies from config - LLM rules will resolve IChatClient from DI
 builder.Services.AddAgentGuard(builder.Configuration.GetSection("AgentGuard"));
 ```
+
+## OpenTelemetry Integration
+
+`AgentGuard.Hosting` includes convenience extension methods for OpenTelemetry. Add them alongside your existing OTel configuration:
+
+```csharp
+using AgentGuard.Hosting;
+
+builder.Services.AddOpenTelemetry()
+    .WithTracing(t => t
+        .AddAgentGuardInstrumentation()   // registers ActivitySource "AgentGuard"
+        .AddAspNetCoreInstrumentation()
+        .AddOtlpExporter())
+    .WithMetrics(m => m
+        .AddAgentGuardInstrumentation()   // registers Meter "AgentGuard"
+        .AddAspNetCoreInstrumentation()
+        .AddOtlpExporter());
+```
+
+If you don't use `AgentGuard.Hosting`, register the source and meter manually:
+
+```csharp
+builder.Services.AddOpenTelemetry()
+    .WithTracing(t => t.AddSource("AgentGuard"))
+    .WithMetrics(m => m.AddMeter("AgentGuard"));
+```
+
+See [Observability docs](observability.md) for the full span and metric reference.
