@@ -25,7 +25,8 @@ public class AgentGuardTelemetryTests : IDisposable
         {
             ShouldListenTo = source => source.Name == AgentGuardTelemetry.SourceName,
             Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
-            ActivityStarted = activity => _activities.Add(activity)
+            // use ActivityStopped so tags are guaranteed to be set (using block completed)
+            ActivityStopped = activity => _activities.Add(activity)
         };
         ActivitySource.AddActivityListener(_activityListener);
 
