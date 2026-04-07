@@ -23,15 +23,15 @@ public sealed class PromptInjectionRule : IGuardrailRule
     // Organized into three tiers. Low sensitivity uses only CorePatterns (highest-confidence
     // detections with minimal false positives). Medium adds MediumPatterns. High adds all.
 
-    /// <summary>Core patterns: direct instruction override, role hijacking, end sequences, variable expansion.</summary>
+    /// <summary>Core patterns: direct instruction override, role hijacking, end sequences, variable expansion, security bypass, role markers.</summary>
     private static readonly string[] CorePatterns =
     [
         // Direct instruction override
-        @"ignore\s+(all\s+)?(previous|prior|above)\s+(instructions|prompts|rules)",
+        @"ignore\s+(all\s+)?(previous|prior|above)\s+(instructions|prompts|rules|guidelines|directions)",
         @"disregard\s+(all\s+)?(previous|prior|above)",
-        @"forget\s+(all\s+)?(previous|prior|above)\s+(instructions|context)",
+        @"forget\s+(all\s+)?(previous|prior|above)\s+(instructions|prompts|rules|context|guidelines)",
         @"new\s+(instructions|rules|persona)\s*:",
-        @"override\s+(instructions|rules|system\s+prompt)",
+        @"override\s+(instructions|rules|guidelines|system\s+prompt)",
         @"system\s*prompt\s*:",
 
         // Role/persona hijacking
@@ -39,6 +39,22 @@ public sealed class PromptInjectionRule : IGuardrailRule
         @"pretend\s+(you\s+are|to\s+be)\s+",
         @"act\s+as\s+if\s+you\s+(are|were)\s+",
         @"act\s+as\s+an?\s+(malicious|evil|unrestricted|unfiltered|uncensored|compromised|rogue|harmful|dangerous)\b",
+        // developer mode jailbreak
+        @"developer\s+mode\s+(is\s+)?(now\s+)?(enabled?|activated?|on)",
+
+        // Security bypass - direct attempts to disable safety mechanisms
+        @"bypass\s+(the\s+)?(security|safety|guardrails?|filters?|restrictions?|protections?)",
+        @"disable\s+(\w+\s+)?(safety|security|guardrails?|filters?|restrictions?|protections?)",
+        @"ignore\s+(the\s+)?(safety|security|ethical)\s+(guidelines?|rules?|restrictions?|measures?)",
+        @"(uncensored|unfiltered|unrestricted)\s*(mode|response|output|version)",
+        @"(without|no)\s+(any\s+)?(restrictions?|limitations?|guardrails?|safety\s+filters?)\s*($|[.,;!?])",
+
+        // Plain-text role markers - chat format impersonation in user input
+        @"(?:^|\n)\s*SYSTEM:\s*",
+        @"(?:^|\n)\s*ASSISTANT:\s*",
+        @"(?:^|\n)\s*USER:\s*",
+        @"(?:^|\n)\s*HUMAN:\s*",
+        @"(?:^|\n)\s*DEVELOPER:\s*",
 
         // End sequence injection - 8 closure families from the Arcanum taxonomy
         // Token delimiters
@@ -63,6 +79,9 @@ public sealed class PromptInjectionRule : IGuardrailRule
         // Soft boundaries used as context separators
         @"[-=]{5,}\s*(SYSTEM|END|BEGIN|RESET|OVERRIDE)\s*[-=]*",
         @"#{3,}\s*(SYSTEM|END|BEGIN|RESET)",
+
+        // HTML comment injection - hidden directives in document content
+        @"<!--\s*(?:system|ignore|instruction|prompt|override).*?-->",
 
         // Variable expansion attacks
         @"\$\{(system_prompt|instructions|config|prompt)\}",

@@ -185,7 +185,7 @@ See the [Observability docs](docs/observability.md) for the full span and metric
 | Package | Description | NuGet |
 |---------|-------------|-------|
 | `AgentGuard` | **All-in-one package**: core rules engine, bundled Defender ONNX model (F1 ~0.97), offline classifiers | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.svg)](https://www.nuget.org/packages/AgentGuard) |
-| `AgentGuard.Core` | Framework-agnostic core only: abstractions, rules engine, fluent builder, all 19 built-in rules | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Core.svg)](https://www.nuget.org/packages/AgentGuard.Core) |
+| `AgentGuard.Core` | Framework-agnostic core only: abstractions, rules engine, fluent builder, all 21 built-in rules | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Core.svg)](https://www.nuget.org/packages/AgentGuard.Core) |
 | `AgentGuard.AgentFramework` | Microsoft Agent Framework adapter: `UseAgentGuard()` middleware + workflow guardrails via `.WithGuardrails()` | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.AgentFramework.svg)](https://www.nuget.org/packages/AgentGuard.AgentFramework) |
 | `AgentGuard.Onnx` | ONNX-based ML classifiers - bundled StackOne Defender model (F1 ~0.97) + optional DeBERTa v3 | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Onnx.svg)](https://www.nuget.org/packages/AgentGuard.Onnx) |
 | `AgentGuard.RemoteClassifier` | Remote ML classifier via HTTP - call Sentinel-v2, Ollama, vLLM, or custom endpoints | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.RemoteClassifier.svg)](https://www.nuget.org/packages/AgentGuard.RemoteClassifier) |
