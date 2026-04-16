@@ -201,14 +201,14 @@ else if (includeOnnx)
 IChatClient? llmClient = null;
 if (includeLlm)
 {
-    var llmEndpoint = Environment.GetEnvironmentVariable("AGENTGUARD_LLM_ENDPOINT");
-    var llmModel = Environment.GetEnvironmentVariable("AGENTGUARD_LLM_MODEL");
-    var llmKey = Environment.GetEnvironmentVariable("AGENTGUARD_LLM_KEY") ?? "unused";
-    var llmMaxTokens = int.TryParse(Environment.GetEnvironmentVariable("AGENTGUARD_LLM_MAX_TOKENS"), out var mt) ? mt : 500;
+    var llmEndpoint = Environment.GetEnvironmentVariable("OPENAI_BASE_URL");
+    var llmModel = Environment.GetEnvironmentVariable("OPENAI_MODEL");
+    var llmKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY") ?? "unused";
+    var llmMaxTokens = int.TryParse(Environment.GetEnvironmentVariable("OPENAI_MAX_TOKENS"), out var mt) ? mt : 500;
 
     if (string.IsNullOrEmpty(llmEndpoint) || string.IsNullOrEmpty(llmModel))
     {
-        Console.WriteLine("\nLLM not configured - set AGENTGUARD_LLM_ENDPOINT and AGENTGUARD_LLM_MODEL.\n");
+        Console.WriteLine("\nLLM not configured - set OPENAI_BASE_URL and OPENAI_MODEL.\n");
     }
     else
     {
@@ -490,7 +490,7 @@ Console.WriteLine($"\nDataset: jayavibhav/prompt-injection-safety (test split, {
 if (!includeOnnx)
     Console.WriteLine("Tip: pass --onnx to include ONNX DeBERTa v3 benchmarks (slower).");
 if (!includeLlm)
-    Console.WriteLine("Tip: pass --llm to include LLM-as-judge (requires AGENTGUARD_LLM_ENDPOINT + AGENTGUARD_LLM_MODEL).");
+    Console.WriteLine("Tip: pass --llm to include LLM-as-judge (requires OPENAI_BASE_URL + OPENAI_MODEL).");
 if (!includeAzure)
     Console.WriteLine("Tip: pass --azure to include Azure Content Safety text:analyze (requires AZURE_CONTENT_SAFETY_ENDPOINT + AZURE_CONTENT_SAFETY_KEY). Use --azure-concurrency=N to control RPS (default 5).");
 if (!includePromptShield)
