@@ -8,13 +8,13 @@ namespace AgentGuard.E2E.Tests;
 /// a user-supplied OpenAI-compatible embedding endpoint. Tests that need embeddings use this fixture.
 ///
 /// Required environment variables:
-///   AGENTGUARD_EMBEDDING_ENDPOINT - base URL of the OpenAI-compatible API (e.g. http://localhost:1234/v1/)
-///   AGENTGUARD_EMBEDDING_MODEL    - embedding model name (e.g. jina-embeddings-v5-text-small-retrieval)
+///   OPENAI_EMBEDDING_BASE_URL - base URL of the OpenAI-compatible API (e.g. http://localhost:1234/v1/)
+///   OPENAI_EMBEDDING_MODEL    - embedding model name (e.g. jina-embeddings-v5-text-small-retrieval)
 ///
 /// Optional:
-///   AGENTGUARD_EMBEDDING_KEY - API key (defaults to "unused" for local servers)
+///   OPENAI_EMBEDDING_KEY - API key (defaults to "unused" for local servers)
 ///
-/// Falls back to AGENTGUARD_LLM_ENDPOINT / AGENTGUARD_LLM_KEY if embedding-specific vars are not set,
+/// Falls back to OPENAI_BASE_URL / OPENAI_API_KEY if embedding-specific vars are not set,
 /// since many local servers (LM Studio, Ollama) serve both chat and embedding on the same endpoint.
 /// </summary>
 public sealed class EmbeddingTestFixture : IDisposable
@@ -26,17 +26,17 @@ public sealed class EmbeddingTestFixture : IDisposable
 
     public EmbeddingTestFixture()
     {
-        var endpoint = Environment.GetEnvironmentVariable("AGENTGUARD_EMBEDDING_ENDPOINT")
-            ?? Environment.GetEnvironmentVariable("AGENTGUARD_LLM_ENDPOINT");
-        var model = Environment.GetEnvironmentVariable("AGENTGUARD_EMBEDDING_MODEL");
-        var key = Environment.GetEnvironmentVariable("AGENTGUARD_EMBEDDING_KEY")
-            ?? Environment.GetEnvironmentVariable("AGENTGUARD_LLM_KEY")
+        var endpoint = Environment.GetEnvironmentVariable("OPENAI_EMBEDDING_BASE_URL")
+            ?? Environment.GetEnvironmentVariable("OPENAI_BASE_URL");
+        var model = Environment.GetEnvironmentVariable("OPENAI_EMBEDDING_MODEL");
+        var key = Environment.GetEnvironmentVariable("OPENAI_EMBEDDING_KEY")
+            ?? Environment.GetEnvironmentVariable("OPENAI_API_KEY")
             ?? "unused";
 
         if (string.IsNullOrEmpty(endpoint) || string.IsNullOrEmpty(model))
         {
             IsAvailable = false;
-            SkipReason = "Set AGENTGUARD_EMBEDDING_ENDPOINT (or AGENTGUARD_LLM_ENDPOINT) and AGENTGUARD_EMBEDDING_MODEL to run embedding e2e tests.";
+            SkipReason = "Set OPENAI_EMBEDDING_BASE_URL (or OPENAI_BASE_URL) and OPENAI_EMBEDDING_MODEL to run embedding e2e tests.";
             return;
         }
 
@@ -63,11 +63,11 @@ public sealed class EmbeddingFactAttribute : Xunit.FactAttribute
 {
     public EmbeddingFactAttribute()
     {
-        var endpoint = Environment.GetEnvironmentVariable("AGENTGUARD_EMBEDDING_ENDPOINT")
-            ?? Environment.GetEnvironmentVariable("AGENTGUARD_LLM_ENDPOINT");
-        var model = Environment.GetEnvironmentVariable("AGENTGUARD_EMBEDDING_MODEL");
+        var endpoint = Environment.GetEnvironmentVariable("OPENAI_EMBEDDING_BASE_URL")
+            ?? Environment.GetEnvironmentVariable("OPENAI_BASE_URL");
+        var model = Environment.GetEnvironmentVariable("OPENAI_EMBEDDING_MODEL");
 
         if (string.IsNullOrEmpty(endpoint) || string.IsNullOrEmpty(model))
-            Skip = "Set AGENTGUARD_EMBEDDING_ENDPOINT (or AGENTGUARD_LLM_ENDPOINT) and AGENTGUARD_EMBEDDING_MODEL to run embedding e2e tests.";
+            Skip = "Set OPENAI_EMBEDDING_BASE_URL (or OPENAI_BASE_URL) and OPENAI_EMBEDDING_MODEL to run embedding e2e tests.";
     }
 }
