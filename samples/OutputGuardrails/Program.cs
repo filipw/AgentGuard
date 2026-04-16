@@ -4,9 +4,9 @@
 //
 // Requirements:
 //   Set environment variables before running:
-//     AGENTGUARD_LLM_ENDPOINT  - base URL of an OpenAI-compatible API (e.g. http://localhost:1234/v1/)
-//     AGENTGUARD_LLM_MODEL     - model name (e.g. openai/gpt-oss-20b, gpt-4o-mini)
-//     AGENTGUARD_LLM_KEY       - API key (optional, defaults to "unused" for local servers)
+//     OPENAI_BASE_URL  - base URL of an OpenAI-compatible API (e.g. http://localhost:1234/v1/)
+//     OPENAI_MODEL     - model name (e.g. openai/gpt-oss-20b, gpt-4o-mini)
+//     OPENAI_API_KEY       - API key (optional, defaults to "unused" for local servers)
 
 using System.ClientModel;
 using AgentGuard.Core.Abstractions;
@@ -17,14 +17,14 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
 using OpenAI;
 
-var endpoint = Environment.GetEnvironmentVariable("AGENTGUARD_LLM_ENDPOINT");
-var model = Environment.GetEnvironmentVariable("AGENTGUARD_LLM_MODEL");
-var key = Environment.GetEnvironmentVariable("AGENTGUARD_LLM_KEY") ?? "unused";
+var endpoint = Environment.GetEnvironmentVariable("OPENAI_BASE_URL");
+var model = Environment.GetEnvironmentVariable("OPENAI_MODEL");
+var key = Environment.GetEnvironmentVariable("OPENAI_API_KEY") ?? "unused";
 
 if (string.IsNullOrEmpty(endpoint) || string.IsNullOrEmpty(model))
 {
-    Console.Error.WriteLine("Set AGENTGUARD_LLM_ENDPOINT and AGENTGUARD_LLM_MODEL to run this sample.");
-    Console.Error.WriteLine("  Example: AGENTGUARD_LLM_ENDPOINT=http://localhost:1234/v1/ AGENTGUARD_LLM_MODEL=gpt-4o-mini");
+    Console.Error.WriteLine("Set OPENAI_BASE_URL and OPENAI_MODEL to run this sample.");
+    Console.Error.WriteLine("  Example: OPENAI_BASE_URL=http://localhost:1234/v1/ OPENAI_MODEL=gpt-4o-mini");
     return 1;
 }
 
