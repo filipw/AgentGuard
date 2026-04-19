@@ -6,7 +6,6 @@ using AgentGuard.Core.Rules.Normalization;
 using AgentGuard.Core.Rules.PII;
 using AgentGuard.Core.Rules.PromptInjection;
 using AgentGuard.Core.Rules.TokenLimits;
-using AgentGuard.Core.Rules.TopicBoundary;
 using AgentGuard.Onnx;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
@@ -58,14 +57,6 @@ internal static class ConfigurationMapper
             case "piiredaction":
                 var categories = ParseEnum<PiiCategory>(rule.Categories, PiiCategory.Default);
                 builder.RedactPII(categories, rule.Replacement ?? "[REDACTED]");
-                break;
-
-            case "topicboundary":
-                var topics = rule.AllowedTopics?.ToArray() ?? [];
-                if (rule.SimilarityThreshold.HasValue)
-                    builder.EnforceTopicBoundary(rule.SimilarityThreshold.Value, topics);
-                else
-                    builder.EnforceTopicBoundary(topics);
                 break;
 
             case "tokenlimit":
@@ -138,17 +129,6 @@ internal static class ConfigurationMapper
                 });
                 break;
 
-            case "outputtopicboundary":
-                var outputTopics = rule.AllowedTopics?.ToArray() ?? [];
-                var outputTopicOpts = new OutputTopicBoundaryOptions
-                {
-                    AllowedTopics = outputTopics.ToList(),
-                    SimilarityThreshold = rule.SimilarityThreshold ?? 0.3f,
-                    Action = ParseEnum<OutputTopicAction>(rule.OutputTopicAction, OutputTopicAction.Block)
-                };
-                builder.EnforceOutputTopicBoundary(outputTopicOpts);
-                break;
-
             case "llmoutputpolicy":
                 var outputPolicyClient = ResolveService<IChatClient>(serviceProvider, "LlmOutputPolicy");
                 builder.EnforceOutputPolicyWithLlm(outputPolicyClient, new LlmOutputPolicyOptions
@@ -182,7 +162,7 @@ internal static class ConfigurationMapper
                 throw new InvalidOperationException(
                     $"Unknown guardrail rule type: '{rule.Type}'. " +
                     "Valid types: InputNormalization, PromptInjection, OnnxPromptInjection, PiiRedaction, " +
-                    "TopicBoundary, OutputTopicBoundary, TokenLimit, ContentSafety, LlmPromptInjection, " +
+                    "TokenLimit, ContentSafety, LlmPromptInjection, " +
                     "LlmPiiDetection, LlmTopicBoundary, LlmOutputPolicy, LlmGroundedness, LlmCopyright.");
         }
     }

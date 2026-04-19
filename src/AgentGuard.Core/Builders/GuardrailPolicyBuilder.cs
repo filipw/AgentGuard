@@ -10,7 +10,6 @@ using AgentGuard.Core.Rules.Secrets;
 using AgentGuard.Core.Rules.TokenLimits;
 using AgentGuard.Core.Rules.ToolCall;
 using AgentGuard.Core.Rules.ToolResult;
-using AgentGuard.Core.Rules.TopicBoundary;
 using AgentGuard.Core.Streaming;
 using Microsoft.Extensions.AI;
 
@@ -46,85 +45,6 @@ public sealed class GuardrailPolicyBuilder
     public GuardrailPolicyBuilder RedactPII(PiiCategory categories = PiiCategory.Default, string replacement = "[REDACTED]")
     {
         _rules.Add(new PiiRedactionRule(new PiiRedactionOptions { Categories = categories, Replacement = replacement }));
-        return this;
-    }
-
-    public GuardrailPolicyBuilder EnforceTopicBoundary(params string[] allowedTopics)
-    {
-        _rules.Add(new TopicBoundaryRule(new TopicBoundaryOptions { AllowedTopics = allowedTopics.ToList() }));
-        return this;
-    }
-
-    public GuardrailPolicyBuilder EnforceTopicBoundary(float similarityThreshold, params string[] allowedTopics)
-    {
-        _rules.Add(new TopicBoundaryRule(new TopicBoundaryOptions
-        {
-            AllowedTopics = allowedTopics.ToList(),
-            SimilarityThreshold = similarityThreshold
-        }));
-        return this;
-    }
-
-    /// <summary>
-    /// Adds topic boundary enforcement with a custom similarity provider (e.g. embedding-based).
-    /// </summary>
-    public GuardrailPolicyBuilder EnforceTopicBoundary(ITopicSimilarityProvider provider, params string[] allowedTopics)
-    {
-        _rules.Add(new TopicBoundaryRule(new TopicBoundaryOptions { AllowedTopics = allowedTopics.ToList() }, provider));
-        return this;
-    }
-
-    /// <summary>
-    /// Adds topic boundary enforcement with a custom similarity provider and threshold.
-    /// </summary>
-    public GuardrailPolicyBuilder EnforceTopicBoundary(ITopicSimilarityProvider provider, float similarityThreshold, params string[] allowedTopics)
-    {
-        _rules.Add(new TopicBoundaryRule(new TopicBoundaryOptions
-        {
-            AllowedTopics = allowedTopics.ToList(),
-            SimilarityThreshold = similarityThreshold
-        }, provider));
-        return this;
-    }
-
-    /// <summary>
-    /// Adds output topic boundary enforcement using keyword matching.
-    /// Checks whether the agent's response stays within the allowed topics.
-    /// </summary>
-    public GuardrailPolicyBuilder EnforceOutputTopicBoundary(params string[] allowedTopics)
-    {
-        _rules.Add(new OutputTopicBoundaryRule(new OutputTopicBoundaryOptions { AllowedTopics = allowedTopics.ToList() }));
-        return this;
-    }
-
-    /// <summary>
-    /// Adds output topic boundary enforcement with a similarity provider (e.g. embedding-based).
-    /// </summary>
-    public GuardrailPolicyBuilder EnforceOutputTopicBoundary(ITopicSimilarityProvider provider, params string[] allowedTopics)
-    {
-        _rules.Add(new OutputTopicBoundaryRule(new OutputTopicBoundaryOptions { AllowedTopics = allowedTopics.ToList() }, provider));
-        return this;
-    }
-
-    /// <summary>
-    /// Adds output topic boundary enforcement with a similarity provider and threshold.
-    /// </summary>
-    public GuardrailPolicyBuilder EnforceOutputTopicBoundary(ITopicSimilarityProvider provider, float similarityThreshold, params string[] allowedTopics)
-    {
-        _rules.Add(new OutputTopicBoundaryRule(new OutputTopicBoundaryOptions
-        {
-            AllowedTopics = allowedTopics.ToList(),
-            SimilarityThreshold = similarityThreshold
-        }, provider));
-        return this;
-    }
-
-    /// <summary>
-    /// Adds output topic boundary enforcement with full options.
-    /// </summary>
-    public GuardrailPolicyBuilder EnforceOutputTopicBoundary(OutputTopicBoundaryOptions options, ITopicSimilarityProvider? provider = null)
-    {
-        _rules.Add(new OutputTopicBoundaryRule(options, provider));
         return this;
     }
 

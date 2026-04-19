@@ -425,6 +425,15 @@ section.alt .feature-card {
   align-items: start;
 }
 
+/* ── Three-column layout ─────────────────────────────── */
+
+.three-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 2rem;
+  align-items: start;
+}
+
 .two-col .col-text {
   padding-top: 1rem;
 }
@@ -471,6 +480,10 @@ footer a:hover {
   }
 
   .two-col {
+    grid-template-columns: 1fr;
+  }
+
+  .three-col {
     grid-template-columns: 1fr;
   }
 

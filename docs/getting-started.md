@@ -10,9 +10,13 @@ dotnet add package AgentGuard.Hosting --prerelease         # optional: DI + conf
 dotnet add package AgentGuard.RemoteClassifier --prerelease # optional: remote ML classifier via HTTP
 ```
 
-## Your First Guardrail
+## Integration Tiers
 
-The fastest way to get started is `UseDefaults()`, which wires up a solid baseline that works fully offline - input normalization, regex + Defender ML prompt injection detection, PII redaction, secrets detection, and tool call/result guardrails:
+AgentGuard supports three integration levels - pick the one that fits your architecture:
+
+### 1. Standalone Pipeline
+
+Lowest-level, framework-agnostic. You build a `GuardrailContext` manually and call `RunAsync`. Conversation history must be set explicitly via `context.Messages` if you want history-aware rules like topic boundary or LLM prompt injection to have full context.
 
 ```csharp
 using AgentGuard.Core.Abstractions;
@@ -27,7 +31,14 @@ var policy = new GuardrailPolicyBuilder()
 
 var pipeline = new GuardrailPipeline(policy, NullLogger<GuardrailPipeline>.Instance);
 
-var ctx = new GuardrailContext { Text = userInput, Phase = GuardrailPhase.Input };
+// Pass conversation history so history-aware rules have context
+var ctx = new GuardrailContext
+{
+    Text = userInput,
+    Phase = GuardrailPhase.Input,
+    Messages = conversationHistory  // IReadOnlyList<ChatMessage>
+};
+
 var result = await pipeline.RunAsync(ctx);
 
 if (result.IsBlocked)
@@ -36,20 +47,29 @@ else if (result.WasModified)
     Console.WriteLine($"Redacted: {result.FinalText}");
 ```
 
-You can also pick and choose individual rules:
+### 2. IChatClient Decorator
+
+Wraps any `IChatClient` transparently - no framework required. Conversation history is propagated automatically from the `messages` argument you already pass to every `GetResponseAsync` call. Works with OpenAI, Azure OpenAI, Ollama, or any `Microsoft.Extensions.AI`-compatible client.
 
 ```csharp
-var policy = new GuardrailPolicyBuilder()
-    .BlockPromptInjection()
-    .RedactPII()
-    .EnforceTopicBoundary("billing", "returns")
-    .LimitInputTokens(4000)
-    .Build();
+using AgentGuard.Core.ChatClient;
+using AgentGuard.Onnx;
+
+// Wrap your existing IChatClient - one line, zero infrastructure changes
+var guardedClient = chatClient.UseAgentGuard(g => g
+    .UseDefaults()
+    .EnforceTopicBoundaryWithLlm(chatClient, "billing", "returns"));
+
+// Use exactly like a normal IChatClient - guardrails run transparently
+// History in conversationHistory is automatically available to all rules
+var response = await guardedClient.GetResponseAsync(conversationHistory);
 ```
 
-### With Microsoft Agent Framework
+Streaming is also supported - input guardrails run before the stream starts, output guardrails evaluate the buffered full response before chunks are forwarded to the caller.
 
-Add the `AgentGuard.AgentFramework` package to integrate as MAF middleware:
+### 3. Microsoft Agent Framework Middleware
+
+Deepest integration. Add as a pipeline stage via `UseAgentGuard()` on `AIAgentBuilder`. Conversation history flows from the MAF `messages` parameter automatically.
 
 ```csharp
 using AgentGuard.AgentFramework;
@@ -57,28 +77,23 @@ using AgentGuard.Onnx;
 
 var guardedAgent = agent
     .AsBuilder()
-    .UseAgentGuard(g => g.UseDefaults())
-    .Build();
-```
-
-Or pick specific rules:
-
-```csharp
-var guardedAgent = agent
-    .AsBuilder()
     .UseAgentGuard(g => g
-        .BlockPromptInjection()
-        .RedactPII()
-        .EnforceTopicBoundary("customer-support")
+        .UseDefaults()
+        .EnforceTopicBoundaryWithLlm(chatClient, "customer-support")
         .OnViolation(v => v.RejectWithMessage("I can only help with customer support topics."))
     )
     .Build();
+
+// Use exactly like a normal AIAgent - guardrails run transparently on every call
+var response = await guardedAgent.RunAsync(messages, session, options);
 ```
+
+Supports both `RunAsync` and `RunStreamingAsync`, including progressive streaming with retraction events.
 
 ## How It Works
 
 1. **Input guardrails** - injection check, PII redaction, topic enforcement, token limits
-2. **Agent runs** - processes the (potentially modified) input
+2. **Agent / LLM runs** - processes the (potentially modified) input
 3. **Output guardrails** - content safety, PII in responses, output validation
 
 If any rule blocks, the agent never runs. The user gets a configurable rejection message.
@@ -97,14 +112,12 @@ If any rule blocks, the agent never runs. The user gets a configurable rejection
 | `DetectSecrets()` | Both | 22 | Core |
 | `RedactPII()` | Both | 20 | Core |
 | `DetectPIIWithLlm()` | Both | 25 | Core |
-| `EnforceTopicBoundary()` | Input | 30 | Core |
 | `EnforceTopicBoundaryWithLlm()` | Input | 35 | Core |
 | `LimitInputTokens()` / `LimitOutputTokens()` | Input/Output | 40 | Core |
 | `GuardToolCalls()` | Output | 45 | Core |
 | `GuardToolResults()` | Output | 47 | Core |
 | `BlockHarmfulContent()` | Both | 50 | Core + Azure |
 | `EnforceOutputPolicy()` | Output | 55 | Core |
-| `EnforceOutputTopicBoundary()` | Output | 60 | Core |
 | `CheckGroundedness()` | Output | 65 | Core |
 | `CheckCopyright()` | Output | 75 | Core |
 | `ValidateInput()` / `ValidateOutput()` | Input/Output | 100 | Core |
