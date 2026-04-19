@@ -496,6 +496,7 @@ Rules execute in order of their `Order` property (lower = first). Built-in rules
 ## Samples
 
 - [Basic Guardrails](samples/BasicGuardrails/) - standalone rule evaluation, no framework dependency
+- [IChatClient Guardrails](samples/ChatClientGuardrails/) - `UseAgentGuard()` IChatClient decorator with history propagation, topic boundary, output guardrails, and streaming
 - [Agent Framework Integration](samples/AgentFrameworkIntegration/) - `UseAgentGuard()` on a MAF agent with RunAsync and streaming
 - [ONNX Guardrails](samples/OnnxGuardrails/) - offline ML-based prompt injection detection with bundled StackOne Defender model + optional DeBERTa v3
 - [Custom Rules](samples/CustomRules/) - implementing and composing custom guardrail rules
