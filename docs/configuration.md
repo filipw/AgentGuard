@@ -9,7 +9,7 @@ builder.Services.AddAgentGuard(options =>
     options.AddPolicy("strict", p => p
         .BlockPromptInjection(Sensitivity.High)
         .RedactPII(PiiCategory.All)
-        .EnforceTopicBoundary("billing"));
+        .EnforceTopicBoundaryWithLlm(sp.GetRequiredService<IChatClient>(), "billing"));
 });
 ```
 
@@ -50,7 +50,7 @@ builder.Services.AddAgentGuard(builder.Configuration.GetSection("AgentGuard"));
         { "Type": "PromptInjection", "Sensitivity": "High" },
         { "Type": "OnnxPromptInjection", "ModelPath": "./models/deberta-v3-prompt-injection/model.onnx", "TokenizerPath": "./models/deberta-v3-prompt-injection/spm.model" },
         { "Type": "PiiRedaction", "Categories": "All", "Replacement": "[REDACTED]" },
-        { "Type": "TopicBoundary", "AllowedTopics": ["billing", "support"], "SimilarityThreshold": 0.5 },
+        { "Type": "LlmTopicBoundary", "AllowedTopics": ["billing", "support"] },
         { "Type": "TokenLimit", "MaxTokens": 4000, "Phase": "Input", "OverflowStrategy": "Reject" }
       ],
       "ViolationMessage": "Your request was blocked by safety controls."
@@ -76,7 +76,6 @@ builder.Services.AddAgentGuard(builder.Configuration.GetSection("AgentGuard"));
 | `PromptInjection` | `Sensitivity` (Low/Medium/High, default Medium) | Regex-based detection |
 | `OnnxPromptInjection` | `ModelPath` (string, required), `TokenizerPath` (string, required), `Threshold` (float, default 0.5) | Requires `AgentGuard.Onnx` package. Download model via `eng/download-onnx-model.sh` |
 | `PiiRedaction` | `Categories` (Default/All/Email,Phone,...), `Replacement` (default [REDACTED]) | Regex-based redaction |
-| `TopicBoundary` | `AllowedTopics` (string[]), `SimilarityThreshold` (float, default 0.3) | Keyword-based topic matching |
 | `TokenLimit` | `MaxTokens` (int), `Phase` (Input/Output), `OverflowStrategy` (Reject/Truncate/Warn) | Token counting via ML.Tokenizers |
 | `ToolCallGuardrail` | `Categories` (Default/All/SqlInjection,...) | Inspects tool call arguments for injection |
 | `ToolResultGuardrail` | `Action` (Block/Sanitize), `StripUnicodeControl` (bool, default true) | Detects indirect injection in tool results |
