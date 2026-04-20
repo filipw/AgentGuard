@@ -109,7 +109,7 @@ var topicAgent = chatClient
     .UseAgentGuard(g => g
         .BlockPromptInjection()
         .RedactPII(PiiCategory.All)
-        .EnforceTopicBoundary("billing", "payments", "invoices", "refunds")
+        .EnforceTopicBoundaryWithLlm(chatClient, "billing", "payments", "invoices", "refunds")
         .OnViolation(v => v.RejectWithMessage("I can only help with billing topics."))
     )
     .Build();

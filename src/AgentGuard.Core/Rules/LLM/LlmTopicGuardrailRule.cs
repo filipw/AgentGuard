@@ -1,3 +1,4 @@
+using System.Text;
 using AgentGuard.Core.Abstractions;
 using Microsoft.Extensions.AI;
 
@@ -42,14 +43,20 @@ public sealed class LlmTopicGuardrailRule : LlmGuardrailRule
     public override int Order => 35;
 
     internal static string GetDefaultPrompt(string topicsList) =>
-        $"""
+        $$"""
         You are a topic classification system. Your task is to determine whether a user message falls within
-        the allowed topics for this agent.
+        the allowed topics for this agent, considering the full conversation context.
 
-        Allowed topics: {topicsList}
+        Allowed topics: {{topicsList}}
 
         Interpret the allowed topics broadly - if the user's message is reasonably related to any allowed topic,
         it should be considered on-topic. Only flag messages that are clearly unrelated to all allowed topics.
+
+        Important: evaluate the LATEST user message in the context of the conversation history.
+        Short replies like "yes", "no", "that's correct", "tell me more" are on-topic if the preceding
+        conversation is on-topic. Only flag messages that introduce a clearly unrelated subject.
+
+        {history}
 
         Respond with exactly one word:
         - ON_TOPIC if the message is related to any of the allowed topics
@@ -58,11 +65,34 @@ public sealed class LlmTopicGuardrailRule : LlmGuardrailRule
         Do not explain your reasoning. Respond with only ON_TOPIC or OFF_TOPIC.
         """;
 
-    protected override IEnumerable<ChatMessage> BuildPrompt(GuardrailContext context) =>
-    [
-        new(ChatRole.System, _systemPrompt),
-        new(ChatRole.User, context.Text)
-    ];
+    protected override IEnumerable<ChatMessage> BuildPrompt(GuardrailContext context)
+    {
+        var history = FormatConversationHistory(context.Messages);
+        var prompt = _systemPrompt.Replace("{history}", history);
+        return
+        [
+            new(ChatRole.System, prompt),
+            new(ChatRole.User, context.Text)
+        ];
+    }
+
+    private static string FormatConversationHistory(IReadOnlyList<ChatMessage>? messages)
+    {
+        if (messages is null || messages.Count == 0)
+            return "";
+
+        var sb = new StringBuilder();
+        sb.AppendLine("## Conversation history");
+        foreach (var message in messages)
+        {
+            var role = message.Role == ChatRole.User ? "User"
+                : message.Role == ChatRole.Assistant ? "Assistant"
+                : message.Role.Value;
+            sb.Append(role).Append(": ").AppendLine(message.Text);
+        }
+
+        return sb.ToString().TrimEnd();
+    }
 
     protected override GuardrailResult ParseResponse(string responseText, GuardrailContext context)
     {

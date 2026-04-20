@@ -39,11 +39,22 @@ var policy = new GuardrailPolicyBuilder()
     .BlockPromptInjection()        // regex-based injection detection
     .RedactPII(PiiCategory.Email | PiiCategory.Phone | PiiCategory.SSN)
     .DetectSecrets()               // block API keys, tokens, connection strings
-    .EnforceTopicBoundary("customer-support", "billing", "returns")
+    .EnforceTopicBoundaryWithLlm(chatClient, "customer-support", "billing", "returns")
     .LimitInputTokens(4000)
     .GuardToolCalls()              // inspect tool call arguments for injection
     .GuardToolResults()            // detect indirect injection in tool results
     .Build();
+```
+
+```csharp
+// Wrap any IChatClient - one line, transparent guardrails
+using AgentGuard.Core.ChatClient;
+using AgentGuard.Onnx;
+
+var guardedClient = chatClient.UseAgentGuard(g => g.UseDefaults());
+
+// Use exactly like a normal IChatClient
+var response = await guardedClient.GetResponseAsync(conversationHistory);
 ```
 
 ```csharp
@@ -64,7 +75,6 @@ var guardedAgent = agent
 - **Input normalization** - decodes evasion encodings (base64, hex, reversed text, Unicode homoglyphs) before downstream rules evaluate the text, catching attacks hidden via encoding tricks
 - **Prompt injection detection** - blocks jailbreak attempts, system prompt extraction, role-play attacks, end sequence injection, variable expansion, framing attacks, and rule addition with configurable sensitivity levels (Low/Medium/High). Patterns based on the [Arcanum Prompt Injection Taxonomy](https://github.com/Arcanum-Sec/arc_pi_taxonomy)
 - **PII redaction** - detects and redacts emails, phone numbers, SSNs, credit cards, IP addresses, dates of birth, and custom patterns on input and output
-- **Topic boundary enforcement** - keyword-based topic matching with pluggable `ITopicSimilarityProvider` for embedding-based similarity. `EmbeddingSimilarityProvider` in `AgentGuard.Local` uses any `IEmbeddingGenerator<string, Embedding<float>>` for cosine similarity with automatic topic embedding caching
 - **Token limits** - enforces input/output token budgets using `Microsoft.ML.Tokenizers` (cl100k_base) with configurable overflow strategies (Reject/Truncate/Warn)
 - **Secrets detection** - detects API keys (AWS, GitHub, Azure, Slack), JWT tokens, private keys, connection strings, bearer tokens. Block or redact actions with custom patterns and optional Shannon entropy-based detection
 - **Content safety** - severity-based filtering via pluggable `IContentSafetyClassifier` (Azure AI Content Safety adapter included). Detects harmful content (hate, violence, self-harm, sexual) - a complementary layer to prompt injection detection, not a substitute for it
@@ -84,10 +94,6 @@ var guardedAgent = agent
 ### Remote ML classifier (SOTA models via HTTP)
 
 - **Remote prompt injection detection** - calls external model servers (Ollama, vLLM, HuggingFace TGI, custom FastAPI endpoints) for ML-based classification. Designed for SOTA models like [Sentinel-v2](https://huggingface.co/rogue-security/prompt-injection-jailbreak-sentinel-v2) (Qwen3-0.6B, F1 ~0.957, 32K context). Lightweight - no native ML dependencies, just `HttpClient`. Pluggable `IRemoteClassifier` abstraction. Order 13, fails open by default. Install via `AgentGuard.RemoteClassifier` package.
-
-### Remote ML classifier (SOTA models via HTTP)
-
-- **Remote prompt injection detection** — calls external model servers (Ollama, vLLM, HuggingFace TGI, custom FastAPI endpoints) for ML-based classification. Designed for SOTA models like [Sentinel-v2](https://huggingface.co/rogue-security/prompt-injection-jailbreak-sentinel-v2) (Qwen3-0.6B, F1 ~0.957, 32K context). Lightweight — no native ML dependencies, just `HttpClient`. Pluggable `IRemoteClassifier` abstraction. Order 13, fails open by default. Install via `AgentGuard.RemoteClassifier` package.
 
 ### LLM-based rules (accurate, pluggable via `IChatClient`)
 
@@ -189,7 +195,7 @@ See the [Observability docs](docs/observability.md) for the full span and metric
 | `AgentGuard.AgentFramework` | Microsoft Agent Framework adapter: `UseAgentGuard()` middleware + workflow guardrails via `.WithGuardrails()` | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.AgentFramework.svg)](https://www.nuget.org/packages/AgentGuard.AgentFramework) |
 | `AgentGuard.Onnx` | ONNX-based ML classifiers - bundled StackOne Defender model (F1 ~0.97) + optional DeBERTa v3 | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Onnx.svg)](https://www.nuget.org/packages/AgentGuard.Onnx) |
 | `AgentGuard.RemoteClassifier` | Remote ML classifier via HTTP - call Sentinel-v2, Ollama, vLLM, or custom endpoints | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.RemoteClassifier.svg)](https://www.nuget.org/packages/AgentGuard.RemoteClassifier) |
-| `AgentGuard.Local` | Offline classifiers (keyword similarity, embedding-based topic similarity) | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Local.svg)](https://www.nuget.org/packages/AgentGuard.Local) |
+| `AgentGuard.Local` | Offline classifiers | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Local.svg)](https://www.nuget.org/packages/AgentGuard.Local) |
 | `AgentGuard.Azure` | Azure AI Content Safety: Prompt Shields (injection detection, F1 ~0.503) + protected material detection (text & code with license citations) + text analysis (harmful content) + blocklists | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Azure.svg)](https://www.nuget.org/packages/AgentGuard.Azure) |
 | `AgentGuard.Hosting` | DI registration, named policy factory, `appsettings.json` config binding | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Hosting.svg)](https://www.nuget.org/packages/AgentGuard.Hosting) |
 
@@ -212,19 +218,46 @@ using Microsoft.Extensions.Logging.Abstractions;
 var policy = new GuardrailPolicyBuilder()
     .BlockPromptInjection()
     .RedactPII()
-    .EnforceTopicBoundary("customer-support")
+    .EnforceTopicBoundaryWithLlm(chatClient, "customer-support")
     .OnViolation(v => v.RejectWithMessage("I can only help with customer support topics."))
     .Build();
 
 var pipeline = new GuardrailPipeline(policy, NullLogger<GuardrailPipeline>.Instance);
 
-var ctx = new GuardrailContext { Text = userInput, Phase = GuardrailPhase.Input };
+var ctx = new GuardrailContext
+{
+    Text = userInput,
+    Phase = GuardrailPhase.Input,
+    Messages = conversationHistory  // IReadOnlyList<ChatMessage> - optional, enables history-aware rules
+};
 var result = await pipeline.RunAsync(ctx);
 
 if (result.IsBlocked)
     Console.WriteLine($"Blocked: {result.BlockingResult!.Reason}");
 else if (result.WasModified)
     Console.WriteLine($"Modified: {result.FinalText}");
+```
+
+### With IChatClient Decorator
+
+```csharp
+using AgentGuard.Core.ChatClient;
+
+// Wrap any IChatClient - works with OpenAI, Azure OpenAI, Ollama, or any Microsoft.Extensions.AI client
+var guardedClient = chatClient.UseAgentGuard(g => g
+    .BlockPromptInjection()
+    .RedactPII()
+    .EnforceTopicBoundaryWithLlm(chatClient, "customer-support")
+    .OnViolation(v => v.RejectWithMessage("I can only help with customer support topics."))
+);
+
+// Use it exactly like a normal IChatClient - guardrails run transparently
+// Conversation history is automatically propagated to all rules
+var response = await guardedClient.GetResponseAsync(conversationHistory);
+
+// Streaming is also supported - input guardrails run before the stream starts
+await foreach (var update in guardedClient.GetStreamingResponseAsync(conversationHistory))
+    Console.Write(update.Text);
 ```
 
 ### With Microsoft Agent Framework
@@ -241,7 +274,7 @@ var guardedAgent = agent
     .UseAgentGuard(g => g
         .BlockPromptInjection()
         .RedactPII()
-        .EnforceTopicBoundary("customer-support")
+        .EnforceTopicBoundaryWithLlm(chatClient, "customer-support")
         .OnViolation(v => v.RejectWithMessage("I can only help with customer support topics."))
     )
     .Build();
@@ -283,28 +316,8 @@ builder.Services.AddAgentGuard(options =>
     options.AddPolicy("strict", policy => policy
         .BlockPromptInjection(sensitivity: Sensitivity.High)
         .RedactPII(PiiCategory.All)
-        .EnforceTopicBoundary("billing"));
+        .EnforceTopicBoundaryWithLlm(sp.GetRequiredService<IChatClient>(), "billing"));
 });
-```
-
-### With Embedding-based Topic Boundary
-
-```csharp
-using Microsoft.Extensions.AI;
-using AgentGuard.Local.Classifiers;
-using AgentGuard.Core.Builders;
-
-// Use any IEmbeddingGenerator - OpenAI, Ollama, local ONNX, etc.
-IEmbeddingGenerator<string, Embedding<float>> embeddings = /* your provider */;
-
-var policy = new GuardrailPolicyBuilder()
-    .BlockPromptInjection()
-    .EnforceTopicBoundary(
-        new EmbeddingSimilarityProvider(embeddings),
-        similarityThreshold: 0.4f,
-        "billing", "returns", "customer support")
-    .LimitInputTokens(4000)
-    .Build();
 ```
 
 ### With `appsettings.json` Configuration
@@ -470,14 +483,12 @@ Rules execute in order of their `Order` property (lower = first). Built-in rules
 | 20 | `PiiRedactionRule` | Regex | Both |
 | 22 | `SecretsDetectionRule` | Regex | Both |
 | 25 | `LlmPiiDetectionRule` | LLM | Both |
-| 30 | `TopicBoundaryRule` | Keywords | Input |
 | 35 | `LlmTopicGuardrailRule` | LLM | Input |
 | 40 | `TokenLimitRule` | Local | Input/Output |
 | 45 | `ToolCallGuardrailRule` | Regex | Output |
 | 47 | `ToolResultGuardrailRule` | Regex | Output |
 | 50 | `ContentSafetyRule` | Pluggable | Both |
 | 55 | `LlmOutputPolicyRule` | LLM | Output |
-| 60 | `OutputTopicBoundaryRule` | Embedding | Output |
 | 65 | `LlmGroundednessRule` | LLM | Output |
 | 75 | `LlmCopyrightRule` | LLM | Output |
 | 100 | Custom rules | User-defined | Any |
@@ -485,6 +496,7 @@ Rules execute in order of their `Order` property (lower = first). Built-in rules
 ## Samples
 
 - [Basic Guardrails](samples/BasicGuardrails/) - standalone rule evaluation, no framework dependency
+- [IChatClient Guardrails](samples/ChatClientGuardrails/) - `UseAgentGuard()` IChatClient decorator with history propagation, topic boundary, output guardrails, and streaming
 - [Agent Framework Integration](samples/AgentFrameworkIntegration/) - `UseAgentGuard()` on a MAF agent with RunAsync and streaming
 - [ONNX Guardrails](samples/OnnxGuardrails/) - offline ML-based prompt injection detection with bundled StackOne Defender model + optional DeBERTa v3
 - [Custom Rules](samples/CustomRules/) - implementing and composing custom guardrail rules

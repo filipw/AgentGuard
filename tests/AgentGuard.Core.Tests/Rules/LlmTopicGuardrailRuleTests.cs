@@ -142,4 +142,61 @@ public class LlmTopicGuardrailRuleTests
         rule.Phase.Should().Be(GuardrailPhase.Input);
         rule.Order.Should().Be(35);
     }
+
+    [Fact]
+    public async Task ShouldIncludeConversationHistoryInPrompt()
+    {
+        IEnumerable<ChatMessage>? capturedMessages = null;
+        var mock = new Mock<IChatClient>();
+        mock.Setup(c => c.GetResponseAsync(
+                It.IsAny<IEnumerable<ChatMessage>>(),
+                It.IsAny<ChatOptions?>(),
+                It.IsAny<CancellationToken>()))
+            .Callback<IEnumerable<ChatMessage>, ChatOptions?, CancellationToken>((msgs, _, _) => capturedMessages = msgs.ToList())
+            .ReturnsAsync(new ChatResponse(new ChatMessage(ChatRole.Assistant, "ON_TOPIC")));
+
+        var rule = new LlmTopicGuardrailRule(mock.Object,
+            new LlmTopicGuardrailOptions { AllowedTopics = ["billing"] });
+
+        var ctx = new GuardrailContext
+        {
+            Text = "Yes, that's correct",
+            Phase = GuardrailPhase.Input,
+            Messages =
+            [
+                new(ChatRole.User, "What is the total on my latest invoice?"),
+                new(ChatRole.Assistant, "Your latest invoice total is $49.99."),
+                new(ChatRole.User, "Yes, that's correct")
+            ]
+        };
+
+        await rule.EvaluateAsync(ctx);
+
+        var systemPrompt = capturedMessages!.First().Text!;
+        systemPrompt.Should().Contain("Conversation history");
+        systemPrompt.Should().Contain("What is the total on my latest invoice?");
+        systemPrompt.Should().Contain("$49.99");
+    }
+
+    [Fact]
+    public async Task ShouldWorkWithoutConversationHistory()
+    {
+        IEnumerable<ChatMessage>? capturedMessages = null;
+        var mock = new Mock<IChatClient>();
+        mock.Setup(c => c.GetResponseAsync(
+                It.IsAny<IEnumerable<ChatMessage>>(),
+                It.IsAny<ChatOptions?>(),
+                It.IsAny<CancellationToken>()))
+            .Callback<IEnumerable<ChatMessage>, ChatOptions?, CancellationToken>((msgs, _, _) => capturedMessages = msgs.ToList())
+            .ReturnsAsync(new ChatResponse(new ChatMessage(ChatRole.Assistant, "ON_TOPIC")));
+
+        var rule = new LlmTopicGuardrailRule(mock.Object,
+            new LlmTopicGuardrailOptions { AllowedTopics = ["billing"] });
+
+        var ctx = new GuardrailContext { Text = "What is my bill?", Phase = GuardrailPhase.Input };
+        await rule.EvaluateAsync(ctx);
+
+        var systemPrompt = capturedMessages!.First().Text!;
+        systemPrompt.Should().NotContain("Conversation history");
+    }
 }

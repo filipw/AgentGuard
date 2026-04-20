@@ -31,28 +31,20 @@ public class GuardrailPolicyBuilderTests
     }
 
     [Fact]
-    public void ShouldAddTopicBoundaryRule()
-    {
-        new GuardrailPolicyBuilder().EnforceTopicBoundary("billing", "support").Build()
-            .Rules.Should().ContainSingle().Which.Name.Should().Be("topic-boundary");
-    }
-
-    [Fact]
     public void ShouldChainMultipleRules()
     {
-        new GuardrailPolicyBuilder().BlockPromptInjection().RedactPII().EnforceTopicBoundary("support").LimitInputTokens(2000).Build()
-            .Rules.Should().HaveCount(4);
+        new GuardrailPolicyBuilder().BlockPromptInjection().RedactPII().LimitInputTokens(2000).Build()
+            .Rules.Should().HaveCount(3);
     }
 
     [Fact]
     public void ShouldOrderRulesByPriority()
     {
         var p = new GuardrailPolicyBuilder()
-            .LimitInputTokens(2000).RedactPII().BlockPromptInjection().EnforceTopicBoundary("support").Build();
+            .LimitInputTokens(2000).RedactPII().BlockPromptInjection().Build();
         p.Rules[0].Name.Should().Be("prompt-injection");
         p.Rules[1].Name.Should().Be("pii-redaction");
-        p.Rules[2].Name.Should().Be("topic-boundary");
-        p.Rules[3].Name.Should().Contain("token-limit");
+        p.Rules[2].Name.Should().Contain("token-limit");
     }
 
     [Fact]

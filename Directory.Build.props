@@ -27,7 +27,7 @@
   </ItemGroup>
 
   <PropertyGroup>
-    <VersionPrefix>0.2.1</VersionPrefix>
+    <VersionPrefix>0.3.0</VersionPrefix>
     <VersionSuffix></VersionSuffix>
   </PropertyGroup>
 

@@ -1,3 +1,4 @@
+using System.Text;
 using AgentGuard.Core.Abstractions;
 using Microsoft.Extensions.AI;
 
@@ -59,11 +60,13 @@ public sealed class LlmOutputPolicyRule : LlmGuardrailRule
     public override int Order => 55;
 
     internal static string GetDefaultPrompt(string policyDescription) =>
-        $"""
+        $$"""
         You are a compliance checker. Your task is to determine whether an AI assistant's response
-        violates a specific policy constraint.
+        violates a specific policy constraint, considering the full conversation context.
 
-        Policy: {policyDescription}
+        Policy: {{policyDescription}}
+
+        {history}
 
         Analyze the response and determine if it violates the above policy.
 
@@ -74,11 +77,34 @@ public sealed class LlmOutputPolicyRule : LlmGuardrailRule
         Do not explain your reasoning beyond the reason field. Respond with only the verdict line.
         """;
 
-    protected override IEnumerable<ChatMessage> BuildPrompt(GuardrailContext context) =>
-    [
-        new(ChatRole.System, _systemPrompt),
-        new(ChatRole.User, context.Text)
-    ];
+    protected override IEnumerable<ChatMessage> BuildPrompt(GuardrailContext context)
+    {
+        var history = FormatConversationHistory(context.Messages);
+        var prompt = _systemPrompt.Replace("{history}", history);
+        return
+        [
+            new(ChatRole.System, prompt),
+            new(ChatRole.User, context.Text)
+        ];
+    }
+
+    private static string FormatConversationHistory(IReadOnlyList<ChatMessage>? messages)
+    {
+        if (messages is null || messages.Count == 0)
+            return "";
+
+        var sb = new StringBuilder();
+        sb.AppendLine("## Conversation history");
+        foreach (var message in messages)
+        {
+            var role = message.Role == ChatRole.User ? "User"
+                : message.Role == ChatRole.Assistant ? "Assistant"
+                : message.Role.Value;
+            sb.Append(role).Append(": ").AppendLine(message.Text);
+        }
+
+        return sb.ToString().TrimEnd();
+    }
 
     protected override GuardrailResult ParseResponse(string responseText, GuardrailContext context)
     {

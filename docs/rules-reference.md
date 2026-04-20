@@ -210,29 +210,16 @@ Order 25, Both phases. Catches unstructured PII (names, addresses, contextual id
 
 `PiiAction.Block` returns a blocked result. `PiiAction.Redact` returns a modified result with the LLM's redacted version.
 
-## Topic Boundary Enforcement (Keywords)
-
-`.EnforceTopicBoundary(topics...)` or `.EnforceTopicBoundary(threshold, topics...)`
-
-Order 30, Input phase.
-
-| Option | Type | Default |
-|--------|------|---------|
-| SimilarityThreshold | float | 0.3 |
-| AllowKeywordFallback | bool | true |
-
-Supports pluggable `ITopicSimilarityProvider` for embedding-based matching.
-
 ## Topic Boundary Enforcement (LLM)
 
 `.EnforceTopicBoundaryWithLlm(chatClient, topics...)`
 
-Order 35, Input phase. Semantic topic classification that understands intent.
+Order 35, Input phase. Semantic topic classification using an LLM that understands intent and conversation context. Conversation history is included in the prompt so short follow-up replies ("yes", "tell me more") are correctly classified based on the preceding conversation.
 
 | Option | Type | Default |
 |--------|------|---------|
 | AllowedTopics | `IList<string>` | [] |
-| SystemPrompt | `string?` | null (built-in template with `{topics}` placeholder) |
+| SystemPrompt | `string?` | null (built-in template with `{topics}` and `{history}` placeholders) |
 
 ## Token Limits
 

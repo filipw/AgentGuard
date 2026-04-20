@@ -43,12 +43,12 @@
 <!-- ── Standalone example ─────────────────────────── -->
 <section id="quickstart">
   <p class="section-label">Quick Start</p>
-  <h2 class="section-title">No framework required.</h2>
+  <h2 class="section-title">Three integration tiers.</h2>
   <p class="section-subtitle">
-    The core engine works standalone. Build a policy, run the pipeline, get a result. Use it with any .NET AI stack - or none at all.
+    Pick the level that fits your architecture - framework-agnostic standalone, IChatClient decorator, or Microsoft Agent Framework middleware.
   </p>
 
-  <div class="two-col">
+  <div class="three-col">
     <div>
       <p class="code-label">Standalone pipeline</p>
 <pre><code>using AgentGuard.Core.Abstractions;
@@ -56,48 +56,69 @@ using AgentGuard.Core.Builders;
 using AgentGuard.Core.Guardrails;
 using AgentGuard.Onnx;
 
-// Sensible defaults: normalization, regex + Defender ML
-// prompt injection, PII, secrets, tool guardrails
-var policy = new GuardrailPolicyBuilder()
-    .UseDefaults()
-    .Build();
-
-// Or pick and choose individual rules
 var policy = new GuardrailPolicyBuilder()
     .NormalizeInput()
     .BlockPromptInjection()
     .BlockPromptInjectionWithDefender()
     .RedactPII()
-    .EnforceTopicBoundary("billing", "returns")
+    .EnforceTopicBoundaryWithLlm(
+        chatClient, "billing", "returns")
     .LimitInputTokens(4000)
     .Build();
 
-var pipeline = new GuardrailPipeline(policy, logger);
+var pipeline = new GuardrailPipeline(
+    policy, logger);
+
 var ctx = new GuardrailContext
 {
     Text = userInput,
-    Phase = GuardrailPhase.Input
+    Phase = GuardrailPhase.Input,
+    Messages = conversationHistory
 };
 
 var result = await pipeline.RunAsync(ctx);
 
 if (result.IsBlocked)
-    Console.WriteLine(result.BlockingResult!.Reason);
+    Console.WriteLine(
+        result.BlockingResult!.Reason);
 else if (result.WasModified)
     Console.WriteLine(result.FinalText);</code></pre>
     </div>
     <div>
-      <p class="code-label">With Microsoft Agent Framework</p>
+      <p class="code-label">IChatClient decorator</p>
+<pre><code>using AgentGuard.Core.ChatClient;
+using AgentGuard.Onnx;
+
+// Wrap any IChatClient - one line
+var guardedClient = chatClient.UseAgentGuard(
+    g => g
+        .NormalizeInput()
+        .BlockPromptInjection()
+        .BlockPromptInjectionWithDefender()
+        .RedactPII()
+        .EnforceTopicBoundaryWithLlm(
+            chatClient, "billing", "returns")
+        .LimitInputTokens(4000)
+);
+
+// Use exactly like a normal IChatClient
+// History is propagated automatically
+var response = await guardedClient
+    .GetResponseAsync(conversationHistory);
+
+// Streaming works too
+await foreach (var update in guardedClient
+    .GetStreamingResponseAsync(
+        conversationHistory))
+{
+    Console.Write(update.Text);
+}</code></pre>
+    </div>
+    <div>
+      <p class="code-label">Microsoft Agent Framework</p>
 <pre><code>using AgentGuard.AgentFramework;
 using AgentGuard.Onnx;
 
-// Sensible defaults in two lines
-var guardedAgent = agent
-    .AsBuilder()
-    .UseAgentGuard(g => g.UseDefaults())
-    .Build();
-
-// Or configure exactly what you need
 var guardedAgent = agent
     .AsBuilder()
     .UseAgentGuard(g => g
@@ -105,7 +126,8 @@ var guardedAgent = agent
         .BlockPromptInjection()
         .BlockPromptInjectionWithDefender()
         .RedactPII()
-        .EnforceTopicBoundary("billing")
+        .EnforceTopicBoundaryWithLlm(
+            chatClient, "billing", "returns")
         .LimitInputTokens(4000)
     )
     .Build();
@@ -114,9 +136,11 @@ var guardedAgent = agent
 var response = await guardedAgent
     .RunAsync(messages, session, options);
 
-// Streaming works too
+// Streaming works too - with progressive
+// retraction support
 await foreach (var update in guardedAgent
-    .RunStreamingAsync(messages, session, options))
+    .RunStreamingAsync(
+        messages, session, options))
 {
     Console.Write(update.Text);
 }</code></pre>
@@ -144,7 +168,7 @@ await foreach (var update in guardedAgent
       </div>
       <div class="feature-card">
         <h3>Topic Enforcement</h3>
-        <p>Keep conversations on-topic with keyword matching, embedding-based similarity, or LLM semantic classification. Works on both input and output.</p>
+        <p>Keep conversations on-topic with LLM semantic classification. Understands intent and conversation context - not just keywords. Conversation history is automatically included so follow-up messages are evaluated correctly.</p>
       </div>
       <div class="feature-card">
         <h3>Output Validation</h3>
@@ -312,12 +336,6 @@ await foreach (var update in guardedAgent
         <td>Both</td>
       </tr>
       <tr>
-        <td>30</td>
-        <td><code>TopicBoundaryRule</code></td>
-        <td><span class="badge badge-local">Keywords</span></td>
-        <td>Input</td>
-      </tr>
-      <tr>
         <td>35</td>
         <td><code>LlmTopicGuardrailRule</code></td>
         <td><span class="badge badge-llm">LLM</span></td>
@@ -351,12 +369,6 @@ await foreach (var update in guardedAgent
         <td>55</td>
         <td><code>LlmOutputPolicyRule</code></td>
         <td><span class="badge badge-llm">LLM</span></td>
-        <td>Output</td>
-      </tr>
-      <tr>
-        <td>60</td>
-        <td><code>OutputTopicBoundaryRule</code></td>
-        <td><span class="badge badge-local">Embedding</span></td>
         <td>Output</td>
       </tr>
       <tr>

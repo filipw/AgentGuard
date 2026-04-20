@@ -168,4 +168,58 @@ public class LlmOutputPolicyRuleTests
         rule.Phase.Should().Be(GuardrailPhase.Output);
         rule.Order.Should().Be(55);
     }
+
+    [Fact]
+    public async Task ShouldIncludeConversationHistoryInPrompt()
+    {
+        IEnumerable<ChatMessage>? capturedMessages = null;
+        var mock = new Mock<IChatClient>();
+        mock.Setup(c => c.GetResponseAsync(
+                It.IsAny<IEnumerable<ChatMessage>>(),
+                It.IsAny<ChatOptions?>(),
+                It.IsAny<CancellationToken>()))
+            .Callback<IEnumerable<ChatMessage>, ChatOptions?, CancellationToken>((msgs, _, _) => capturedMessages = msgs.ToList())
+            .ReturnsAsync(new ChatResponse(new ChatMessage(ChatRole.Assistant, "COMPLIANT")));
+
+        var rule = new LlmOutputPolicyRule(mock.Object,
+            new LlmOutputPolicyOptions { PolicyDescription = "Never recommend competitors" });
+
+        var ctx = new GuardrailContext
+        {
+            Text = "I'd suggest trying CompetitorCo instead.",
+            Phase = GuardrailPhase.Output,
+            Messages =
+            [
+                new(ChatRole.User, "What product should I use for data analytics?"),
+                new(ChatRole.Assistant, "I'd suggest trying CompetitorCo instead.")
+            ]
+        };
+
+        await rule.EvaluateAsync(ctx);
+
+        var systemPrompt = capturedMessages!.First().Text!;
+        systemPrompt.Should().Contain("Conversation history");
+        systemPrompt.Should().Contain("What product should I use for data analytics?");
+    }
+
+    [Fact]
+    public async Task ShouldWorkWithoutConversationHistory()
+    {
+        IEnumerable<ChatMessage>? capturedMessages = null;
+        var mock = new Mock<IChatClient>();
+        mock.Setup(c => c.GetResponseAsync(
+                It.IsAny<IEnumerable<ChatMessage>>(),
+                It.IsAny<ChatOptions?>(),
+                It.IsAny<CancellationToken>()))
+            .Callback<IEnumerable<ChatMessage>, ChatOptions?, CancellationToken>((msgs, _, _) => capturedMessages = msgs.ToList())
+            .ReturnsAsync(new ChatResponse(new ChatMessage(ChatRole.Assistant, "COMPLIANT")));
+
+        var rule = new LlmOutputPolicyRule(mock.Object,
+            new LlmOutputPolicyOptions { PolicyDescription = "Never recommend competitors" });
+
+        await rule.EvaluateAsync(Ctx("Our product is the best choice."));
+
+        var systemPrompt = capturedMessages!.First().Text!;
+        systemPrompt.Should().NotContain("Conversation history");
+    }
 }
