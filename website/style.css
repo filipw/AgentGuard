@@ -425,13 +425,16 @@ section.alt .feature-card {
   align-items: start;
 }
 
-/* ── Three-column layout ─────────────────────────────── */
+/* ── Tier stack (vertical layout for integration tiers) */
 
-.three-col {
-  display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
-  gap: 2rem;
-  align-items: start;
+.tier-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 2.5rem;
+}
+
+.tier-stack > div {
+  display: block;
 }
 
 .two-col .col-text {
@@ -483,9 +486,6 @@ footer a:hover {
     grid-template-columns: 1fr;
   }
 
-  .three-col {
-    grid-template-columns: 1fr;
-  }
 
   nav .nav-links {
     display: none;
