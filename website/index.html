@@ -48,9 +48,9 @@
     Pick the level that fits your architecture - framework-agnostic standalone, IChatClient decorator, or Microsoft Agent Framework middleware.
   </p>
 
-  <div class="three-col">
+  <div class="tier-stack">
     <div>
-      <p class="code-label">Standalone pipeline</p>
+      <p class="code-label">1. Standalone pipeline - framework-agnostic, run rules directly</p>
 <pre><code>using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Builders;
 using AgentGuard.Core.Guardrails;
@@ -61,61 +61,53 @@ var policy = new GuardrailPolicyBuilder()
     .BlockPromptInjection()
     .BlockPromptInjectionWithDefender()
     .RedactPII()
-    .EnforceTopicBoundaryWithLlm(
-        chatClient, "billing", "returns")
+    .EnforceTopicBoundaryWithLlm(chatClient, "billing", "returns")
     .LimitInputTokens(4000)
     .Build();
 
-var pipeline = new GuardrailPipeline(
-    policy, logger);
+var pipeline = new GuardrailPipeline(policy, logger);
 
 var ctx = new GuardrailContext
 {
     Text = userInput,
     Phase = GuardrailPhase.Input,
-    Messages = conversationHistory
+    Messages = conversationHistory   // optional - enables history-aware rules
 };
 
 var result = await pipeline.RunAsync(ctx);
 
 if (result.IsBlocked)
-    Console.WriteLine(
-        result.BlockingResult!.Reason);
+    Console.WriteLine(result.BlockingResult!.Reason);
 else if (result.WasModified)
     Console.WriteLine(result.FinalText);</code></pre>
     </div>
     <div>
-      <p class="code-label">IChatClient decorator</p>
+      <p class="code-label">2. IChatClient decorator - wrap any chat client with one call</p>
 <pre><code>using AgentGuard.Core.ChatClient;
 using AgentGuard.Onnx;
 
-// Wrap any IChatClient - one line
-var guardedClient = chatClient.UseAgentGuard(
-    g => g
-        .NormalizeInput()
-        .BlockPromptInjection()
-        .BlockPromptInjectionWithDefender()
-        .RedactPII()
-        .EnforceTopicBoundaryWithLlm(
-            chatClient, "billing", "returns")
-        .LimitInputTokens(4000)
+// Wrap any IChatClient - works with OpenAI, Azure OpenAI, Ollama, or any
+// Microsoft.Extensions.AI client. Conversation history is propagated automatically.
+var guardedClient = chatClient.UseAgentGuard(g => g
+    .NormalizeInput()
+    .BlockPromptInjection()
+    .BlockPromptInjectionWithDefender()
+    .RedactPII()
+    .EnforceTopicBoundaryWithLlm(chatClient, "billing", "returns")
+    .LimitInputTokens(4000)
 );
 
 // Use exactly like a normal IChatClient
-// History is propagated automatically
-var response = await guardedClient
-    .GetResponseAsync(conversationHistory);
+var response = await guardedClient.GetResponseAsync(conversationHistory);
 
 // Streaming works too
-await foreach (var update in guardedClient
-    .GetStreamingResponseAsync(
-        conversationHistory))
+await foreach (var update in guardedClient.GetStreamingResponseAsync(conversationHistory))
 {
     Console.Write(update.Text);
 }</code></pre>
     </div>
     <div>
-      <p class="code-label">Microsoft Agent Framework</p>
+      <p class="code-label">3. Microsoft Agent Framework middleware - plug into AIAgentBuilder</p>
 <pre><code>using AgentGuard.AgentFramework;
 using AgentGuard.Onnx;
 
@@ -126,21 +118,16 @@ var guardedAgent = agent
         .BlockPromptInjection()
         .BlockPromptInjectionWithDefender()
         .RedactPII()
-        .EnforceTopicBoundaryWithLlm(
-            chatClient, "billing", "returns")
+        .EnforceTopicBoundaryWithLlm(chatClient, "billing", "returns")
         .LimitInputTokens(4000)
     )
     .Build();
 
 // Use exactly like a normal agent
-var response = await guardedAgent
-    .RunAsync(messages, session, options);
+var response = await guardedAgent.RunAsync(messages, session, options);
 
-// Streaming works too - with progressive
-// retraction support
-await foreach (var update in guardedAgent
-    .RunStreamingAsync(
-        messages, session, options))
+// Streaming works too - with progressive retraction support
+await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, options))
 {
     Console.Write(update.Text);
 }</code></pre>
