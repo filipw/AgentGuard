@@ -51,8 +51,8 @@
     <PackageVersion Include="coverlet.collector" Version="6.0.2" />
 
     <!-- OpenTelemetry -->
-    <PackageVersion Include="OpenTelemetry" Version="1.13.1" />
-    <PackageVersion Include="OpenTelemetry.Api" Version="1.13.1" />
-    <PackageVersion Include="OpenTelemetry.Exporter.InMemory" Version="1.13.1" />
+    <PackageVersion Include="OpenTelemetry" Version="1.15.3" />
+    <PackageVersion Include="OpenTelemetry.Api" Version="1.15.3" />
+    <PackageVersion Include="OpenTelemetry.Exporter.InMemory" Version="1.15.3" />
   </ItemGroup>
 </Project>
