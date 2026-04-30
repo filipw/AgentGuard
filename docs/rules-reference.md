@@ -282,7 +282,9 @@ Order 47, Output phase. Detects indirect prompt injection in incoming tool call 
 
 Tools not in the profile default to Medium. Tool names containing "email", "mail", "message", "chat", "slack", or "sms" are heuristically classified as High.
 
-Place tool results in `GuardrailContext.Properties["ToolResults"]` as `IReadOnlyList<ToolResultEntry>`. When action is Sanitize, sanitized results are written to `Properties["SanitizedToolResults"]`. Violations are stored in `Properties["ToolResultViolations"]`.
+**MAF integration (`UseAgentGuard()`):** When this rule is in the policy, tool results are automatically intercepted via the MAF function-invocation middleware (requires `FunctionInvokingChatClient` in the inner agent). Each `FunctionResultContent` is evaluated BEFORE being fed back to the LLM. Blocked results are replaced with a placeholder; sanitized results substitute the modified content. As a safety net for tools that bypass `FunctionInvokingChatClient` (hosted tools, MCP), the post-hoc output guardrail also extracts `FunctionResultContent` from the response messages. Configure via `ToolResultMiddlewareOptions` on the `UseAgentGuard(policy, toolResultOptions, logger)` overload (`Enabled`, `IncludeRuleOrders`, `BlockedPlaceholder`, `HardFail`).
+
+**Manual usage:** Place tool results in `GuardrailContext.Properties["ToolResults"]` as `IReadOnlyList<ToolResultEntry>`. When action is Sanitize, sanitized results are written to `Properties["SanitizedToolResults"]`. Violations are stored in `Properties["ToolResultViolations"]`.
 
 ---
 
