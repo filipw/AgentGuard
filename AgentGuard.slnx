@@ -29,5 +29,6 @@
     <Project Path="samples/AgentFrameworkIntegration/AgentFrameworkIntegration.csproj" />
     <Project Path="samples/ChatClientGuardrails/ChatClientGuardrails.csproj" />
     <Project Path="samples/ToolCallGuardrails/ToolCallGuardrails.csproj" />
+    <Project Path="samples/ToolResultGuardrails/ToolResultGuardrails.csproj" />
   </Folder>
 </Solution>
