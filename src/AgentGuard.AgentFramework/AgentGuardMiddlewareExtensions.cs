@@ -1,9 +1,12 @@
 using System.Diagnostics;
 using System.Text;
+using System.Text.Json;
+using AgentGuard.AgentFramework.Workflows;
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Builders;
 using AgentGuard.Core.Guardrails;
 using AgentGuard.Core.Rules.ToolCall;
+using AgentGuard.Core.Rules.ToolResult;
 using AgentGuard.Core.Streaming;
 using AgentGuard.Core.Telemetry;
 using Microsoft.Agents.AI;
@@ -34,8 +37,33 @@ public static class AgentGuardMiddlewareExtensions
     /// </summary>
     public static AIAgentBuilder UseAgentGuard(
         this AIAgentBuilder builder, IGuardrailPolicy policy, ILogger<GuardrailPipeline>? logger = null)
+        => builder.UseAgentGuard(policy, toolResultOptions: null, logger);
+
+    /// <summary>
+    /// Adds AgentGuard guardrails to the MAF agent pipeline using a pre-built policy and explicit
+    /// tool-result middleware options.
+    /// </summary>
+    /// <remarks>
+    /// When the policy contains a <see cref="ToolResultGuardrailRule"/> and
+    /// <see cref="ToolResultMiddlewareOptions.Enabled"/> is true (the default), a function-invocation
+    /// middleware is wired so tool results are inspected BEFORE being fed back to the LLM.
+    /// Requires the inner agent to have a <c>FunctionInvokingChatClient</c> in its pipeline.
+    /// </remarks>
+    public static AIAgentBuilder UseAgentGuard(
+        this AIAgentBuilder builder,
+        IGuardrailPolicy policy,
+        ToolResultMiddlewareOptions? toolResultOptions,
+        ILogger<GuardrailPipeline>? logger = null)
     {
         var pipeline = new GuardrailPipeline(policy, logger ?? NullLogger<GuardrailPipeline>.Instance);
+
+        var hasToolResultRule = policy.Rules.Any(r => r is ToolResultGuardrailRule);
+        var trOptions = toolResultOptions ?? new ToolResultMiddlewareOptions();
+
+        if (hasToolResultRule && trOptions.Enabled)
+        {
+            builder = WireToolResultMiddleware(builder, policy, trOptions, logger);
+        }
 
         return builder.Use(
             runFunc: async (messages, session, options, innerAgent, ct) =>
@@ -53,6 +81,126 @@ public static class AgentGuardMiddlewareExtensions
                 return StreamWithGuardrails(pipeline, policy, messages, session, options, innerAgent, ct);
             }
         );
+    }
+
+    /// <summary>
+    /// Wires a function-invocation middleware that intercepts each tool result and runs a filtered
+    /// sub-pipeline (tool-result and PII/secrets rules) BEFORE the result is fed back to the LLM.
+    /// Blocked results are replaced with a placeholder; sanitized results substitute the modified content.
+    /// </summary>
+    private static AIAgentBuilder WireToolResultMiddleware(
+        AIAgentBuilder builder,
+        IGuardrailPolicy policy,
+        ToolResultMiddlewareOptions options,
+        ILogger<GuardrailPipeline>? logger)
+    {
+        // build a sub-policy containing only the rules we want to run on tool results
+        var filteredRules = policy.Rules
+            .Where(r => r.Phase.HasFlag(GuardrailPhase.Output) && options.IncludeRuleOrders.Contains(r.Order))
+            .ToList();
+
+        if (filteredRules.Count == 0)
+        {
+            return builder;
+        }
+
+        var subPolicy = new GuardrailPolicy(
+            name: $"{policy.Name}.tool-results",
+            rules: filteredRules,
+            violationHandler: policy.ViolationHandler);
+
+        var subPipeline = new GuardrailPipeline(subPolicy, logger ?? NullLogger<GuardrailPipeline>.Instance);
+
+        // Wrap with an agent factory that only applies the function-invocation middleware
+        // when a FunctionInvokingChatClient is present. This avoids breaking agents that
+        // don't support function calling (e.g. tests, custom AIAgent subclasses).
+        return builder.Use((innerAgent, services) =>
+        {
+            if (innerAgent.GetService<FunctionInvokingChatClient>() is null)
+                return innerAgent;
+
+            var subBuilder = new AIAgentBuilder(innerAgent);
+            subBuilder.Use(BuildFunctionMiddleware(subPipeline, options));
+            return subBuilder.Build(services);
+        });
+    }
+
+    private static Func<AIAgent, FunctionInvocationContext, Func<FunctionInvocationContext, CancellationToken, ValueTask<object?>>, CancellationToken, ValueTask<object?>>
+        BuildFunctionMiddleware(GuardrailPipeline subPipeline, ToolResultMiddlewareOptions options)
+    {
+        return async (agent, ctx, next, ct) =>
+        {
+            var raw = await next(ctx, ct);
+            var content = ToolResultToString(raw);
+
+            if (string.IsNullOrEmpty(content))
+            {
+                return raw;
+            }
+
+            var entry = new ToolResultEntry
+            {
+                ToolName = ctx.Function.Name,
+                Content = content
+            };
+
+            var subContext = new GuardrailContext
+            {
+                Text = content,
+                Phase = GuardrailPhase.Output,
+                Messages = ctx.Messages?.ToList(),
+                AgentName = agent.Name
+            };
+            subContext.Properties[ToolResultGuardrailRule.ToolResultsKey] = new[] { entry };
+
+            var result = await subPipeline.RunAsync(subContext, ct);
+
+            if (result.IsBlocked)
+            {
+                if (options.HardFail)
+                {
+                    throw new GuardrailViolationException(
+                        result.BlockingResult!,
+                        GuardrailPhase.Output,
+                        $"{agent.Name ?? "agent"}.tool-result.{ctx.Function.Name}");
+                }
+
+                return options.BlockedPlaceholder;
+            }
+
+            if (result.WasModified)
+            {
+                if (subContext.Properties.TryGetValue(ToolResultGuardrailRule.SanitizedResultsKey, out var sanitizedObj) &&
+                    sanitizedObj is IReadOnlyList<ToolResultEntry> sanitized && sanitized.Count > 0)
+                {
+                    return sanitized[0].Content;
+                }
+
+                return result.FinalText;
+            }
+
+            return raw;
+        };
+    }
+
+    /// <summary>
+    /// Converts a tool result <see cref="object"/> into a string for guardrail evaluation.
+    /// Strings are passed through; complex objects are JSON-serialized.
+    /// </summary>
+    private static string ToolResultToString(object? raw)
+    {
+        if (raw is null)
+            return "";
+        if (raw is string s)
+            return s;
+        try
+        {
+            return JsonSerializer.Serialize(raw);
+        }
+        catch
+        {
+            return raw.ToString() ?? "";
+        }
     }
 
     private static async Task<(AgentResponse? blocked, IEnumerable<ChatMessage> messages)> RunInputGuardrails(
@@ -130,8 +278,12 @@ public static class AgentGuardMiddlewareExtensions
         var toolCalls = ExtractToolCalls(response.Messages);
         outputActivity?.SetTag(AgentGuardTelemetry.Tags.ToolCallCount, toolCalls.Count);
 
-        // nothing to evaluate if no text and no tool calls
-        if (string.IsNullOrEmpty(responseText) && toolCalls.Count == 0)
+        // safety-net: extract any tool results that landed in the response messages
+        // (covers tools that bypass FunctionInvokingChatClient — e.g. hosted tools, MCP)
+        var toolResults = ExtractToolResults(response.Messages);
+
+        // nothing to evaluate if no text, tool calls, or tool results
+        if (string.IsNullOrEmpty(responseText) && toolCalls.Count == 0 && toolResults.Count == 0)
         {
             outputActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Passed);
             return response;
@@ -147,6 +299,9 @@ public static class AgentGuardMiddlewareExtensions
 
         if (toolCalls.Count > 0)
             outputContext.Properties[ToolCallGuardrailRule.ToolCallsKey] = toolCalls;
+
+        if (toolResults.Count > 0)
+            outputContext.Properties[ToolResultGuardrailRule.ToolResultsKey] = toolResults;
 
         var outputResult = await pipeline.RunAsync(outputContext, ct);
 
@@ -198,6 +353,93 @@ public static class AgentGuardMiddlewareExtensions
         }
 
         return toolCalls;
+    }
+
+    /// <summary>
+    /// Extracts <see cref="ToolResultEntry"/> instances from MAF response messages by reading
+    /// <see cref="FunctionResultContent"/> items embedded in the message contents. Used as a
+    /// post-hoc safety net for tool implementations that bypass <c>FunctionInvokingChatClient</c>
+    /// (hosted tools, MCP). Pre-execution interception via the function-invocation middleware
+    /// is preferred because it can prevent injection from reaching the LLM in the first place.
+    /// </summary>
+    private static List<ToolResultEntry> ExtractToolResults(IEnumerable<ChatMessage> responseMessages)
+    {
+        var materialized = responseMessages as IList<ChatMessage> ?? responseMessages.ToList();
+        var callIdToName = BuildCallIdToToolNameMap(materialized.SelectMany(m => m.Contents));
+        var results = new List<ToolResultEntry>();
+
+        foreach (var message in materialized)
+        {
+            foreach (var fr in message.Contents.OfType<FunctionResultContent>())
+            {
+                AppendResult(results, fr, callIdToName);
+            }
+        }
+
+        return results;
+    }
+
+    /// <summary>
+    /// Extracts <see cref="ToolResultEntry"/> instances from streaming response updates.
+    /// </summary>
+    private static List<ToolResultEntry> ExtractToolResultsFromUpdates(IEnumerable<AgentResponseUpdate> updates)
+    {
+        var materialized = updates as IList<AgentResponseUpdate> ?? updates.ToList();
+        var callIdToName = BuildCallIdToToolNameMap(materialized.SelectMany(u => u.Contents));
+        var results = new List<ToolResultEntry>();
+
+        foreach (var update in materialized)
+        {
+            foreach (var fr in update.Contents.OfType<FunctionResultContent>())
+            {
+                AppendResult(results, fr, callIdToName);
+            }
+        }
+
+        return results;
+    }
+
+    private static Dictionary<string, string> BuildCallIdToToolNameMap(IEnumerable<AIContent> contents)
+    {
+        var map = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var fc in contents.OfType<FunctionCallContent>())
+        {
+            if (!string.IsNullOrEmpty(fc.CallId) && !string.IsNullOrEmpty(fc.Name))
+                map[fc.CallId] = fc.Name;
+        }
+        return map;
+    }
+
+    private static void AppendResult(
+        List<ToolResultEntry> results,
+        FunctionResultContent fr,
+        Dictionary<string, string> callIdToName)
+    {
+        var content = fr.Result switch
+        {
+            null => "",
+            string s => s,
+            var other => SafeSerialize(other)
+        };
+
+        if (string.IsNullOrEmpty(content))
+            return;
+
+        var toolName = (fr.CallId is not null && callIdToName.TryGetValue(fr.CallId, out var name))
+            ? name
+            : (fr.CallId ?? "unknown");
+
+        results.Add(new ToolResultEntry
+        {
+            ToolName = toolName,
+            Content = content
+        });
+    }
+
+    private static string SafeSerialize(object value)
+    {
+        try { return JsonSerializer.Serialize(value); }
+        catch { return value.ToString() ?? ""; }
     }
 
     /// <summary>
@@ -302,9 +544,10 @@ public static class AgentGuardMiddlewareExtensions
 
         // extract tool calls from streaming chunks
         var toolCalls = ExtractToolCallsFromUpdates(chunks);
+        var toolResults = ExtractToolResultsFromUpdates(chunks);
 
         // run output guardrails on the accumulated text and/or tool calls
-        if (!string.IsNullOrEmpty(fullText) || toolCalls.Count > 0)
+        if (!string.IsNullOrEmpty(fullText) || toolCalls.Count > 0 || toolResults.Count > 0)
         {
             var outputContext = new GuardrailContext
             {
@@ -316,6 +559,9 @@ public static class AgentGuardMiddlewareExtensions
 
             if (toolCalls.Count > 0)
                 outputContext.Properties[ToolCallGuardrailRule.ToolCallsKey] = toolCalls;
+
+            if (toolResults.Count > 0)
+                outputContext.Properties[ToolResultGuardrailRule.ToolResultsKey] = toolResults;
 
             var outputResult = await pipeline.RunAsync(outputContext, ct);
 
@@ -365,11 +611,14 @@ public static class AgentGuardMiddlewareExtensions
             AgentName = innerAgent.Name
         };
 
-        // collect tool calls from streaming updates alongside text extraction.
-        // tool calls are evaluated after the stream completes (FinalOnly semantics).
+        // collect tool calls and tool results from streaming updates alongside text extraction.
+        // both are evaluated after the stream completes (FinalOnly semantics).
         var collectedToolCalls = new List<AgentToolCall>();
+        var collectedCallIdToName = new Dictionary<string, string>(StringComparer.Ordinal);
+        var collectedToolResults = new List<FunctionResultContent>();
         var textStream = ExtractTextAndToolCalls(
-            innerAgent.RunStreamingAsync(processedMessages, session, options, ct), collectedToolCalls, ct);
+            innerAgent.RunStreamingAsync(processedMessages, session, options, ct),
+            collectedToolCalls, collectedCallIdToName, collectedToolResults, ct);
 
         await foreach (var output in streamingPipeline.ProcessStreamAsync(textStream, outputContext, policy.ViolationHandler, ct))
         {
@@ -387,10 +636,21 @@ public static class AgentGuardMiddlewareExtensions
                     break;
 
                 case StreamingOutputType.Completed:
-                    // after stream completes, evaluate any collected tool calls
-                    if (collectedToolCalls.Count > 0)
+                    // after stream completes, evaluate any collected tool calls and tool results
+                    if (collectedToolCalls.Count > 0 || collectedToolResults.Count > 0)
                     {
-                        outputContext.Properties[ToolCallGuardrailRule.ToolCallsKey] = (IReadOnlyList<AgentToolCall>)collectedToolCalls;
+                        if (collectedToolCalls.Count > 0)
+                            outputContext.Properties[ToolCallGuardrailRule.ToolCallsKey] = (IReadOnlyList<AgentToolCall>)collectedToolCalls;
+
+                        if (collectedToolResults.Count > 0)
+                        {
+                            var toolResults = new List<ToolResultEntry>(collectedToolResults.Count);
+                            foreach (var fr in collectedToolResults)
+                                AppendResult(toolResults, fr, collectedCallIdToName);
+                            if (toolResults.Count > 0)
+                                outputContext.Properties[ToolResultGuardrailRule.ToolResultsKey] = (IReadOnlyList<ToolResultEntry>)toolResults;
+                        }
+
                         var toolCallResult = await pipeline.RunAsync(outputContext, ct);
                         if (toolCallResult.IsBlocked)
                         {
@@ -410,11 +670,13 @@ public static class AgentGuardMiddlewareExtensions
 
     /// <summary>
     /// Extracts text from streaming updates while also collecting any <see cref="FunctionCallContent"/>
-    /// tool calls into the provided list. This ensures tool calls are not lost during progressive streaming.
+    /// tool calls and <see cref="FunctionResultContent"/> tool results into the provided lists.
     /// </summary>
     private static async IAsyncEnumerable<string> ExtractTextAndToolCalls(
         IAsyncEnumerable<AgentResponseUpdate> updates,
         List<AgentToolCall> collectedToolCalls,
+        Dictionary<string, string> collectedCallIdToName,
+        List<FunctionResultContent> collectedToolResults,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
     {
         await foreach (var update in updates.WithCancellation(ct))
@@ -435,6 +697,15 @@ public static class AgentGuardMiddlewareExtensions
                     ToolName = fc.Name ?? "",
                     Arguments = args
                 });
+
+                if (!string.IsNullOrEmpty(fc.CallId) && !string.IsNullOrEmpty(fc.Name))
+                    collectedCallIdToName[fc.CallId] = fc.Name;
+            }
+
+            // collect tool results
+            foreach (var fr in update.Contents.OfType<FunctionResultContent>())
+            {
+                collectedToolResults.Add(fr);
             }
 
             // yield text chunks
