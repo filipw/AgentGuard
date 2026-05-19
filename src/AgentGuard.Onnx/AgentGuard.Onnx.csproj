@@ -22,23 +22,13 @@
           Link="defender-model/model_quantized.onnx"
           CopyToOutputDirectory="PreserveNewest"
           Pack="true"
-          PackagePath="contentFiles/any/any/defender-model/;content/defender-model/" />
+          PackagePath="contentFiles/any/any/defender-model/"
+          PackageCopyToOutput="true" />
     <None Include="../../eng/models/minilm-prompt-injection/vocab.txt"
           Link="defender-model/vocab.txt"
           CopyToOutputDirectory="PreserveNewest"
           Pack="true"
-          PackagePath="contentFiles/any/any/defender-model/;content/defender-model/" />
-  </ItemGroup>
-
-  <!-- Ensure model files are copied to consuming projects -->
-  <ItemGroup>
-    <Content Include="../../eng/models/minilm-prompt-injection/model_quantized.onnx"
-             Link="defender-model/model_quantized.onnx"
-             CopyToOutputDirectory="PreserveNewest"
-             Visible="false" />
-    <Content Include="../../eng/models/minilm-prompt-injection/vocab.txt"
-             Link="defender-model/vocab.txt"
-             CopyToOutputDirectory="PreserveNewest"
-             Visible="false" />
+          PackagePath="contentFiles/any/any/defender-model/"
+          PackageCopyToOutput="true" />
   </ItemGroup>
 </Project>
