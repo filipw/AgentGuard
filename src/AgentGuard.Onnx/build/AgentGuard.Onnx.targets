@@ -1,0 +1,12 @@
+<Project>
+  <ItemGroup>
+    <None Include="$(MSBuildThisFileDirectory)defender-model\model_quantized.onnx"
+          Link="defender-model/model_quantized.onnx"
+          CopyToOutputDirectory="PreserveNewest"
+          Visible="false" />
+    <None Include="$(MSBuildThisFileDirectory)defender-model\vocab.txt"
+          Link="defender-model/vocab.txt"
+          CopyToOutputDirectory="PreserveNewest"
+          Visible="false" />
+  </ItemGroup>
+</Project>
