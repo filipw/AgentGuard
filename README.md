@@ -517,7 +517,7 @@ Rules execute in order of their `Order` property (lower = first). Built-in rules
 ## Requirements
 
 - .NET 10.0 or later
-- Microsoft Agent Framework 1.0.0-rc4 or later *(only if using `AgentGuard.AgentFramework`)*
+- Microsoft Agent Framework 1.8.0 or later *(only if using `AgentGuard.AgentFramework`)*
 
 
 ## Acknowledgements
