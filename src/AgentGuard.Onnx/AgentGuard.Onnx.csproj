@@ -16,19 +16,27 @@
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
   </ItemGroup>
 
-  <!-- Bundle StackOne Defender model files -->
+  <!-- Bundle StackOne Defender model files into build/ so they propagate via MSBuild targets (transitive-safe) -->
   <ItemGroup>
     <None Include="../../eng/models/minilm-prompt-injection/model_quantized.onnx"
           Link="defender-model/model_quantized.onnx"
           CopyToOutputDirectory="PreserveNewest"
           Pack="true"
-          PackagePath="contentFiles/any/any/defender-model/"
-          PackageCopyToOutput="true" />
+          PackagePath="build/defender-model/" />
     <None Include="../../eng/models/minilm-prompt-injection/vocab.txt"
           Link="defender-model/vocab.txt"
           CopyToOutputDirectory="PreserveNewest"
           Pack="true"
-          PackagePath="contentFiles/any/any/defender-model/"
-          PackageCopyToOutput="true" />
+          PackagePath="build/defender-model/" />
+  </ItemGroup>
+
+  <!-- MSBuild targets that copy model files to output — build/ for direct refs, buildTransitive/ for transitive refs -->
+  <ItemGroup>
+    <None Include="build/AgentGuard.Onnx.targets"
+          Pack="true"
+          PackagePath="build/" />
+    <None Include="buildTransitive/AgentGuard.Onnx.targets"
+          Pack="true"
+          PackagePath="buildTransitive/" />
   </ItemGroup>
 </Project>
