@@ -5,8 +5,10 @@ using Microsoft.ML.Tokenizers;
 namespace Benchmark;
 
 /// <summary>
-/// ONNX inference wrapper for the StackOneHQ/defender fine-tuned MiniLM-L6-v2 model.
-/// Architecture: BERT WordPiece tokenizer → ONNX (fine-tuned MiniLM) → single logit → sigmoid → injection score.
+/// ONNX inference wrapper for the StackOneHQ/defender multi-head MiniLM-L6 model (minilm-multihead-v5).
+/// Architecture: BERT WordPiece tokenizer → ONNX (mean pooling + dual head) → [main, aux] logits
+/// → temperature scaling → sigmoid. Classify returns the calibrated main score; the production rule
+/// also applies the aux veto (see AgentGuard.Onnx.DefenderPromptInjectionRule).
 /// Model: ~22MB quantized int8, 6 layers, 384 hidden, max 256 tokens.
 /// </summary>
 internal sealed class MiniLmSession : IDisposable
@@ -14,12 +16,14 @@ internal sealed class MiniLmSession : IDisposable
     private readonly InferenceSession _session;
     private readonly BertTokenizer _tokenizer;
     private readonly int _maxTokenLength;
+    private readonly float _temperatureT;
 
-    internal MiniLmSession(string modelPath, string vocabPath, int maxTokenLength = 256)
+    internal MiniLmSession(string modelPath, string vocabPath, int maxTokenLength = 256, float temperatureT = 2.41f)
     {
         _session = new InferenceSession(modelPath);
         _tokenizer = BertTokenizer.Create(vocabPath, new BertOptions { LowerCaseBeforeTokenization = true });
         _maxTokenLength = maxTokenLength;
+        _temperatureT = temperatureT;
     }
 
     /// <summary>
@@ -32,7 +36,6 @@ internal sealed class MiniLmSession : IDisposable
 
         var inputIds = new long[seqLen];
         var attentionMask = new long[seqLen];
-        var tokenTypeIds = new long[seqLen];
 
         for (var i = 0; i < seqLen; i++)
         {
@@ -42,16 +45,13 @@ internal sealed class MiniLmSession : IDisposable
 
         var inputIdsTensor = new DenseTensor<long>(inputIds, [1, seqLen]);
         var attentionMaskTensor = new DenseTensor<long>(attentionMask, [1, seqLen]);
-        var tokenTypeIdsTensor = new DenseTensor<long>(tokenTypeIds, [1, seqLen]);
 
         var inputs = new List<NamedOnnxValue>();
         foreach (var name in _session.InputMetadata.Keys)
         {
             var tensor = name switch
             {
-                "input_ids" => inputIdsTensor,
                 "attention_mask" => attentionMaskTensor,
-                "token_type_ids" => tokenTypeIdsTensor,
                 _ => inputIdsTensor
             };
             inputs.Add(NamedOnnxValue.CreateFromTensor(name, tensor));
@@ -59,10 +59,9 @@ internal sealed class MiniLmSession : IDisposable
 
         using var results = _session.Run(inputs);
 
-        // Defender model: single logit output → sigmoid
+        // multi-head model: [main, aux] logits. Classify returns the calibrated main score.
         var logits = results[0].AsEnumerable<float>().ToArray();
-        var logit = logits[0];
-        return Sigmoid(logit);
+        return Sigmoid(logits[0] / _temperatureT);
     }
 
     private static float Sigmoid(float x) => 1.0f / (1.0f + MathF.Exp(-x));

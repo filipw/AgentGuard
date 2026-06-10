@@ -7,7 +7,8 @@ namespace AgentGuard.Onnx.Tests;
 
 /// <summary>
 /// Unit tests for <see cref="DefenderPromptInjectionRule"/> and the internal
-/// <see cref="DefenderModelSession"/> helpers.
+/// <see cref="DefenderModelSession"/> helpers. These do not load the real model -
+/// see <c>DefenderPromptInjectionE2ETests</c> for tests against the bundled model.
 /// </summary>
 public class DefenderPromptInjectionRuleTests
 {
@@ -50,28 +51,69 @@ public class DefenderPromptInjectionRuleTests
     }
 
     // -----------------------------------------------------------------------
+    // Multi-head decision rule - the core logic, testable without a model
+    // -----------------------------------------------------------------------
+
+    [Fact]
+    public void ShouldBlock_WhenMainHighAndAuxLow()
+    {
+        // classic injection: high main, low aux (not directed at a human reader)
+        var score = new DefenderScore(Main: 0.96f, Aux: 0.10f);
+        DefenderPromptInjectionRule.ShouldBlock(score, 0.5f, 0.64f).Should().BeTrue();
+    }
+
+    [Fact]
+    public void ShouldNotBlock_WhenMainHighButAuxAlsoHigh()
+    {
+        // imperative-but-benign ("show me my orders"): the aux veto rescues it
+        var score = new DefenderScore(Main: 0.90f, Aux: 0.70f);
+        DefenderPromptInjectionRule.ShouldBlock(score, 0.5f, 0.64f).Should().BeFalse();
+    }
+
+    [Fact]
+    public void ShouldNotBlock_WhenMainBelowThreshold()
+    {
+        var score = new DefenderScore(Main: 0.40f, Aux: 0.10f);
+        DefenderPromptInjectionRule.ShouldBlock(score, 0.5f, 0.64f).Should().BeFalse();
+    }
+
+    [Fact]
+    public void ShouldBlock_WhenAuxExactlyAtThreshold_IsVetoed()
+    {
+        // aux veto triggers at aux >= auxThreshold, so aux == threshold rescues
+        var score = new DefenderScore(Main: 0.90f, Aux: 0.64f);
+        DefenderPromptInjectionRule.ShouldBlock(score, 0.5f, 0.64f).Should().BeFalse();
+    }
+
+    [Fact]
+    public void ShouldBlock_WhenMainExactlyAtThreshold()
+    {
+        var score = new DefenderScore(Main: 0.50f, Aux: 0.10f);
+        DefenderPromptInjectionRule.ShouldBlock(score, 0.5f, 0.64f).Should().BeTrue();
+    }
+
+    // -----------------------------------------------------------------------
     // Rule properties
     // -----------------------------------------------------------------------
 
     [Fact]
     public void ShouldHaveCorrectName()
     {
-        // Use a mock session to avoid needing model files
-        var rule = CreateRuleWithMockSession(0.5f);
+        var rule = CreateRuleWithMockSession();
         rule.Name.Should().Be("defender-prompt-injection");
     }
 
     [Fact]
     public void ShouldHaveInputPhase()
     {
-        var rule = CreateRuleWithMockSession(0.5f);
+        var rule = CreateRuleWithMockSession();
         rule.Phase.Should().Be(GuardrailPhase.Input);
     }
 
     [Fact]
     public void ShouldHaveOrder11()
     {
-        var rule = CreateRuleWithMockSession(0.5f);
+        var rule = CreateRuleWithMockSession();
         rule.Order.Should().Be(11);
     }
 
@@ -82,13 +124,41 @@ public class DefenderPromptInjectionRuleTests
     [Theory]
     [InlineData(-0.1f)]
     [InlineData(1.1f)]
-    [InlineData(-1f)]
-    [InlineData(2f)]
-    public void ShouldThrow_WhenThresholdIsOutOfRange(float threshold)
+    public void ShouldThrow_WhenMainThresholdIsOutOfRange(float threshold)
     {
         var act = () => new DefenderPromptInjectionRule(new DefenderPromptInjectionOptions
         {
-            Threshold = threshold,
+            MainThreshold = threshold,
+            ModelPath = "/nonexistent/model.onnx",
+            VocabPath = "/nonexistent/vocab.txt"
+        });
+
+        act.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
+    [Theory]
+    [InlineData(-0.1f)]
+    [InlineData(1.1f)]
+    public void ShouldThrow_WhenAuxThresholdIsOutOfRange(float threshold)
+    {
+        var act = () => new DefenderPromptInjectionRule(new DefenderPromptInjectionOptions
+        {
+            AuxThreshold = threshold,
+            ModelPath = "/nonexistent/model.onnx",
+            VocabPath = "/nonexistent/vocab.txt"
+        });
+
+        act.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
+    [Theory]
+    [InlineData(0f)]
+    [InlineData(-1f)]
+    public void ShouldThrow_WhenTemperatureIsNotPositive(float temperature)
+    {
+        var act = () => new DefenderPromptInjectionRule(new DefenderPromptInjectionOptions
+        {
+            TemperatureT = temperature,
             ModelPath = "/nonexistent/model.onnx",
             VocabPath = "/nonexistent/vocab.txt"
         });
@@ -135,7 +205,7 @@ public class DefenderPromptInjectionRuleTests
     [Fact]
     public async Task ShouldPass_WhenTextIsEmpty()
     {
-        var rule = CreateRuleWithMockSession(0.5f);
+        var rule = CreateRuleWithMockSession();
 
         var ctx = new GuardrailContext { Text = "", Phase = GuardrailPhase.Input };
         var result = await rule.EvaluateAsync(ctx);
@@ -146,7 +216,7 @@ public class DefenderPromptInjectionRuleTests
     [Fact]
     public async Task ShouldPass_WhenTextIsWhitespace()
     {
-        var rule = CreateRuleWithMockSession(0.5f);
+        var rule = CreateRuleWithMockSession();
 
         var ctx = new GuardrailContext { Text = "   ", Phase = GuardrailPhase.Input };
         var result = await rule.EvaluateAsync(ctx);
@@ -163,7 +233,9 @@ public class DefenderPromptInjectionRuleTests
     {
         var options = new DefenderPromptInjectionOptions();
 
-        options.Threshold.Should().Be(0.5f);
+        options.MainThreshold.Should().Be(0.5f);
+        options.AuxThreshold.Should().Be(0.64f);
+        options.TemperatureT.Should().Be(2.41f);
         options.MaxTokenLength.Should().Be(256);
         options.IncludeConfidence.Should().BeTrue();
         options.ModelPath.Should().BeNull();
@@ -175,16 +247,13 @@ public class DefenderPromptInjectionRuleTests
     // -----------------------------------------------------------------------
 
     /// <summary>
-    /// Creates a rule with a fake session that always returns a fixed score.
-    /// Uses the internal constructor to bypass model file requirements.
+    /// Creates a rule with a null session via the internal constructor. Only safe for tests
+    /// that do not call EvaluateAsync with non-empty text (those short-circuit before the session).
     /// </summary>
-    private static DefenderPromptInjectionRule CreateRuleWithMockSession(float threshold)
+    private static DefenderPromptInjectionRule CreateRuleWithMockSession()
     {
-        // We can't create a real DefenderModelSession without model files,
-        // but we can test properties via the internal constructor with null session
-        // For property tests, we use a wrapper approach
         return new DefenderPromptInjectionRule(
             null!,
-            new DefenderPromptInjectionOptions { Threshold = threshold });
+            new DefenderPromptInjectionOptions());
     }
 }

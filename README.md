@@ -78,7 +78,7 @@ var guardedAgent = agent
 - **Token limits** - enforces input/output token budgets using `Microsoft.ML.Tokenizers` (cl100k_base) with configurable overflow strategies (Reject/Truncate/Warn)
 - **Secrets detection** - detects API keys (AWS, GitHub, Azure, Slack), JWT tokens, private keys, connection strings, bearer tokens. Block or redact actions with custom patterns and optional Shannon entropy-based detection
 - **Content safety** - severity-based filtering via pluggable `IContentSafetyClassifier` (Azure AI Content Safety adapter included). Detects harmful content (hate, violence, self-harm, sexual) - a complementary layer to prompt injection detection, not a substitute for it
-- **Azure Prompt Shields** - dedicated prompt injection detection via Azure AI Content Safety's Prompt Shield API (`text:shieldPrompt`). Detects user prompt attacks (jailbreaks, role-play, encoding attacks) and document attacks (indirect injection in grounded content). **F1 50.3%** (85.9% precision, 35.6% recall) on adversarial benchmarks — complements local Defender (F1 ~97%) with a cloud-based signal. Order 14. Install via `AgentGuard.Azure` package
+- **Azure Prompt Shields** - dedicated prompt injection detection via Azure AI Content Safety's Prompt Shield API (`text:shieldPrompt`). Detects user prompt attacks (jailbreaks, role-play, encoding attacks) and document attacks (indirect injection in grounded content). **F1 50.3%** (85.9% precision, 35.6% recall) on adversarial benchmarks — complements the local multi-head Defender model with a cloud-based signal. Order 14. Install via `AgentGuard.Azure` package
 - **Azure Protected Material detection** - detects copyrighted text (lyrics, articles, recipes) and code from GitHub repositories in LLM-generated output via `text:detectProtectedMaterial` and `text:detectProtectedMaterialForCode`. Code detection returns license info and source URLs. No C# SDK exists for these APIs — AgentGuard provides the only .NET client. Output phase (order 76), supports Block/Warn actions. Install via `AgentGuard.Azure` package
 
 ### RAG & Agentic guardrails (zero-cost, offline)
@@ -89,7 +89,7 @@ var guardedAgent = agent
 
 ### ONNX ML-based rules (fast, accurate, offline)
 
-- **StackOne Defender prompt injection detection** - uses the [StackOne Defender](https://github.com/StackOneHQ/defender) fine-tuned MiniLM-L6-v2 ONNX model (~22 MB, bundled in NuGet) for ML-based classification. **F1 ~0.97** on adversarial benchmarks, ~8 ms inference, fully offline. **No download required** - the model is bundled with `AgentGuard.Onnx`. Order 11 (default). Also supports optional DeBERTa v3 model (order 12, separate download via `./eng/download-onnx-model.sh`)
+- **StackOne Defender prompt injection detection** - uses the [StackOne Defender](https://github.com/StackOneHQ/defender) fine-tuned multi-head MiniLM-L6 ONNX model (minilm-multihead-v5, ~22 MB, bundled in NuGet) for ML-based classification. Calibrated dual-head decision (`main >= threshold AND aux < veto`) keeps imperative-but-benign requests like "show me my orders" from being flagged. ~8 ms inference, fully offline. **No download required** - the model is bundled with `AgentGuard.Onnx`. Order 11 (default). Also supports optional DeBERTa v3 model (order 12, separate download via `./eng/download-onnx-model.sh`)
 
 ### Remote ML classifier (SOTA models via HTTP)
 
@@ -190,10 +190,10 @@ See the [Observability docs](docs/observability.md) for the full span and metric
 
 | Package | Description | NuGet |
 |---------|-------------|-------|
-| `AgentGuard` | **All-in-one package**: core rules engine, bundled Defender ONNX model (F1 ~0.97), offline classifiers | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.svg)](https://www.nuget.org/packages/AgentGuard) |
+| `AgentGuard` | **All-in-one package**: core rules engine, bundled Defender multi-head ONNX model, offline classifiers | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.svg)](https://www.nuget.org/packages/AgentGuard) |
 | `AgentGuard.Core` | Framework-agnostic core only: abstractions, rules engine, fluent builder, all 21 built-in rules | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Core.svg)](https://www.nuget.org/packages/AgentGuard.Core) |
 | `AgentGuard.AgentFramework` | Microsoft Agent Framework adapter: `UseAgentGuard()` middleware + workflow guardrails via `.WithGuardrails()` | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.AgentFramework.svg)](https://www.nuget.org/packages/AgentGuard.AgentFramework) |
-| `AgentGuard.Onnx` | ONNX-based ML classifiers - bundled StackOne Defender model (F1 ~0.97) + optional DeBERTa v3 | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Onnx.svg)](https://www.nuget.org/packages/AgentGuard.Onnx) |
+| `AgentGuard.Onnx` | ONNX-based ML classifiers - bundled StackOne Defender multi-head model (minilm-multihead-v5) + optional DeBERTa v3 | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Onnx.svg)](https://www.nuget.org/packages/AgentGuard.Onnx) |
 | `AgentGuard.RemoteClassifier` | Remote ML classifier via HTTP - call Sentinel-v2, Ollama, vLLM, or custom endpoints | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.RemoteClassifier.svg)](https://www.nuget.org/packages/AgentGuard.RemoteClassifier) |
 | `AgentGuard.Local` | Offline classifiers | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Local.svg)](https://www.nuget.org/packages/AgentGuard.Local) |
 | `AgentGuard.Azure` | Azure AI Content Safety: Prompt Shields (injection detection, F1 ~0.503) + protected material detection (text & code with license citations) + text analysis (harmful content) + blocklists | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Azure.svg)](https://www.nuget.org/packages/AgentGuard.Azure) |
