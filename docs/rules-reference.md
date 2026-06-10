@@ -66,20 +66,24 @@ Order 10, Input phase. Patterns informed by the [Arcanum Prompt Injection Taxono
 
 `.BlockPromptInjectionWithDefender()` or `.BlockPromptInjectionWithDefender(options)`
 
-Order 11, Input phase. Uses the [StackOne Defender](https://github.com/StackOneHQ/defender) fine-tuned MiniLM-L6-v2 ONNX model (~22 MB, int8 quantized) for ML-based binary classification. **F1 ~0.97** on adversarial benchmarks. Fast (~8 ms), accurate, fully offline. The model is **bundled with the NuGet package** - no separate download required.
+Order 11, Input phase. Uses the [StackOne Defender](https://github.com/StackOneHQ/defender) fine-tuned multi-head MiniLM-L6 ONNX model (minilm-multihead-v5, ~22 MB, int8 quantized). Fast (~8 ms), fully offline, **bundled with the NuGet package** - no separate download required.
+
+The model emits two temperature-calibrated scores: a **main** injection score and an **aux** "directed at a human reader" score. Input is blocked when `main >= MainThreshold AND aux < AuxThreshold` - a high aux score **vetoes** the block. This rescues imperative-but-benign phrasings (e.g. "show me my orders", "list all my orders") that the older single-head model flagged as false positives.
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| Threshold | `float` | 0.5 | Confidence threshold (0.0–1.0) for injection classification |
+| MainThreshold | `float` | 0.5 | Main-head block threshold (0.0–1.0) |
+| AuxThreshold | `float` | 0.64 | Aux-head veto threshold (0.0–1.0); aux at or above this rescues the block |
+| TemperatureT | `float` | 2.41 | Calibration temperature; each logit is divided by this before sigmoid |
 | MaxTokenLength | `int` | 256 | Maximum input token length (truncated if longer) |
-| IncludeConfidence | `bool` | true | Include confidence score in result metadata |
+| IncludeConfidence | `bool` | true | Include main/aux scores in result metadata |
 | ModelPath | `string?` | null | Custom model path (if null, bundled model is used) |
 | VocabPath | `string?` | null | Custom vocab path (if null, bundled vocab is used) |
 
 When blocked, result metadata includes:
-- `confidence` - injection probability (0.0–1.0)
-- `model` - `"stackone-defender-minilm-v2"`
-- `threshold` - the configured threshold
+- `mainScore` / `auxScore` - calibrated probabilities (0.0–1.0)
+- `model` - `"stackone-defender-minilm-multihead-v5"`
+- `mainThreshold` / `auxThreshold` / `temperatureT` - the configured decision parameters
 
 ```csharp
 using AgentGuard.Onnx;
@@ -87,8 +91,8 @@ using AgentGuard.Onnx;
 // Zero-config - bundled model, no download needed
 builder.BlockPromptInjectionWithDefender()
 
-// Or with custom threshold
-builder.BlockPromptInjectionWithDefender(new DefenderPromptInjectionOptions { Threshold = 0.8f })
+// Or with a custom main-head threshold (raise to reduce false positives further)
+builder.BlockPromptInjectionWithDefender(new DefenderPromptInjectionOptions { MainThreshold = 0.93f })
 ```
 
 ## Prompt Injection Detection (ONNX - DeBERTa v3)
