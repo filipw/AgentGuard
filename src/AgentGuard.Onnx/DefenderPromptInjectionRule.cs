@@ -4,8 +4,16 @@ using AgentGuard.Core.Abstractions;
 namespace AgentGuard.Onnx;
 
 /// <summary>
-/// Prompt injection classifier powered by the StackOne Defender fine-tuned MiniLM-L6-v2 ONNX model.
-/// Runs fully offline with fast inference (~8 ms per sample). Order 11 - runs before DeBERTa (order 12).
+/// Prompt injection classifier powered by the StackOne Defender multi-head MiniLM-L6 ONNX model
+/// (minilm-multihead-v5). Runs fully offline with fast inference (~8 ms per sample). Order 11 -
+/// runs before DeBERTa (order 12).
+/// <para>
+/// The model emits two temperature-calibrated scores: a main injection score and an auxiliary
+/// "directed at a human reader" score. Input is blocked when
+/// <c>main &gt;= MainThreshold AND aux &lt; AuxThreshold</c>; a high aux score vetoes the block.
+/// This rescues imperative-but-benign phrasings (e.g. "show me my orders") that the single-head
+/// model used to flag as false positives.
+/// </para>
 /// <para>
 /// The model is bundled with this NuGet package - no separate download required.
 /// Based on the <see href="https://github.com/StackOneHQ/defender">StackOne Defender</see> project (Apache 2.0 license).
@@ -33,13 +41,17 @@ public sealed class DefenderPromptInjectionRule : IGuardrailRule, IDisposable
     {
         _options = options ?? new DefenderPromptInjectionOptions();
 
-        if (_options.Threshold is < 0f or > 1f)
-            throw new ArgumentOutOfRangeException(nameof(options), "Threshold must be between 0.0 and 1.0.");
+        if (_options.MainThreshold is < 0f or > 1f)
+            throw new ArgumentOutOfRangeException(nameof(options), "MainThreshold must be between 0.0 and 1.0.");
+        if (_options.AuxThreshold is < 0f or > 1f)
+            throw new ArgumentOutOfRangeException(nameof(options), "AuxThreshold must be between 0.0 and 1.0.");
+        if (_options.TemperatureT <= 0f || !float.IsFinite(_options.TemperatureT))
+            throw new ArgumentOutOfRangeException(nameof(options), "TemperatureT must be a positive finite number.");
 
         var modelPath = ResolveModelPath(_options.ModelPath, "model_quantized.onnx");
         var vocabPath = ResolveModelPath(_options.VocabPath, "vocab.txt");
 
-        _session = new DefenderModelSession(modelPath, vocabPath, _options.MaxTokenLength);
+        _session = new DefenderModelSession(modelPath, vocabPath, _options.MaxTokenLength, _options.TemperatureT);
     }
 
     /// <summary>
@@ -51,6 +63,14 @@ public sealed class DefenderPromptInjectionRule : IGuardrailRule, IDisposable
         _options = options;
     }
 
+    /// <summary>
+    /// The multi-head decision rule: block when the main score clears its threshold and the aux
+    /// score does not reach the veto threshold. A high aux score (directive aimed at a human reader)
+    /// vetoes the block.
+    /// </summary>
+    internal static bool ShouldBlock(DefenderScore score, float mainThreshold, float auxThreshold) =>
+        score.Main >= mainThreshold && score.Aux < auxThreshold;
+
     /// <inheritdoc />
     public ValueTask<GuardrailResult> EvaluateAsync(
         GuardrailContext context,
@@ -59,12 +79,12 @@ public sealed class DefenderPromptInjectionRule : IGuardrailRule, IDisposable
         if (string.IsNullOrWhiteSpace(context.Text))
             return ValueTask.FromResult(GuardrailResult.Passed());
 
-        var injectionProb = _session.Classify(context.Text);
+        var score = _session.Classify(context.Text);
 
-        if (injectionProb >= _options.Threshold)
+        if (ShouldBlock(score, _options.MainThreshold, _options.AuxThreshold))
         {
             var result = GuardrailResult.Blocked(
-                $"Defender classifier detected potential prompt injection (confidence: {injectionProb:P1}).",
+                $"Defender classifier detected potential prompt injection (main: {score.Main:P1}, aux: {score.Aux:P1}).",
                 GuardrailSeverity.Critical);
 
             if (_options.IncludeConfidence)
@@ -73,9 +93,12 @@ public sealed class DefenderPromptInjectionRule : IGuardrailRule, IDisposable
                 {
                     Metadata = new Dictionary<string, object>
                     {
-                        ["confidence"] = injectionProb,
-                        ["model"] = "stackone-defender-minilm-v2",
-                        ["threshold"] = _options.Threshold
+                        ["mainScore"] = score.Main,
+                        ["auxScore"] = score.Aux,
+                        ["model"] = "stackone-defender-minilm-multihead-v5",
+                        ["mainThreshold"] = _options.MainThreshold,
+                        ["auxThreshold"] = _options.AuxThreshold,
+                        ["temperatureT"] = _options.TemperatureT
                     }
                 };
             }

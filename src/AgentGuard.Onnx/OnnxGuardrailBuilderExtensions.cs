@@ -8,9 +8,10 @@ namespace AgentGuard.Onnx;
 public static class OnnxGuardrailBuilderExtensions
 {
     /// <summary>
-    /// Adds ONNX-based prompt injection detection using the bundled StackOne Defender model (order 11).
-    /// This is the recommended ONNX classifier - fast (~8 ms), accurate (F1 ~0.97), and requires no separate download.
-    /// Runs before DeBERTa (order 12) and LLM-based detection (order 15).
+    /// Adds ONNX-based prompt injection detection using the bundled StackOne Defender multi-head
+    /// model (minilm-multihead-v5, order 11). This is the recommended ONNX classifier - fast (~8 ms),
+    /// calibrated, and requires no separate download. Runs before DeBERTa (order 12) and
+    /// LLM-based detection (order 15).
     /// </summary>
     /// <param name="builder">The policy builder.</param>
     /// <param name="options">Optional configuration. If null, default options with bundled model are used.</param>
@@ -24,16 +25,17 @@ public static class OnnxGuardrailBuilderExtensions
     }
 
     /// <summary>
-    /// Adds ONNX-based prompt injection detection using the bundled StackOne Defender model (order 11).
+    /// Adds ONNX-based prompt injection detection using the bundled StackOne Defender multi-head
+    /// model (minilm-multihead-v5, order 11) with a custom main-head threshold.
     /// </summary>
     /// <param name="builder">The policy builder.</param>
-    /// <param name="threshold">Confidence threshold (0.0-1.0). Default: 0.5.</param>
+    /// <param name="mainThreshold">Main-head block threshold (0.0-1.0). Default in options: 0.5.</param>
     /// <returns>The builder for chaining.</returns>
     public static GuardrailPolicyBuilder BlockPromptInjectionWithDefender(
         this GuardrailPolicyBuilder builder,
-        float threshold)
+        float mainThreshold)
     {
-        return builder.BlockPromptInjectionWithDefender(new DefenderPromptInjectionOptions { Threshold = threshold });
+        return builder.BlockPromptInjectionWithDefender(new DefenderPromptInjectionOptions { MainThreshold = mainThreshold });
     }
 
     /// <summary>
