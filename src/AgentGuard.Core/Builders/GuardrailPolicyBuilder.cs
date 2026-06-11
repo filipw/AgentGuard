@@ -1,5 +1,6 @@
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Guardrails;
+using AgentGuard.Core.Rules;
 using AgentGuard.Core.Rules.ContentSafety;
 using AgentGuard.Core.Rules.LLM;
 using AgentGuard.Core.Rules.Normalization;
@@ -305,6 +306,60 @@ public sealed class GuardrailPolicyBuilder
     }
 
     public GuardrailPolicyBuilder AddRule(IGuardrailRule rule) { _rules.Add(rule); return this; }
+
+    /// <summary>
+    /// Gates the most recently added rule behind a runtime predicate. The rule runs only when
+    /// <paramref name="predicate"/> returns true; otherwise it is skipped (passes through).
+    /// Useful for per-request enabling - e.g. disabling the English-centric Defender classifier
+    /// for non-English users by inspecting an ambient <c>IHttpContextAccessor</c> (ClaimsPrincipal,
+    /// locale) captured in the predicate closure, or by reading <c>GuardrailContext.Properties</c>.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">No rule has been added yet.</exception>
+    public GuardrailPolicyBuilder When(Func<GuardrailContext, bool> predicate)
+    {
+        ArgumentNullException.ThrowIfNull(predicate);
+        WrapLast(inner => new ConditionalGuardrailRule(inner, predicate));
+        return this;
+    }
+
+    /// <summary>
+    /// Gates the most recently added rule behind an asynchronous runtime predicate.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">No rule has been added yet.</exception>
+    public GuardrailPolicyBuilder When(Func<GuardrailContext, CancellationToken, ValueTask<bool>> predicate)
+    {
+        ArgumentNullException.ThrowIfNull(predicate);
+        WrapLast(inner => new ConditionalGuardrailRule(inner, predicate));
+        return this;
+    }
+
+    /// <summary>
+    /// Skips the most recently added rule when <paramref name="predicate"/> returns true
+    /// (the inverse of <see cref="When(Func{GuardrailContext, bool})"/>).
+    /// </summary>
+    /// <exception cref="InvalidOperationException">No rule has been added yet.</exception>
+    public GuardrailPolicyBuilder Unless(Func<GuardrailContext, bool> predicate)
+    {
+        ArgumentNullException.ThrowIfNull(predicate);
+        return When(ctx => !predicate(ctx));
+    }
+
+    /// <summary>
+    /// Skips the most recently added rule when the asynchronous <paramref name="predicate"/> returns true.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">No rule has been added yet.</exception>
+    public GuardrailPolicyBuilder Unless(Func<GuardrailContext, CancellationToken, ValueTask<bool>> predicate)
+    {
+        ArgumentNullException.ThrowIfNull(predicate);
+        return When(async (ctx, ct) => !await predicate(ctx, ct).ConfigureAwait(false));
+    }
+
+    private void WrapLast(Func<IGuardrailRule, IGuardrailRule> wrap)
+    {
+        if (_rules.Count == 0)
+            throw new InvalidOperationException("When()/Unless() must be called after a rule has been added.");
+        _rules[^1] = wrap(_rules[^1]);
+    }
 
     public GuardrailPolicyBuilder AddRule(string name, GuardrailPhase phase,
         Func<GuardrailContext, CancellationToken, ValueTask<GuardrailResult>> evaluate, int order = 100)

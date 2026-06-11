@@ -153,26 +153,13 @@ Blocklist matches include metadata in the result:
 
 A well-designed guardrail pipeline uses **both** - Prompt Shields to stop manipulation attacks, and text analysis to stop harmful content.
 
-### Benchmark: Prompt Injection Dataset
+Prompt Shield offers strong precision with moderate recall on diverse prompt injection inputs - it catches jailbreaks, role-play persona hijacking, system prompt overrides, and encoding attacks while keeping false positives low. Combined with the local multi-head Defender classifier for breadth, it adds a complementary cloud-based detection signal.
 
-Evaluated on 500 samples from [jayavibhav/prompt-injection-safety](https://huggingface.co/datasets/jayavibhav/prompt-injection-safety) (free tier, 5 RPS, ~77s runtime):
-
-| Classifier | Precision | Recall | F1 | Notes |
-|------------|-----------|--------|----|-------|
-| Azure Prompt Shield | 85.9% | 35.6% | 50.3% | 79 TP, 13 FP, 143 FN, 265 TN, 0 errors |
-
-Prompt Shield achieves strong precision (85.9%) with moderate recall (35.6%) on a diverse prompt injection dataset. It catches a meaningful proportion of attacks — including jailbreaks, role-play persona hijacking, system prompt overrides, and encoding attacks — while keeping false positives low. Combined with local classifiers like Defender (F1 ~97%) for breadth, Prompt Shield adds a complementary cloud-based detection signal.
-
-> **Note on benchmark reliability**: The client includes 429 retry logic (3 attempts with `Retry-After` backoff). Results include an error count (`ERR=N`) — if non-zero, the benchmark prints a warning that results may be unreliable. The numbers above were measured with 0 errors. Runtime is dominated by the free tier's 5 RPS limit; a paid tier would complete significantly faster.
-
-Run the benchmark:
-```bash
-dotnet run --project eng/benchmark -- --prompt-shield --limit=500
-```
+> Published comparison numbers were temporarily removed pending a full re-benchmark on a held-out dataset (see CLAUDE.md "Needs Work"). The previous figures were measured on `jayavibhav/prompt-injection-safety`, which is now part of the bundled Defender model's training set.
 
 ## Protected Material Detection
 
-Azure Content Safety can detect copyrighted text (song lyrics, articles, recipes) and code from GitHub repositories in LLM-generated output. No C# SDK exists for these APIs — AgentGuard provides the only .NET client.
+Azure Content Safety can detect copyrighted text (song lyrics, articles, recipes) and code from GitHub repositories in LLM-generated output. No C# SDK exists for these APIs - AgentGuard provides the only .NET client.
 
 ### Text Detection
 
@@ -220,7 +207,7 @@ Code content is taken from `GuardrailContext.Properties["Code"]` (string), or fa
 
 ## Fail-Open Behavior
 
-All Azure clients (Prompt Shield, Content Safety, Protected Material) fail open on errors — they return non-blocking results so the agent continues. Error results include `IsError = true` so callers can distinguish "checked and clean" from "failed to check". Override by wrapping with your own fail-closed implementation.
+All Azure clients (Prompt Shield, Content Safety, Protected Material) fail open on errors - they return non-blocking results so the agent continues. Error results include `IsError = true` so callers can distinguish "checked and clean" from "failed to check". Override by wrapping with your own fail-closed implementation.
 
 ## Cost
 
