@@ -23,6 +23,7 @@ public sealed class DefenderPromptInjectionRule : IGuardrailRule, IDisposable
 {
     private readonly DefenderModelSession _session;
     private readonly DefenderPromptInjectionOptions _options;
+    private bool _disposed;
 
     /// <inheritdoc />
     public string Name => "defender-prompt-injection";
@@ -51,7 +52,7 @@ public sealed class DefenderPromptInjectionRule : IGuardrailRule, IDisposable
         var modelPath = ResolveModelPath(_options.ModelPath, "model_quantized.onnx");
         var vocabPath = ResolveModelPath(_options.VocabPath, "vocab.txt");
 
-        _session = new DefenderModelSession(modelPath, vocabPath, _options.MaxTokenLength, _options.TemperatureT);
+        _session = DefenderModelSession.Acquire(modelPath, vocabPath, _options.MaxTokenLength, _options.TemperatureT);
     }
 
     /// <summary>
@@ -112,6 +113,9 @@ public sealed class DefenderPromptInjectionRule : IGuardrailRule, IDisposable
     /// <inheritdoc />
     public void Dispose()
     {
+        if (_disposed)
+            return;
+        _disposed = true;
         _session.Dispose();
     }
 

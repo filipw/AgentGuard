@@ -443,8 +443,6 @@ var policy = new GuardrailPolicyBuilder()
     .Build();
 ```
 
-(Constructing two rules loads the ONNX model twice; for the bundled ~22 MB model this is usually fine, but for a single shared session you can implement a custom rule that reads the threshold from context.)
-
 **Gate by a value set on the context** (standalone pipeline - the caller populates `Properties`):
 
 ```csharp

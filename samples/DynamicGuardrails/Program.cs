@@ -15,6 +15,7 @@
 // This is expressed as two gated Defender rules (both order 11); only one fires per request:
 //   - English users  -> sensitive threshold (0.5), the model's strength
 //   - non-English     -> conservative threshold (0.9), high-confidence attacks only
+// The two rules share one pooled ONNX session (reference-counted by model file)
 //
 // The decision is driven by request context. In a standalone pipeline the caller can put the
 // language on GuardrailContext.Properties; in ASP.NET the predicate would instead read an ambient
