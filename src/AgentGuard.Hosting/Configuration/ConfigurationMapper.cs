@@ -88,7 +88,7 @@ internal static class ConfigurationMapper
                 {
                     // map the generic config threshold onto the multi-head main-head threshold;
                     // aux veto and temperature use the model-calibrated defaults
-                    MainThreshold = rule.Threshold ?? 0.5f
+                    MainThreshold = rule.Threshold ?? 0.75f
                 });
                 break;
 
