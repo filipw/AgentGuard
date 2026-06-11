@@ -279,7 +279,7 @@ public static class AgentGuardMiddlewareExtensions
         outputActivity?.SetTag(AgentGuardTelemetry.Tags.ToolCallCount, toolCalls.Count);
 
         // safety-net: extract any tool results that landed in the response messages
-        // (covers tools that bypass FunctionInvokingChatClient — e.g. hosted tools, MCP)
+        // (covers tools that bypass FunctionInvokingChatClient - e.g. hosted tools, MCP)
         var toolResults = ExtractToolResults(response.Messages);
 
         // nothing to evaluate if no text, tool calls, or tool results

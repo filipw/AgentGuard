@@ -454,7 +454,7 @@ foreach (var (name, classify, disposable) in classifiers)
     if (errors > 0)
     {
         var pct = (double)errors / texts.Count * 100;
-        Console.WriteLine($"{"",42} *** WARNING: {errors}/{texts.Count} ({pct:F1}%) API calls failed — results may be unreliable ***");
+        Console.WriteLine($"{"",42} *** WARNING: {errors}/{texts.Count} ({pct:F1}%) API calls failed - results may be unreliable ***");
     }
 
     if (isFirst && showErrors > 0)

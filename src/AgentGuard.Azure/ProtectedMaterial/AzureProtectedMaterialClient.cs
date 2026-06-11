@@ -210,7 +210,7 @@ public sealed partial class AzureProtectedMaterialClient : IDisposable
     [LoggerMessage(Level = LogLevel.Warning, Message = "Azure Protected Material rate limited, retry {Attempt}/{MaxRetries} after {RetryAfter}")]
     private static partial void LogRateLimited(ILogger logger, int attempt, int maxRetries, TimeSpan retryAfter);
 
-    [LoggerMessage(Level = LogLevel.Error, Message = "Azure Protected Material rate limit retries exhausted after {MaxRetries} attempts — failing open")]
+    [LoggerMessage(Level = LogLevel.Error, Message = "Azure Protected Material rate limit retries exhausted after {MaxRetries} attempts - failing open")]
     private static partial void LogRetryExhausted(ILogger logger, int maxRetries);
 
     // --- JSON DTOs ---

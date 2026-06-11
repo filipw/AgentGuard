@@ -30,5 +30,6 @@
     <Project Path="samples/ChatClientGuardrails/ChatClientGuardrails.csproj" />
     <Project Path="samples/ToolCallGuardrails/ToolCallGuardrails.csproj" />
     <Project Path="samples/ToolResultGuardrails/ToolResultGuardrails.csproj" />
+    <Project Path="samples/DynamicGuardrails/DynamicGuardrails.csproj" />
   </Folder>
 </Solution>

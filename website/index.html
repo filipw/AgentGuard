@@ -147,7 +147,7 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
     <div class="feature-grid">
       <div class="feature-card">
         <h3>Prompt Injection Detection</h3>
-        <p>Six-tier defense: regex patterns (from Arcanum taxonomy), bundled StackOne Defender ONNX model (F1 ~0.97, ~8ms, no download), optional DeBERTa v3, remote ML classifier (Sentinel-v2 via HTTP), Azure Prompt Shields (jailbreaks + indirect injection), and LLM-as-judge with structured threat classification.</p>
+        <p>Six-tier defense: regex patterns (from Arcanum taxonomy), bundled StackOne Defender multi-head ONNX model (minilm-multihead-v5, calibrated dual-head, ~8ms, no download), optional DeBERTa v3, remote ML classifier (Sentinel-v2 via HTTP), Azure Prompt Shields (jailbreaks + indirect injection), and LLM-as-judge with structured threat classification.</p>
       </div>
       <div class="feature-card">
         <h3>PII Redaction</h3>
@@ -170,6 +170,10 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
         <p>Guard tool call arguments against SQL injection, code injection, SSRF, and more. Detect indirect prompt injection in tool results (emails, documents). Filter RAG chunks for injection and secrets before they reach the LLM context.</p>
       </div>
       <div class="feature-card">
+        <h3>Dynamic Rule Enabling</h3>
+        <p>Gate any rule per request with <code>.When()</code> / <code>.Unless()</code>. The predicate sees the guardrail context and can capture ambient services like <code>IHttpContextAccessor</code> &mdash; enable, disable, or retune a rule based on <code>ClaimsPrincipal</code>, tenant, feature flag, or detected language (e.g. run the English-centric Defender classifier at a higher threshold for non-English users).</p>
+      </div>
+      <div class="feature-card">
         <h3>Observability (OpenTelemetry)</h3>
         <p>Built-in spans and metrics for every pipeline run, rule evaluation, re-ask attempt, and streaming retraction. Uses <code>System.Diagnostics</code> &mdash; no SDK dependency. Works with Aspire Dashboard, Jaeger, Zipkin, and any OTel collector.</p>
       </div>
@@ -177,66 +181,6 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
   </div>
 </section>
 
-<!-- ── Benchmark ─────────────────────────────────── -->
-<section id="benchmark">
-  <p class="section-label">Benchmark</p>
-  <h2 class="section-title">Measured, not marketed.</h2>
-  <p class="section-subtitle">
-    Prompt injection detection benchmarked on 500 adversarial samples from
-    <a href="https://huggingface.co/datasets/jayavibhav/prompt-injection-safety">jayavibhav/prompt-injection-safety</a>.
-  </p>
-
-  <table class="benchmark-table">
-    <thead>
-      <tr>
-        <th>Classifier</th>
-        <th>Precision</th>
-        <th>Recall</th>
-        <th>F1</th>
-      </tr>
-    </thead>
-    <tbody>
-      <tr class="benchmark-highlight">
-        <td>StackOne Defender (bundled)</td>
-        <td>96.9%</td>
-        <td>97.3%</td>
-        <td><strong>97.1%</strong></td>
-      </tr>
-      <tr>
-        <td>DeBERTa v3 ONNX</td>
-        <td>50.7%</td>
-        <td>99.1%</td>
-        <td>67.1%</td>
-      </tr>
-      <tr>
-        <td>Local LLM (gpt-oss-20b)</td>
-        <td>100%</td>
-        <td>40.5%</td>
-        <td>57.7%</td>
-      </tr>
-      <tr>
-        <td>Regex (all levels)</td>
-        <td>100%</td>
-        <td>3.6%</td>
-        <td>7.0%</td>
-      </tr>
-      <tr>
-        <td>Azure Prompt Shield</td>
-        <td>85.9%</td>
-        <td>35.6%</td>
-        <td>50.3%</td>
-      </tr>
-    </tbody>
-  </table>
-  <p class="benchmark-note">
-    Defender runs in ~8ms with zero configuration - the model ships inside the NuGet package.
-    Combine tiers for defense in depth: regex short-circuits obvious attacks, Defender catches the rest.
-  </p>
-  <p class="benchmark-note">
-    All benchmarks on 2020 M1 MacBook Air. Local LLM (gpt-oss-20b) served from 2025 M4 Pro Mac Mini via LM Studio.
-    Azure Prompt Shield on free tier (5 RPS). All classifiers ran with 0 errors across 500 samples.
-  </p>
-</section>
 
 <!-- ── Rules ──────────────────────────────────────── -->
 <section id="rules">
@@ -411,7 +355,7 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
   <div class="package-grid">
     <div class="package-card">
       <div class="package-name">AgentGuard</div>
-      <div class="package-desc">All-in-one package. Core rules engine, bundled Defender ONNX model (F1 ~0.97), and offline classifiers. No agent framework dependency.</div>
+      <div class="package-desc">All-in-one package. Core rules engine, bundled Defender multi-head ONNX model (minilm-multihead-v5), and offline classifiers. No agent framework dependency.</div>
     </div>
     <div class="package-card">
       <div class="package-name">AgentGuard.AgentFramework</div>
