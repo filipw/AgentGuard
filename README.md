@@ -78,8 +78,8 @@ var guardedAgent = agent
 - **Token limits** - enforces input/output token budgets using `Microsoft.ML.Tokenizers` (cl100k_base) with configurable overflow strategies (Reject/Truncate/Warn)
 - **Secrets detection** - detects API keys (AWS, GitHub, Azure, Slack), JWT tokens, private keys, connection strings, bearer tokens. Block or redact actions with custom patterns and optional Shannon entropy-based detection
 - **Content safety** - severity-based filtering via pluggable `IContentSafetyClassifier` (Azure AI Content Safety adapter included). Detects harmful content (hate, violence, self-harm, sexual) - a complementary layer to prompt injection detection, not a substitute for it
-- **Azure Prompt Shields** - dedicated prompt injection detection via Azure AI Content Safety's Prompt Shield API (`text:shieldPrompt`). Detects user prompt attacks (jailbreaks, role-play, encoding attacks) and document attacks (indirect injection in grounded content). **F1 50.3%** (85.9% precision, 35.6% recall) on adversarial benchmarks — complements the local multi-head Defender model with a cloud-based signal. Order 14. Install via `AgentGuard.Azure` package
-- **Azure Protected Material detection** - detects copyrighted text (lyrics, articles, recipes) and code from GitHub repositories in LLM-generated output via `text:detectProtectedMaterial` and `text:detectProtectedMaterialForCode`. Code detection returns license info and source URLs. No C# SDK exists for these APIs — AgentGuard provides the only .NET client. Output phase (order 76), supports Block/Warn actions. Install via `AgentGuard.Azure` package
+- **Azure Prompt Shields** - dedicated prompt injection detection via Azure AI Content Safety's Prompt Shield API (`text:shieldPrompt`). Detects user prompt attacks (jailbreaks, role-play, encoding attacks) and document attacks (indirect injection in grounded content). Complements the local multi-head Defender model with a cloud-based signal. Order 14. Install via `AgentGuard.Azure` package
+- **Azure Protected Material detection** - detects copyrighted text (lyrics, articles, recipes) and code from GitHub repositories in LLM-generated output via `text:detectProtectedMaterial` and `text:detectProtectedMaterialForCode`. Code detection returns license info and source URLs. No C# SDK exists for these APIs - AgentGuard provides the only .NET client. Output phase (order 76), supports Block/Warn actions. Install via `AgentGuard.Azure` package
 
 ### RAG & Agentic guardrails (zero-cost, offline)
 
@@ -148,6 +148,7 @@ Fast rules (regex, local) evaluate on every check cycle. Expensive LLM rules onl
 ### Additional features
 
 - **Output validation** - fluent predicate-based assertions on agent responses
+- **Dynamic rule enabling** - gate any rule per request with `.When(predicate)` / `.Unless(predicate)`. The predicate sees the `GuardrailContext` and can capture ambient services (e.g. `IHttpContextAccessor`) to enable/disable a rule based on `ClaimsPrincipal`, tenant, feature flag, or detected language - for instance, running the English-centric Defender classifier at a higher threshold for non-English users instead of accepting its false positives
 - **Custom rules** - implement `IGuardrailRule` to add your own checks with full access to the conversation context
 - **Framework-agnostic core** - use the rules engine standalone or plug into MAF, Semantic Kernel, or any framework
 - **Fully testable** - every rule is a pure function; mock the pipeline, assert the behavior
@@ -156,10 +157,10 @@ Fast rules (regex, local) evaluate on every check cycle. Expensive LLM rules onl
 
 ### Observability (OpenTelemetry)
 
-AgentGuard emits OpenTelemetry-compatible **spans** and **metrics** for every pipeline run, rule evaluation, re-ask attempt, and streaming retraction. All instrumentation uses `System.Diagnostics.Activity` and `System.Diagnostics.Metrics` — no SDK dependency in core packages.
+AgentGuard emits OpenTelemetry-compatible **spans** and **metrics** for every pipeline run, rule evaluation, re-ask attempt, and streaming retraction. All instrumentation uses `System.Diagnostics.Activity` and `System.Diagnostics.Metrics` - no SDK dependency in core packages.
 
 ```csharp
-// With AgentGuard.Hosting — one-liner registration
+// With AgentGuard.Hosting - one-liner registration
 using AgentGuard.Hosting;
 
 builder.Services.AddOpenTelemetry()
@@ -168,7 +169,7 @@ builder.Services.AddOpenTelemetry()
 ```
 
 ```csharp
-// Or register manually — works without AgentGuard.Hosting
+// Or register manually - works without AgentGuard.Hosting
 builder.Services.AddOpenTelemetry()
     .WithTracing(t => t.AddSource("AgentGuard"))
     .WithMetrics(m => m.AddMeter("AgentGuard"));
@@ -176,7 +177,7 @@ builder.Services.AddOpenTelemetry()
 
 **Spans** trace every pipeline run (`agentguard.pipeline.run`), individual rule evaluation (`agentguard.rule.evaluate {name}`), re-ask loops (`agentguard.pipeline.reask`), streaming evaluations (`agentguard.streaming.pipeline`), and middleware entry points (`agentguard.middleware.input`, `agentguard.middleware.output`, `agentguard.middleware.streaming`). Each span includes tags for policy name, phase, outcome, and rule-specific metadata.
 
-**Metrics** include counters for pipeline evaluations, rule evaluations, blocks, re-ask attempts, text modifications, and streaming retractions — plus duration histograms for both pipeline and per-rule execution.
+**Metrics** include counters for pipeline evaluations, rule evaluations, blocks, re-ask attempts, text modifications, and streaming retractions - plus duration histograms for both pipeline and per-rule execution.
 
 **Sensitive data** (input/output text) is **not captured by default**. Opt in via:
 ```csharp
@@ -196,7 +197,7 @@ See the [Observability docs](docs/observability.md) for the full span and metric
 | `AgentGuard.Onnx` | ONNX-based ML classifiers - bundled StackOne Defender multi-head model (minilm-multihead-v5) + optional DeBERTa v3 | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Onnx.svg)](https://www.nuget.org/packages/AgentGuard.Onnx) |
 | `AgentGuard.RemoteClassifier` | Remote ML classifier via HTTP - call Sentinel-v2, Ollama, vLLM, or custom endpoints | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.RemoteClassifier.svg)](https://www.nuget.org/packages/AgentGuard.RemoteClassifier) |
 | `AgentGuard.Local` | Offline classifiers | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Local.svg)](https://www.nuget.org/packages/AgentGuard.Local) |
-| `AgentGuard.Azure` | Azure AI Content Safety: Prompt Shields (injection detection, F1 ~0.503) + protected material detection (text & code with license citations) + text analysis (harmful content) + blocklists | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Azure.svg)](https://www.nuget.org/packages/AgentGuard.Azure) |
+| `AgentGuard.Azure` | Azure AI Content Safety: Prompt Shields (injection detection) + protected material detection (text & code with license citations) + text analysis (harmful content) + blocklists | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Azure.svg)](https://www.nuget.org/packages/AgentGuard.Azure) |
 | `AgentGuard.Hosting` | DI registration, named policy factory, `appsettings.json` config binding | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Hosting.svg)](https://www.nuget.org/packages/AgentGuard.Hosting) |
 
 ## Quick Start
@@ -504,6 +505,8 @@ Rules execute in order of their `Order` property (lower = first). Built-in rules
 - [Workflow Guardrails](samples/WorkflowGuardrails/) - wrapping MAF workflow executors with `.WithGuardrails()` decorator
 - [Output Guardrails](samples/OutputGuardrails/) - LLM output validation (policy, groundedness, copyright)
 - [Tool Call Guardrails](samples/ToolCallGuardrails/) - blocking SQL injection, path traversal, SSRF in agent tool calls
+- [Tool Result Guardrails](samples/ToolResultGuardrails/) - detecting indirect prompt injection in tool results (poisoned emails, documents); standalone rule + MAF function-invocation interception
+- [Dynamic Guardrails](samples/DynamicGuardrails/) - per-request rule enabling with `.When()` / `.Unless()` (e.g. disabling the English-centric Defender classifier for non-English users)
 
 ## Documentation
 

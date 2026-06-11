@@ -95,6 +95,13 @@ builder.BlockPromptInjectionWithDefender()
 builder.BlockPromptInjectionWithDefender(new DefenderPromptInjectionOptions { MainThreshold = 0.93f })
 ```
 
+**Limitations.** The model is a fine-tuned MiniLM and has two known false-positive modes, both measured via a threshold sweep over labeled injection/benign corpora:
+
+- **English-centric.** The model was trained mostly on English and over-fires on non-English benign input (e.g. ordinary German questions). If you serve non-English users, raise `MainThreshold` for that segment rather than disabling the rule (see [Dynamic rule enabling](#dynamic-rule-enabling)). Note the tradeoff: a higher threshold also weakens detection of *native-language* attacks, so pair it with a multilingual classifier for real coverage.
+- **Residual English imperative phrasings.** At the default thresholds a few imperative-but-benign requests still block (e.g. "show me my order history", "show me my account details"). They score ~90% on the main head and the aux veto does not quite clear them. Raise `MainThreshold` (e.g. to 0.93) to rescue these, at a small cost to recall on genuine attacks.
+
+The default thresholds (`MainThreshold` 0.5 / `AuxThreshold` 0.64) match StackOne's cross-validated values and sit near the F1 optimum on in-distribution English data.
+
 ## Prompt Injection Detection (ONNX - DeBERTa v3)
 
 `.BlockPromptInjectionWithDeberta(options)` or `.BlockPromptInjectionWithDeberta(modelPath, tokenizerPath, threshold)`
@@ -412,6 +419,60 @@ When a guardrail modifies text (e.g. PII redaction), the modified text is recons
 `.AddRule(rule)` or `.AddRule(name, phase, evaluate, order)`
 
 Add any `IGuardrailRule` implementation or a delegate-based rule.
+
+---
+
+## Dynamic rule enabling
+
+`.When(predicate)` / `.Unless(predicate)`
+
+Gate the **most recently added** rule behind a runtime predicate, evaluated per request. When the predicate returns false (`.When`) or true (`.Unless`), the rule is skipped and passes through; `Name`, `Phase` and `Order` are preserved so execution order and telemetry are unchanged. Both sync (`Func<GuardrailContext, bool>`) and async (`Func<GuardrailContext, CancellationToken, ValueTask<bool>>`) predicates are supported. Internally this wraps the rule in a `ConditionalGuardrailRule`, which you can also construct directly and pass to `.AddRule(...)`.
+
+The predicate can read the `GuardrailContext` (`Properties`, `AgentName`, `Messages`) and/or capture ambient services in its closure.
+
+**Recommended for the Defender [English-centric limitation](#prompt-injection-detection-onnx---stackone-defender): raise the threshold per-segment rather than disabling.** Add two gated Defender rules (both order 11; only one fires per request) - a sensitive instance for English users and a conservative one for everyone else. Non-English benign text passes the higher bar while high-confidence, language-agnostic attacks still block:
+
+```csharp
+var policy = new GuardrailPolicyBuilder()
+    // sensitive for English users (the language the model handles well)
+    .BlockPromptInjectionWithDefender(new DefenderPromptInjectionOptions { MainThreshold = 0.5f })
+        .When(ctx => IsEnglish(ctx))
+    // conservative for everyone else: high-confidence attacks only, benign non-English passes
+    .BlockPromptInjectionWithDefender(new DefenderPromptInjectionOptions { MainThreshold = 0.9f })
+        .Unless(ctx => IsEnglish(ctx))
+    .Build();
+```
+
+**Gate by a value set on the context** (standalone pipeline - the caller populates `Properties`):
+
+```csharp
+bool IsEnglish(GuardrailContext ctx) =>
+    !ctx.Properties.TryGetValue("language", out var l) || (string)l == "en";
+
+// caller sets the per-request language
+var ctx = new GuardrailContext
+{
+    Text = userInput,
+    Phase = GuardrailPhase.Input,
+    Properties = { ["language"] = userProfile.Language }
+};
+```
+
+**Gate by HttpContext / ClaimsPrincipal** (ASP.NET - the predicate closure captures `IHttpContextAccessor`; it flows correctly because the pipeline runs on the request's async context, so no extra plumbing is needed):
+
+```csharp
+// httpContextAccessor is resolved from DI (AddHttpContextAccessor())
+bool IsEnglish(GuardrailContext _)
+{
+    var user = httpContextAccessor.HttpContext?.User;
+    var lang = user?.FindFirst("locale")?.Value
+        ?? httpContextAccessor.HttpContext?.Features
+            .Get<IRequestCultureFeature>()?.RequestCulture.Culture.TwoLetterISOLanguageName;
+    return lang is null or "en";
+}
+```
+
+The full enable/disable form (`.Unless(predicate)` to skip a rule entirely) is still available and gates any rule on any ambient signal - feature flags, tenant tier, A/B cohort, user role, etc. Prefer raising a threshold over fully disabling a security rule whenever a tuned threshold exists.
 
 ---
 

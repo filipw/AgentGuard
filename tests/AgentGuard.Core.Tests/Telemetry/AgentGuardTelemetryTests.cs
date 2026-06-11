@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using AgentGuard.Core.Abstractions;
@@ -16,8 +17,8 @@ public class AgentGuardTelemetryTests : IDisposable
     private readonly List<Activity> _activities = [];
     private readonly ActivityListener _activityListener;
     private readonly MeterListener _meterListener;
-    private readonly Dictionary<string, List<long>> _counterValues = [];
-    private readonly Dictionary<string, List<double>> _histogramValues = [];
+    private readonly ConcurrentDictionary<string, ConcurrentQueue<long>> _counterValues = new();
+    private readonly ConcurrentDictionary<string, ConcurrentQueue<double>> _histogramValues = new();
 
     public AgentGuardTelemetryTests()
     {
@@ -37,17 +38,9 @@ public class AgentGuardTelemetryTests : IDisposable
                 listener.EnableMeasurementEvents(instrument);
         };
         _meterListener.SetMeasurementEventCallback<long>((instrument, measurement, tags, _) =>
-        {
-            if (!_counterValues.ContainsKey(instrument.Name))
-                _counterValues[instrument.Name] = [];
-            _counterValues[instrument.Name].Add(measurement);
-        });
+            _counterValues.GetOrAdd(instrument.Name, _ => new()).Enqueue(measurement));
         _meterListener.SetMeasurementEventCallback<double>((instrument, measurement, tags, _) =>
-        {
-            if (!_histogramValues.ContainsKey(instrument.Name))
-                _histogramValues[instrument.Name] = [];
-            _histogramValues[instrument.Name].Add(measurement);
-        });
+            _histogramValues.GetOrAdd(instrument.Name, _ => new()).Enqueue(measurement));
         _meterListener.Start();
     }
 

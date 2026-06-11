@@ -1,6 +1,6 @@
 # Observability (OpenTelemetry)
 
-AgentGuard emits OpenTelemetry-compatible spans and metrics for guardrail pipeline evaluations. All instrumentation uses `System.Diagnostics.Activity` and `System.Diagnostics.Metrics` — no hard dependency on the OpenTelemetry SDK in core packages. You bring your own exporter.
+AgentGuard emits OpenTelemetry-compatible spans and metrics for guardrail pipeline evaluations. All instrumentation uses `System.Diagnostics.Activity` and `System.Diagnostics.Metrics` - no hard dependency on the OpenTelemetry SDK in core packages. You bring your own exporter.
 
 ## Setup
 
@@ -85,14 +85,14 @@ invoke_agent (MAF)
 
 | Metric name | Type | Unit | Description |
 |-------------|------|------|-------------|
-| `agentguard.pipeline.evaluations` | Counter | — | Total pipeline runs. Tags: `agentguard.policy.name`, `agentguard.phase`, `agentguard.outcome` |
-| `agentguard.rule.evaluations` | Counter | — | Total individual rule evaluations. Tags: `agentguard.rule.name`, `agentguard.phase`, `agentguard.outcome` |
-| `agentguard.rule.blocks` | Counter | — | Rule evaluations that resulted in a block. Tags: `agentguard.rule.name`, `agentguard.severity` |
+| `agentguard.pipeline.evaluations` | Counter | - | Total pipeline runs. Tags: `agentguard.policy.name`, `agentguard.phase`, `agentguard.outcome` |
+| `agentguard.rule.evaluations` | Counter | - | Total individual rule evaluations. Tags: `agentguard.rule.name`, `agentguard.phase`, `agentguard.outcome` |
+| `agentguard.rule.blocks` | Counter | - | Rule evaluations that resulted in a block. Tags: `agentguard.rule.name`, `agentguard.severity` |
 | `agentguard.pipeline.duration` | Histogram | ms | Pipeline execution duration. Tags: `agentguard.policy.name`, `agentguard.phase`, `agentguard.outcome` |
 | `agentguard.rule.duration` | Histogram | ms | Per-rule execution duration. Tags: `agentguard.rule.name`, `agentguard.phase` |
-| `agentguard.pipeline.reask.attempts` | Counter | — | Re-ask attempts. Tags: `agentguard.policy.name` |
-| `agentguard.pipeline.modifications` | Counter | — | Text modifications (PII redaction, etc.). Tags: `agentguard.policy.name`, `agentguard.phase` |
-| `agentguard.streaming.retractions` | Counter | — | Streaming retractions. Tags: `agentguard.policy.name` |
+| `agentguard.pipeline.reask.attempts` | Counter | - | Re-ask attempts. Tags: `agentguard.policy.name` |
+| `agentguard.pipeline.modifications` | Counter | - | Text modifications (PII redaction, etc.). Tags: `agentguard.policy.name`, `agentguard.phase` |
+| `agentguard.streaming.retractions` | Counter | - | Streaming retractions. Tags: `agentguard.policy.name` |
 
 ## Tag Keys
 

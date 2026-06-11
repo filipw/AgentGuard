@@ -30,7 +30,7 @@
           PackagePath="build/defender-model/" />
   </ItemGroup>
 
-  <!-- MSBuild targets that copy model files to output — build/ for direct refs, buildTransitive/ for transitive refs -->
+  <!-- MSBuild targets that copy model files to output - build/ for direct refs, buildTransitive/ for transitive refs -->
   <ItemGroup>
     <None Include="build/AgentGuard.Onnx.targets"
           Pack="true"
