@@ -21,6 +21,11 @@ internal readonly record struct DefenderScore(float Main, float Aux);
 /// Architecture: BERT WordPiece tokenizer → ONNX inference (mean pooling + dual head baked into graph)
 /// → two logits [main, aux] → temperature scaling → sigmoid → calibrated scores.
 /// Thread-safe: InferenceSession.Run() supports concurrent calls.
+/// <para>
+/// Sessions are shared process-wide via a reference-counted cache keyed by model files and
+/// calibration. Multiple rules pointing at the same model (e.g. several gated Defender rules at
+/// different thresholds) reuse one <see cref="InferenceSession"/>
+/// </para>
 /// </summary>
 /// <remarks>
 /// Based on the StackOne Defender project (https://github.com/StackOneHQ/defender), Apache 2.0 license.
@@ -33,13 +38,54 @@ internal sealed class DefenderModelSession : IDisposable
     private readonly BertTokenizer _tokenizer;
     private readonly int _maxTokenLength;
     private readonly float _temperatureT;
+    private readonly SessionKey? _cacheKey;
 
-    internal DefenderModelSession(string modelPath, string vocabPath, int maxTokenLength, float temperatureT)
+    private readonly record struct SessionKey(string ModelPath, string VocabPath, int MaxTokenLength, float TemperatureT);
+
+    private sealed class CacheEntry
+    {
+        public required DefenderModelSession Session { get; init; }
+        public int RefCount { get; set; }
+    }
+
+    private static readonly Dictionary<SessionKey, CacheEntry> _cache = [];
+    private static readonly object _cacheLock = new();
+
+    private DefenderModelSession(string modelPath, string vocabPath, int maxTokenLength, float temperatureT, SessionKey? cacheKey)
     {
         _session = new InferenceSession(modelPath);
         _tokenizer = BertTokenizer.Create(vocabPath, new BertOptions { LowerCaseBeforeTokenization = true });
         _maxTokenLength = maxTokenLength;
         _temperatureT = temperatureT;
+        _cacheKey = cacheKey;
+    }
+
+    /// <summary>
+    /// Returns a process-wide shared session for the given model, loading it on first use and
+    /// reusing it for subsequent callers. Reference-counted: balance each <see cref="Acquire"/>
+    /// with a <see cref="Dispose"/>; the underlying ONNX session is freed when the count reaches zero.
+    /// </summary>
+    internal static DefenderModelSession Acquire(string modelPath, string vocabPath, int maxTokenLength, float temperatureT)
+    {
+        var key = new SessionKey(modelPath, vocabPath, maxTokenLength, temperatureT);
+        lock (_cacheLock)
+        {
+            if (_cache.TryGetValue(key, out var entry))
+            {
+                entry.RefCount++;
+                return entry.Session;
+            }
+
+            var session = new DefenderModelSession(modelPath, vocabPath, maxTokenLength, temperatureT, key);
+            _cache[key] = new CacheEntry { Session = session, RefCount = 1 };
+            return session;
+        }
+    }
+
+    /// <summary>Number of distinct loaded sessions currently cached. For tests/diagnostics.</summary>
+    internal static int ActiveSessionCount
+    {
+        get { lock (_cacheLock) { return _cache.Count; } }
     }
 
     /// <summary>
@@ -108,6 +154,24 @@ internal sealed class DefenderModelSession : IDisposable
 
     public void Dispose()
     {
-        _session.Dispose();
+        if (_cacheKey is not { } key)
+        {
+            // not from the shared cache (e.g. a directly-constructed instance) — dispose directly
+            _session.Dispose();
+            return;
+        }
+
+        lock (_cacheLock)
+        {
+            if (!_cache.TryGetValue(key, out var entry))
+                return; // already fully released
+
+            entry.RefCount--;
+            if (entry.RefCount <= 0)
+            {
+                _cache.Remove(key);
+                _session.Dispose();
+            }
+        }
     }
 }

@@ -242,6 +242,45 @@ public class DefenderPromptInjectionRuleTests
         options.VocabPath.Should().BeNull();
     }
 
+    // Shared session cache - multiple rules on the same model reuse one InferenceSession
+    // (loads the real bundled model)
+
+    [Fact]
+    public void ShouldShareOneSession_AcrossRulesWithSameModel()
+    {
+        var before = DefenderModelSession.ActiveSessionCount;
+
+        // two rules differing only in threshold (the cache key is model + maxLen + temperature,
+        // not the decision thresholds), so they must share a single loaded session.
+        var r1 = new DefenderPromptInjectionRule(new DefenderPromptInjectionOptions { MainThreshold = 0.5f });
+        try
+        {
+            var afterOne = DefenderModelSession.ActiveSessionCount;
+            afterOne.Should().Be(before + 1, "first rule loads the model");
+
+            var r2 = new DefenderPromptInjectionRule(new DefenderPromptInjectionOptions { MainThreshold = 0.9f });
+            try
+            {
+                DefenderModelSession.ActiveSessionCount.Should().Be(afterOne,
+                    "a second rule on the same model must reuse the cached session, not load a copy");
+            }
+            finally
+            {
+                r2.Dispose();
+            }
+
+            DefenderModelSession.ActiveSessionCount.Should().Be(afterOne,
+                "disposing one holder must not free the session while another still references it");
+        }
+        finally
+        {
+            r1.Dispose();
+        }
+
+        DefenderModelSession.ActiveSessionCount.Should().Be(before,
+            "the session is freed once the last referencing rule is disposed");
+    }
+
     // -----------------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------------
