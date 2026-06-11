@@ -132,6 +132,28 @@ builder.BlockPromptInjection()              // tier 1: regex (order 10)
     .BlockPromptInjectionWithLlm(chatClient) // tier 4: LLM (order 15)
 ```
 
+## Prompt Injection Detection (ONNX - PIGuard)
+
+`.BlockPromptInjectionWithPIGuard(options)` or `.BlockPromptInjectionWithPIGuard(modelPath, tokenizerPath, threshold)`
+
+Order 12, Input phase. Uses the [PIGuard](https://huggingface.co/leolee99/PIGuard) DeBERTa v3 model (ACL 2025, MIT), trained with the "Mitigating Over-defense for Free" strategy. In AgentGuard's own measurements it keeps benign false positives low (over-defense comparable to the bundled Defender) while detecting **indirect / code-style injection far better** than Defender (BIPIA_code recall 96% vs 34%). Fully offline. A heavier model than Defender, so best used as a standalone guard or layered after it. See [`eng/piguard-eval/RESULTS.md`](../eng/piguard-eval/RESULTS.md) for the full benchmark.
+
+**Setup:** Download the model from HuggingFace using the included script:
+```bash
+./eng/download-piguard-model.sh
+# Downloads model.onnx (fp16 ~369MB) + spm.model to ./models/piguard/
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| ModelPath | `string` | *(required)* | Path to the PIGuard ONNX model file |
+| TokenizerPath | `string` | *(required)* | Path to the DeBERTa v3 SentencePiece model (spm.model) |
+| Threshold | `float` | 0.9 | Confidence threshold. The argmax default (0.5) over-blocks; 0.9 is the measured operating point |
+| MaxTokenLength | `int` | 512 | Maximum input token length (truncated if longer) |
+| IncludeConfidence | `bool` | true | Include confidence score in result metadata |
+
+> The model is an ONNX export distributed at [`filip-w/PIGuard-onnx`](https://huggingface.co/filip-w/PIGuard-onnx).
+
 ## Prompt Injection Detection (Remote ML)
 
 `.BlockPromptInjectionWithRemoteClassifier(endpointUrl)` or `.BlockPromptInjectionWithRemoteClassifier(classifier, options?)`

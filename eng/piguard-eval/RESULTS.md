@@ -61,13 +61,17 @@ This does NOT test multilingual *attack* recall (no such set here) - that gap is
 
 | Format | Size | C# accuracy | Verdict |
 |--------|------|-------------|---------|
-| fp32 (`model.onnx`) | 736 MB | exact repro | works; large |
+| fp32 (`model.onnx`) | 736 MB | exact repro | works |
 | int8 dynamic | 243 MB | **broken** (everything passes, BIPIA_code 96%->0%) | unusable - DeBERTa disentangled attention collapses under dynamic int8 |
-| fp16 (onnxconverter_common) | 369 MB | did not load | embedding Cast/Mul left in mixed fp16/fp32; ORT rejects. Fixable via node block-list / ORT transformers optimizer - deferred to Phase 2 |
+| **fp16 (`model_fp16.onnx`)** | **369 MB** | **exact repro (identical to fp32, all datasets)** | **recommended shipping format** |
 
-Net: fp32 is the only format proven to work end-to-end so far. Since PIGuard is a
-BYO-download model (too big to bundle like Defender's 22 MB), 736 MB is acceptable but
-fp16 (~369 MB) is the desirable shipping target once the embedding-op typing is fixed.
+fp16 is the shipping target: half the size, numerically identical (P(injection) deltas
+0.0000 vs fp32; C# dataset numbers match exactly). The naive onnxconverter_common fp16 pass
+leaves stale `Cast` `to` attributes (the int64->FLOAT mask casts) that ORT rejects; the fix
+(`eng/piguard-eval/fp16_onnx.py`) realigns every Cast's `to` attribute with its declared output
+type, recursing into the `If` control-flow subgraphs DeBERTa's export contains. int8 is dead
+(disentangled attention can't take dynamic quant); op-type block lists are pathologically slow
+(O(n^2) cast insertion on 4.5k nodes).
 
 ### Two integration gotchas found
 

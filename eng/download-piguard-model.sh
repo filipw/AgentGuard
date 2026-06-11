@@ -15,10 +15,11 @@
 
 set -euo pipefail
 
-# published ONNX export (derivative of leolee99/PIGuard, MIT). Override PIGUARD_ONNX_URL to
-# point elsewhere (e.g. a mirror or a future fp16 build).
+# published ONNX export (derivative of leolee99/PIGuard, MIT). Defaults to the fp16 build
+# (~369 MB, numerically identical to fp32). For the full fp32 model set
+# PIGUARD_ONNX_URL=https://huggingface.co/filip-w/PIGuard-onnx/resolve/main/model.onnx
 PIGUARD_REPO="${PIGUARD_REPO:-filip-w/PIGuard-onnx}"
-PIGUARD_ONNX_URL="${PIGUARD_ONNX_URL:-https://huggingface.co/${PIGUARD_REPO}/resolve/main/model.onnx}"
+PIGUARD_ONNX_URL="${PIGUARD_ONNX_URL:-https://huggingface.co/${PIGUARD_REPO}/resolve/main/model_fp16.onnx}"
 
 # the SentencePiece tokenizer (deberta-v3-base spm.model) is mirrored in the same repo
 SPM_URL="${SPM_URL:-https://huggingface.co/${PIGUARD_REPO}/resolve/main/spm.model}"

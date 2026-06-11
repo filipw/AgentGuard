@@ -25,3 +25,28 @@ See the License for the specific language governing permissions and
 limitations under the License.
 
 -------------------------------------------------------------------------------
+
+PIGuard prompt-injection model (optional, downloaded separately)
+
+Source:  https://huggingface.co/leolee99/PIGuard
+         "PIGuard: Prompt Injection Guardrail via Mitigating Overdefense for Free",
+         ACL 2025 (https://aclanthology.org/2025.acl-long.1468/).
+ONNX export distributed at https://huggingface.co/filip-w/PIGuard-onnx
+Tokenizer / backbone: https://huggingface.co/microsoft/deberta-v3-base
+
+The model is NOT bundled with this package; it is fetched on demand via
+eng/download-piguard-model.sh and used by PIGuardPromptInjectionRule.
+
+Copyright (c) the PIGuard authors and Microsoft (deberta-v3-base).
+
+Licensed under the MIT License. Permission is hereby granted, free of charge,
+to any person obtaining a copy of this software and associated documentation
+files (the "Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish, distribute,
+sublicense, and/or sell copies of the Software, and to permit persons to whom
+the Software is furnished to do so, subject to the inclusion of the above
+copyright notice and this permission notice in all copies or substantial
+portions of the Software. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED.
+
+-------------------------------------------------------------------------------
