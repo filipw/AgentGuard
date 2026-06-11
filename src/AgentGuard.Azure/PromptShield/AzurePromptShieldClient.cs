@@ -155,7 +155,7 @@ public sealed partial class AzurePromptShieldClient : IDisposable
     [LoggerMessage(Level = LogLevel.Warning, Message = "Azure Prompt Shield rate limited, retry {Attempt}/{MaxRetries} after {RetryAfter}")]
     private static partial void LogRateLimited(ILogger logger, int attempt, int maxRetries, TimeSpan retryAfter);
 
-    [LoggerMessage(Level = LogLevel.Error, Message = "Azure Prompt Shield rate limit retries exhausted after {MaxRetries} attempts — failing open")]
+    [LoggerMessage(Level = LogLevel.Error, Message = "Azure Prompt Shield rate limit retries exhausted after {MaxRetries} attempts - failing open")]
     private static partial void LogRetryExhausted(ILogger logger, int maxRetries);
 
     // --- JSON DTOs ---
