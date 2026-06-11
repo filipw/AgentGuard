@@ -72,7 +72,7 @@ The model emits two temperature-calibrated scores: a **main** injection score an
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| MainThreshold | `float` | 0.5 | Main-head block threshold (0.0–1.0) |
+| MainThreshold | `float` | 0.75 | Main-head block threshold (0.0–1.0) |
 | AuxThreshold | `float` | 0.64 | Aux-head veto threshold (0.0–1.0); aux at or above this rescues the block |
 | TemperatureT | `float` | 2.41 | Calibration temperature; each logit is divided by this before sigmoid |
 | MaxTokenLength | `int` | 256 | Maximum input token length (truncated if longer) |
@@ -95,12 +95,12 @@ builder.BlockPromptInjectionWithDefender()
 builder.BlockPromptInjectionWithDefender(new DefenderPromptInjectionOptions { MainThreshold = 0.93f })
 ```
 
-**Limitations.** The model is a fine-tuned MiniLM and has two known false-positive modes, both measured via a threshold sweep over labeled injection/benign corpora:
+**Limitations.**
 
-- **English-centric.** The model was trained mostly on English and over-fires on non-English benign input (e.g. ordinary German questions). If you serve non-English users, raise `MainThreshold` for that segment rather than disabling the rule (see [Dynamic rule enabling](#dynamic-rule-enabling)). Note the tradeoff: a higher threshold also weakens detection of *native-language* attacks, so pair it with a multilingual classifier for real coverage.
-- **Residual English imperative phrasings.** At the default thresholds a few imperative-but-benign requests still block (e.g. "show me my order history", "show me my account details"). They score ~90% on the main head and the aux veto does not quite clear them. Raise `MainThreshold` (e.g. to 0.93) to rescue these, at a small cost to recall on genuine attacks.
+- **English-centric.** Trained mostly on English, the model over-fires on non-English benign input (e.g. ordinary German questions). For non-English users, raise `MainThreshold` for that segment rather than disabling the rule (see [Dynamic rule enabling](#dynamic-rule-enabling)). Tradeoff: a higher threshold also weakens detection of *native-language* attacks, so pair it with a multilingual classifier for real coverage.
+- **Residual English imperatives.** A few "show me X" phrasings (e.g. "show me my account details") still block - confidently misscored ~90% with low aux, so no threshold short of ~0.9-0.93 rescues them, and that costs recall.
 
-The default thresholds (`MainThreshold` 0.5 / `AuxThreshold` 0.64) match StackOne's cross-validated values and sit near the F1 optimum on in-distribution English data.
+The default `MainThreshold` is **0.75** (within the F1-optimal plateau on a held-out jailbreak set: ~4× lower false-positive rate than 0.5 for a few points of recall). Raise toward 0.9/0.93 to cut false positives further at a recall cost.
 
 ## Prompt Injection Detection (ONNX - DeBERTa v3)
 
@@ -434,12 +434,10 @@ The predicate can read the `GuardrailContext` (`Properties`, `AgentName`, `Messa
 
 ```csharp
 var policy = new GuardrailPolicyBuilder()
-    // sensitive for English users (the language the model handles well)
-    .BlockPromptInjectionWithDefender(new DefenderPromptInjectionOptions { MainThreshold = 0.5f })
+    .BlockPromptInjectionWithDefender()                  // default threshold for English users
         .When(ctx => IsEnglish(ctx))
-    // conservative for everyone else: high-confidence attacks only, benign non-English passes
     .BlockPromptInjectionWithDefender(new DefenderPromptInjectionOptions { MainThreshold = 0.9f })
-        .Unless(ctx => IsEnglish(ctx))
+        .Unless(ctx => IsEnglish(ctx))                   // conservative for everyone else
     .Build();
 ```
 

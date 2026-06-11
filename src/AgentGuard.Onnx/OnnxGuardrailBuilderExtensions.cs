@@ -29,7 +29,7 @@ public static class OnnxGuardrailBuilderExtensions
     /// model (minilm-multihead-v5, order 11) with a custom main-head threshold.
     /// </summary>
     /// <param name="builder">The policy builder.</param>
-    /// <param name="mainThreshold">Main-head block threshold (0.0-1.0). Default in options: 0.5.</param>
+    /// <param name="mainThreshold">Main-head block threshold (0.0-1.0). Default in options: 0.75.</param>
     /// <returns>The builder for chaining.</returns>
     public static GuardrailPolicyBuilder BlockPromptInjectionWithDefender(
         this GuardrailPolicyBuilder builder,

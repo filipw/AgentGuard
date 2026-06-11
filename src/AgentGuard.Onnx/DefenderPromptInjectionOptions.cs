@@ -30,9 +30,10 @@ public sealed class DefenderPromptInjectionOptions
 
     /// <summary>
     /// Main-head score threshold (0.0–1.0). A block requires the main score to be at or above this.
-    /// Default: 0.5 (StackOne's cross-validated value).
+    /// Default: 0.75 (within the F1-optimal plateau on a held-out jailbreak set; raise toward 0.9 to
+    /// cut false positives further at some cost to recall).
     /// </summary>
-    public float MainThreshold { get; init; } = 0.5f;
+    public float MainThreshold { get; init; } = 0.75f;
 
     /// <summary>
     /// Aux-head veto threshold (0.0–1.0). A candidate block is rescued (vetoed) when the aux score
