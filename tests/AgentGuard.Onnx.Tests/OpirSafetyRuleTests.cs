@@ -1,0 +1,171 @@
+using AgentGuard.Core.Abstractions;
+using FluentAssertions;
+using Xunit;
+
+namespace AgentGuard.Onnx.Tests;
+
+/// <summary>
+/// Unit tests for <see cref="OpirSafetyRule"/> that can be exercised without real model files
+/// (properties, options validation, early-return behaviour).
+/// </summary>
+public class OpirSafetyRuleTests
+{
+    private static OpirSafetyRule CreateRuleWithoutSession() =>
+        new(null!, new OpirSafetyOptions
+        {
+            ModelPath = "/nonexistent/model.onnx",
+            TokenizerPath = "/nonexistent/spm.model",
+            PrefixPath = "/nonexistent/prefix.json"
+        });
+
+    [Fact]
+    public void ShouldHaveCorrectName()
+    {
+        var rule = CreateRuleWithoutSession();
+        rule.Name.Should().Be("opir-content-safety");
+    }
+
+    [Fact]
+    public void ShouldHaveCorrectPhase()
+    {
+        var rule = CreateRuleWithoutSession();
+        rule.Phase.Should().Be(GuardrailPhase.Input);
+    }
+
+    [Fact]
+    public void ShouldHaveCorrectOrder()
+    {
+        var rule = CreateRuleWithoutSession();
+        rule.Order.Should().Be(50);
+    }
+
+    [Fact]
+    public void ShouldDefaultThresholdToZeroPointFive()
+    {
+        var options = new OpirSafetyOptions
+        {
+            ModelPath = "/nonexistent/model.onnx",
+            TokenizerPath = "/nonexistent/spm.model",
+            PrefixPath = "/nonexistent/prefix.json"
+        };
+        options.Threshold.Should().Be(0.5f);
+    }
+
+    [Fact]
+    public void ShouldThrow_WhenModelPathIsNull()
+    {
+#pragma warning disable CS9035 // required member must be set
+        var act = () => new OpirSafetyRule(new OpirSafetyOptions
+        {
+            ModelPath = null!,
+            TokenizerPath = "/nonexistent/spm.model",
+            PrefixPath = "/nonexistent/prefix.json"
+        });
+#pragma warning restore CS9035
+
+        act.Should().Throw<ArgumentException>().WithMessage("*ModelPath*");
+    }
+
+    [Fact]
+    public void ShouldThrow_WhenModelPathDoesNotExist()
+    {
+        var act = () => new OpirSafetyRule(new OpirSafetyOptions
+        {
+            ModelPath = "/nonexistent/does-not-exist.onnx",
+            TokenizerPath = "/nonexistent/spm.model",
+            PrefixPath = "/nonexistent/prefix.json"
+        });
+
+        act.Should().Throw<FileNotFoundException>().WithMessage("*does-not-exist.onnx*");
+    }
+
+    [Fact]
+    public void ShouldThrow_WhenTokenizerPathDoesNotExist()
+    {
+        var modelTemp = Path.GetTempFileName();
+        try
+        {
+            var act = () => new OpirSafetyRule(new OpirSafetyOptions
+            {
+                ModelPath = modelTemp,
+                TokenizerPath = "/nonexistent/spm.model",
+                PrefixPath = "/nonexistent/prefix.json"
+            });
+
+            act.Should().Throw<FileNotFoundException>().WithMessage("*spm.model*");
+        }
+        finally
+        {
+            File.Delete(modelTemp);
+        }
+    }
+
+    [Fact]
+    public void ShouldThrow_WhenPrefixPathDoesNotExist()
+    {
+        var modelTemp = Path.GetTempFileName();
+        var tokenizerTemp = Path.GetTempFileName();
+        try
+        {
+            var act = () => new OpirSafetyRule(new OpirSafetyOptions
+            {
+                ModelPath = modelTemp,
+                TokenizerPath = tokenizerTemp,
+                PrefixPath = "/nonexistent/prefix.json"
+            });
+
+            act.Should().Throw<FileNotFoundException>().WithMessage("*prefix.json*");
+        }
+        finally
+        {
+            File.Delete(modelTemp);
+            File.Delete(tokenizerTemp);
+        }
+    }
+
+    [Fact]
+    public void ShouldThrow_WhenThresholdIsAboveOne()
+    {
+        var modelTemp = Path.GetTempFileName();
+        var tokenizerTemp = Path.GetTempFileName();
+        var prefixTemp = Path.GetTempFileName();
+        try
+        {
+            var act = () => new OpirSafetyRule(new OpirSafetyOptions
+            {
+                ModelPath = modelTemp,
+                TokenizerPath = tokenizerTemp,
+                PrefixPath = prefixTemp,
+                Threshold = 1.1f
+            });
+
+            act.Should().Throw<ArgumentOutOfRangeException>().WithMessage("*Threshold*");
+        }
+        finally
+        {
+            File.Delete(modelTemp);
+            File.Delete(tokenizerTemp);
+            File.Delete(prefixTemp);
+        }
+    }
+
+    [Fact]
+    public async Task ShouldReturnPassed_WhenTextIsEmpty()
+    {
+        var rule = CreateRuleWithoutSession();
+        var ctx = new GuardrailContext { Text = "", Phase = GuardrailPhase.Input };
+        var result = await rule.EvaluateAsync(ctx);
+
+        result.IsBlocked.Should().BeFalse("empty text must pass without invoking the classifier");
+    }
+
+    [Fact]
+    public async Task ShouldReturnPassed_WhenTextIsWhitespace()
+    {
+        var rule = CreateRuleWithoutSession();
+        var ctx = new GuardrailContext { Text = "   ", Phase = GuardrailPhase.Input };
+        var result = await rule.EvaluateAsync(ctx);
+
+        result.IsBlocked.Should().BeFalse("whitespace-only text must pass without invoking the classifier");
+    }
+}

@@ -120,6 +120,52 @@ public static class OnnxGuardrailBuilderExtensions
     }
 
     /// <summary>
+    /// Adds offline, multilingual content-safety detection (order 50) using the Opir-multilang model
+    /// (<c>knowledgator/opir-multitask-multilang-v1.0</c>, GLiClass over mDeBERTa-v3-base, Apache-2.0).
+    /// Scores text against a frozen harm taxonomy (toxicity, hate speech, violence, sexual content,
+    /// self-harm, harassment) in any language and blocks when the strongest per-label probability
+    /// reaches the threshold. Its niche is non-English content safety, where the bundled Defender
+    /// classifier (English-only) and cloud APIs (per-call, PII-bound) leave a gap.
+    /// The ONNX model must be downloaded separately - see <c>eng/download-opir-model.sh</c>.
+    /// </summary>
+    /// <param name="builder">The policy builder.</param>
+    /// <param name="options">Opir options including model, tokenizer, and prefix file paths.</param>
+    /// <returns>The builder for chaining.</returns>
+    public static GuardrailPolicyBuilder BlockUnsafeContentWithOpir(
+        this GuardrailPolicyBuilder builder,
+        OpirSafetyOptions options)
+    {
+        builder.AddRule(new OpirSafetyRule(options));
+        return builder;
+    }
+
+    /// <summary>
+    /// Adds offline, multilingual content-safety detection (order 50) using the Opir-multilang model.
+    /// The ONNX model must be downloaded separately - see <c>eng/download-opir-model.sh</c>.
+    /// </summary>
+    /// <param name="builder">The policy builder.</param>
+    /// <param name="modelPath">Path to the Opir-multilang ONNX model file.</param>
+    /// <param name="tokenizerPath">Path to the mDeBERTa-v3 SentencePiece model file (<c>spm.model</c>).</param>
+    /// <param name="prefixPath">Path to the frozen-taxonomy label-prefix file (<c>prefix.json</c>).</param>
+    /// <param name="threshold">Block threshold (0.0-1.0) on the max per-label probability. Default: 0.5.</param>
+    /// <returns>The builder for chaining.</returns>
+    public static GuardrailPolicyBuilder BlockUnsafeContentWithOpir(
+        this GuardrailPolicyBuilder builder,
+        string modelPath,
+        string tokenizerPath,
+        string prefixPath,
+        float threshold = 0.5f)
+    {
+        return builder.BlockUnsafeContentWithOpir(new OpirSafetyOptions
+        {
+            ModelPath = modelPath,
+            TokenizerPath = tokenizerPath,
+            PrefixPath = prefixPath,
+            Threshold = threshold
+        });
+    }
+
+    /// <summary>
     /// Configures a sensible set of default guardrail rules including:
     /// input normalization (order 5), regex-based prompt injection (order 10),
     /// Defender ML-based prompt injection (order 11), PII redaction (order 20),

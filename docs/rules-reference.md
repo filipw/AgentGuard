@@ -281,6 +281,38 @@ Requires an `IContentSafetyClassifier`. Use `AgentGuard.Azure` for Azure AI Cont
 
 Blocklist matches are checked first and take precedence over category analysis. When a blocklist match is found, the result includes metadata with `blocklistName`, `blocklistItemText`, and `totalMatches`.
 
+## Content Safety (ONNX - Opir, offline multilingual)
+
+`.BlockUnsafeContentWithOpir(options)` or `.BlockUnsafeContentWithOpir(modelPath, tokenizerPath, prefixPath, threshold)`
+
+Order 50, Input phase. Requires `AgentGuard.Onnx`. Uses the [Opir-multilang](https://huggingface.co/knowledgator/opir-multitask-multilang-v1.0) model (GLiClass uni-encoder over mDeBERTa-v3-base, Apache-2.0) to score text against a frozen harm taxonomy - **toxicity, hate speech, violence, sexual content, self-harm, harassment** - in any language. Blocks when the strongest per-label probability reaches the threshold. Fully offline.
+
+This is an **offline, multilingual** content-safety guard - the gap the other classifiers leave open. The bundled Defender is English-only (~0% recall off-English), and cloud content-safety APIs are per-call and PII-bound. Opir-multilang gives genuine non-English coverage locally (≈40-76% recall at 16-36% FPR across de/es/ru/ar/zh/hi on `textdetox/multilingual_toxicity_dataset`). Position it as *complementing* (not replacing) Azure Content Safety, the way Defender is positioned for English injection. See [`eng/opir-eval/RESULTS.md`](../eng/opir-eval/RESULTS.md) for the full benchmark.
+
+**Setup:** Download the model from HuggingFace using the included script:
+```bash
+./eng/download-opir-model.sh
+# Downloads model.onnx (fp16 ~561MB) + spm.model + prefix.json to ./models/opir-multilang/
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| ModelPath | `string` | *(required)* | Path to the Opir-multilang ONNX model file |
+| TokenizerPath | `string` | *(required)* | Path to the mDeBERTa-v3 SentencePiece model (spm.model) |
+| PrefixPath | `string` | *(required)* | Path to the frozen-taxonomy label prefix (prefix.json) |
+| Threshold | `float` | 0.5 | Block threshold on the max per-label probability. Tunable per deployment (FPR is somewhat threshold-sensitive here) |
+| MaxTokenLength | `int` | 512 | Maximum input token length (truncated if longer) |
+| IncludeConfidence | `bool` | true | Include the triggering label, score, and full per-label scores in result metadata |
+
+When blocked, result metadata includes:
+- `label` - the harm category with the highest score (e.g. "hate speech")
+- `confidence` - that label's probability (0.0-1.0)
+- `scores` - per-harm-label probabilities
+- `model` - `opir-multilang-mdeberta-v3`
+- `threshold` - the configured threshold
+
+> The model is a frozen-taxonomy ONNX export distributed at [`filip-w/opir-multilang-onnx`](https://huggingface.co/filip-w/opir-multilang-onnx). The graph also bakes a `safe and benign` sentinel label (excluded from the block decision) that GLiClass needs for calibration.
+
 ## Tool Result Guardrails (Indirect Injection)
 
 `.GuardToolResults(options?)` or `.GuardToolResults(action)`
