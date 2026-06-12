@@ -233,7 +233,7 @@ public class DefenderPromptInjectionRuleTests
     {
         var options = new DefenderPromptInjectionOptions();
 
-        options.MainThreshold.Should().Be(0.5f);
+        options.MainThreshold.Should().Be(0.75f);
         options.AuxThreshold.Should().Be(0.64f);
         options.TemperatureT.Should().Be(2.41f);
         options.MaxTokenLength.Should().Be(256);

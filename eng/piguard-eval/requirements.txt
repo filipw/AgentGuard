@@ -1,0 +1,8 @@
+# Phase-0 PIGuard vs Defender eval harness.
+# CPU-only is fine; this is an offline measurement tool, not shipped code.
+torch>=2.4
+transformers>=4.44
+tokenizers>=0.19
+onnxruntime>=1.18
+numpy>=1.26
+sentencepiece>=0.2

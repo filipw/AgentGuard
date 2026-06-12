@@ -25,16 +25,16 @@ bool IsEnglish() => currentLanguage.Value is null or "en";
 
 var policy = new GuardrailPolicyBuilder()
     .NormalizeInput()
-    .BlockPromptInjectionWithDefender(new DefenderPromptInjectionOptions { MainThreshold = 0.5f })
-        .When(_ => IsEnglish())      // sensitive for English users
+    .BlockPromptInjectionWithDefender()                  // default threshold for English users
+        .When(_ => IsEnglish())
     .BlockPromptInjectionWithDefender(new DefenderPromptInjectionOptions { MainThreshold = 0.9f })
-        .Unless(_ => IsEnglish())    // conservative for everyone else
+        .Unless(_ => IsEnglish())                        // conservative for everyone else
     .Build();
 
 var pipeline = new GuardrailPipeline(policy, NullLogger<GuardrailPipeline>.Instance);
 
 Console.WriteLine("AgentGuard - Dynamic Rule Enabling Demo");
-Console.WriteLine("(English -> Defender @0.5, non-English -> Defender @0.9)");
+Console.WriteLine("(English -> Defender default, non-English -> Defender @0.9)");
 Console.WriteLine(new string('=', 66));
 
 async Task Run(string language, string text)
@@ -48,10 +48,10 @@ async Task Run(string language, string text)
         Console.WriteLine($"            └─ {result.BlockingResult!.Reason}");
 }
 
-Console.WriteLine("\nBenign German question - over-fires at 0.5, passes at the raised 0.9:");
+Console.WriteLine("\nBenign German question - over-fires at the default, passes at the raised 0.9:");
 Console.WriteLine(new string('-', 66));
-await Run("de", "Ist der Atomausstieg sinnvoll?");   // gated to @0.9 -> passes
-await Run("en", "Ist der Atomausstieg sinnvoll?");   // gated to @0.5 -> false positive
+await Run("de", "Wie viel muss ich trainieren, um einen Marathon zu schaffen?");   // @0.9 -> passes
+await Run("en", "Wie viel muss ich trainieren, um einen Marathon zu schaffen?");   // default -> false positive
 
 Console.WriteLine("\nHigh-signal injection still blocks for both segments:");
 Console.WriteLine(new string('-', 66));

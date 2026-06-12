@@ -42,3 +42,7 @@ Thumbs.db
 .claude/
 .benchmark-cache/test.parquet
 GEMINI.md
+
+# defender-sweep downloaded dataset cache
+eng/defender-sweep/.cache/
+eng/models/piguard/

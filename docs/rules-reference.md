@@ -72,7 +72,7 @@ The model emits two temperature-calibrated scores: a **main** injection score an
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| MainThreshold | `float` | 0.5 | Main-head block threshold (0.0–1.0) |
+| MainThreshold | `float` | 0.75 | Main-head block threshold (0.0–1.0) |
 | AuxThreshold | `float` | 0.64 | Aux-head veto threshold (0.0–1.0); aux at or above this rescues the block |
 | TemperatureT | `float` | 2.41 | Calibration temperature; each logit is divided by this before sigmoid |
 | MaxTokenLength | `int` | 256 | Maximum input token length (truncated if longer) |
@@ -95,12 +95,12 @@ builder.BlockPromptInjectionWithDefender()
 builder.BlockPromptInjectionWithDefender(new DefenderPromptInjectionOptions { MainThreshold = 0.93f })
 ```
 
-**Limitations.** The model is a fine-tuned MiniLM and has two known false-positive modes, both measured via a threshold sweep over labeled injection/benign corpora:
+**Limitations.**
 
-- **English-centric.** The model was trained mostly on English and over-fires on non-English benign input (e.g. ordinary German questions). If you serve non-English users, raise `MainThreshold` for that segment rather than disabling the rule (see [Dynamic rule enabling](#dynamic-rule-enabling)). Note the tradeoff: a higher threshold also weakens detection of *native-language* attacks, so pair it with a multilingual classifier for real coverage.
-- **Residual English imperative phrasings.** At the default thresholds a few imperative-but-benign requests still block (e.g. "show me my order history", "show me my account details"). They score ~90% on the main head and the aux veto does not quite clear them. Raise `MainThreshold` (e.g. to 0.93) to rescue these, at a small cost to recall on genuine attacks.
+- **English-centric.** Trained mostly on English, the model over-fires on non-English benign input (e.g. ordinary German questions). For non-English users, raise `MainThreshold` for that segment rather than disabling the rule (see [Dynamic rule enabling](#dynamic-rule-enabling)). Tradeoff: a higher threshold also weakens detection of *native-language* attacks, so pair it with a multilingual classifier for real coverage.
+- **Residual English imperatives.** A few "show me X" phrasings (e.g. "show me my account details") still block - confidently misscored ~90% with low aux, so no threshold short of ~0.9-0.93 rescues them, and that costs recall.
 
-The default thresholds (`MainThreshold` 0.5 / `AuxThreshold` 0.64) match StackOne's cross-validated values and sit near the F1 optimum on in-distribution English data.
+The default `MainThreshold` is **0.75** (within the F1-optimal plateau on a held-out jailbreak set: ~4× lower false-positive rate than 0.5 for a few points of recall). Raise toward 0.9/0.93 to cut false positives further at a recall cost.
 
 ## Prompt Injection Detection (ONNX - DeBERTa v3)
 
@@ -131,6 +131,28 @@ builder.BlockPromptInjection()              // tier 1: regex (order 10)
     .BlockPromptInjectionWithRemoteClassifier(...)  // tier 3: remote ML (order 13)
     .BlockPromptInjectionWithLlm(chatClient) // tier 4: LLM (order 15)
 ```
+
+## Prompt Injection Detection (ONNX - PIGuard)
+
+`.BlockPromptInjectionWithPIGuard(options)` or `.BlockPromptInjectionWithPIGuard(modelPath, tokenizerPath, threshold)`
+
+Order 12, Input phase. Uses the [PIGuard](https://huggingface.co/leolee99/PIGuard) DeBERTa v3 model (ACL 2025, MIT), trained with the "Mitigating Over-defense for Free" strategy. In AgentGuard's own measurements it keeps benign false positives low (over-defense comparable to the bundled Defender) while detecting **indirect / code-style injection far better** than Defender (BIPIA_code recall 96% vs 34%). Fully offline. A heavier model than Defender, so best used as a standalone guard or layered after it. See [`eng/piguard-eval/RESULTS.md`](../eng/piguard-eval/RESULTS.md) for the full benchmark.
+
+**Setup:** Download the model from HuggingFace using the included script:
+```bash
+./eng/download-piguard-model.sh
+# Downloads model.onnx (fp16 ~369MB) + spm.model to ./models/piguard/
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| ModelPath | `string` | *(required)* | Path to the PIGuard ONNX model file |
+| TokenizerPath | `string` | *(required)* | Path to the DeBERTa v3 SentencePiece model (spm.model) |
+| Threshold | `float` | 0.9 | Confidence threshold. The argmax default (0.5) over-blocks; 0.9 is the measured operating point |
+| MaxTokenLength | `int` | 512 | Maximum input token length (truncated if longer) |
+| IncludeConfidence | `bool` | true | Include confidence score in result metadata |
+
+> The model is an ONNX export distributed at [`filip-w/PIGuard-onnx`](https://huggingface.co/filip-w/PIGuard-onnx).
 
 ## Prompt Injection Detection (Remote ML)
 
@@ -434,12 +456,10 @@ The predicate can read the `GuardrailContext` (`Properties`, `AgentName`, `Messa
 
 ```csharp
 var policy = new GuardrailPolicyBuilder()
-    // sensitive for English users (the language the model handles well)
-    .BlockPromptInjectionWithDefender(new DefenderPromptInjectionOptions { MainThreshold = 0.5f })
+    .BlockPromptInjectionWithDefender()                  // default threshold for English users
         .When(ctx => IsEnglish(ctx))
-    // conservative for everyone else: high-confidence attacks only, benign non-English passes
     .BlockPromptInjectionWithDefender(new DefenderPromptInjectionOptions { MainThreshold = 0.9f })
-        .Unless(ctx => IsEnglish(ctx))
+        .Unless(ctx => IsEnglish(ctx))                   // conservative for everyone else
     .Build();
 ```
 
