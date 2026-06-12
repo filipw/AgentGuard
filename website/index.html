@@ -27,7 +27,7 @@
 <section class="hero">
   <h1>Safety controls for<br>.NET AI agents.</h1>
   <p class="subtitle">
-    Composable, testable, declarative guardrails. Block prompt injections, redact PII, enforce topics, validate outputs - in two lines of code.
+    Composable, testable, declarative guardrails. Block prompt injections, redact PII, enforce topics, and validate outputs.
   </p>
   <div class="cta-row">
     <a href="#quickstart" class="btn btn-primary">Get Started</a>
@@ -139,15 +139,15 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
 <section class="alt" id="features">
   <div class="section-inner">
     <p class="section-label">Features</p>
-    <h2 class="section-title">Everything you need.<br>Nothing you don't.</h2>
+    <h2 class="section-title">Rules for input and output.</h2>
     <p class="section-subtitle">
-      21 built-in rules covering the full input/output safety lifecycle. Regex for speed, ONNX ML for accuracy, LLM for nuance.
+      21 built-in rules across the input and output phases - regex, ONNX classifiers, and LLM-as-judge.
     </p>
 
     <div class="feature-grid">
       <div class="feature-card">
         <h3>Prompt Injection Detection</h3>
-        <p>Six-tier defense: regex patterns (from Arcanum taxonomy), bundled StackOne Defender multi-head ONNX model (minilm-multihead-v5, calibrated dual-head, ~8ms, no download), optional DeBERTa v3, remote ML classifier (Sentinel-v2 via HTTP), Azure Prompt Shields (jailbreaks + indirect injection), and LLM-as-judge with structured threat classification.</p>
+        <p>Six tiers: regex patterns (from Arcanum taxonomy), bundled StackOne Defender multi-head ONNX model (minilm-multihead-v5, calibrated dual-head, ~8ms, no download), optional DeBERTa v3 classifiers including PIGuard (strong on indirect / code-style injection), remote ML classifier (Sentinel-v2 via HTTP), Azure Prompt Shields (jailbreaks + indirect injection), and LLM-as-judge with structured threat classification.</p>
       </div>
       <div class="feature-card">
         <h3>PII Redaction</h3>
@@ -163,7 +163,7 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
       </div>
       <div class="feature-card">
         <h3>Input Normalization</h3>
-        <p>Decodes evasion tricks - base64, hex escapes, reversed text, Unicode homoglyphs - before any other rule evaluates. Stops encoding-based attacks cold.</p>
+        <p>Decodes evasion encodings - base64, hex escapes, reversed text, Unicode homoglyphs - before any other rule evaluates, so encoding-based attacks are caught by the downstream rules.</p>
       </div>
       <div class="feature-card">
         <h3>Agentic &amp; RAG Guardrails</h3>
@@ -228,6 +228,12 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
         <td>12</td>
         <td><code>OnnxPromptInjectionRule</code></td>
         <td><span class="badge badge-onnx">ONNX ML (DeBERTa)</span></td>
+        <td>Input</td>
+      </tr>
+      <tr>
+        <td>12</td>
+        <td><code>PIGuardPromptInjectionRule</code></td>
+        <td><span class="badge badge-onnx">ONNX ML (DeBERTa, PIGuard)</span></td>
         <td>Input</td>
       </tr>
       <tr>
@@ -314,6 +320,12 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
         <td><span class="badge badge-llm">LLM</span></td>
         <td>Output</td>
       </tr>
+      <tr>
+        <td>76</td>
+        <td><code>AzureProtectedMaterialRule</code></td>
+        <td><span class="badge badge-plugin">Azure API</span></td>
+        <td>Output</td>
+      </tr>
     </tbody>
   </table>
 </section>
@@ -338,7 +350,7 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
       </div>
       <div class="feature-card">
         <h3>3. Output Guardrails</h3>
-        <p>Tool call injection detection, indirect injection in tool results, PII/secrets redaction, policy compliance, groundedness checking, copyright detection - all before the response reaches the user. Optional <em>re-ask</em> re-prompts the LLM on violations for self-healing responses.</p>
+        <p>Tool call injection detection, indirect injection in tool results, PII/secrets redaction, policy compliance, groundedness checking, copyright detection - all before the response reaches the user. Optional <em>re-ask</em> re-prompts the LLM with the failure reason on violations.</p>
       </div>
     </div>
   </div>
@@ -349,7 +361,7 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
   <p class="section-label">Packages</p>
   <h2 class="section-title">Pick what you need.</h2>
   <p class="section-subtitle">
-    Seven packages, layered. The main <code>AgentGuard</code> package is all you need to start. Add framework adapters, cloud integrations, or remote classifiers as needed.
+    Eight packages, layered. The main <code>AgentGuard</code> package is all you need to start. Add framework adapters, cloud integrations, or remote classifiers as needed.
   </p>
 
   <div class="package-grid">
@@ -409,7 +421,7 @@ var policy = new GuardrailPolicyBuilder()
 
 <!-- ── Re-ask ──────────────────────────────────────── -->
 <section>
-  <p class="section-label">Self-healing <span class="badge badge-experimental">Experimental</span></p>
+  <p class="section-label">Re-ask <span class="badge badge-experimental">Experimental</span></p>
   <h2 class="section-title">Re-ask on violation.</h2>
   <p class="section-subtitle">
     When output guardrails block a response, the pipeline can re-prompt the LLM with the failure reason
@@ -428,7 +440,7 @@ var policy = new GuardrailPolicyBuilder()
 var result = await pipeline.RunAsync(outputContext);
 
 if (result.WasReasked)
-    Console.WriteLine($"Self-healed after {result.ReaskAttemptsUsed} attempt(s)");</code></pre>
+    Console.WriteLine($"Re-asked {result.ReaskAttemptsUsed} time(s)");</code></pre>
 </section>
 
 <!-- ── Observability ───────────────────────────────── -->
@@ -502,6 +514,7 @@ var policy = new GuardrailPolicyBuilder()
     AgentGuard is open source under the <a href="https://github.com/filipw/AgentGuard/blob/main/LICENSE">MIT License</a>.
     Prompt injection patterns informed by the <a href="https://github.com/Arcanum-Sec/arc_pi_taxonomy">Arcanum PI Taxonomy</a>.
     Bundled ML model by <a href="https://github.com/StackOneHQ/defender">StackOne Defender</a> (Apache 2.0).
+    Optional <a href="https://huggingface.co/leolee99/PIGuard">PIGuard</a> model (MIT).
   </p>
 </footer>
 

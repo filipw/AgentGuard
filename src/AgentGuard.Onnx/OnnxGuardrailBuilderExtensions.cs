@@ -29,7 +29,7 @@ public static class OnnxGuardrailBuilderExtensions
     /// model (minilm-multihead-v5, order 11) with a custom main-head threshold.
     /// </summary>
     /// <param name="builder">The policy builder.</param>
-    /// <param name="mainThreshold">Main-head block threshold (0.0-1.0). Default in options: 0.5.</param>
+    /// <param name="mainThreshold">Main-head block threshold (0.0-1.0). Default in options: 0.75.</param>
     /// <returns>The builder for chaining.</returns>
     public static GuardrailPolicyBuilder BlockPromptInjectionWithDefender(
         this GuardrailPolicyBuilder builder,
@@ -71,6 +71,47 @@ public static class OnnxGuardrailBuilderExtensions
         float threshold = 0.5f)
     {
         return builder.BlockPromptInjectionWithDeberta(new OnnxPromptInjectionOptions
+        {
+            ModelPath = modelPath,
+            TokenizerPath = tokenizerPath,
+            Threshold = threshold
+        });
+    }
+
+    /// <summary>
+    /// Adds ONNX-based prompt injection detection (order 12) using the PIGuard DeBERTa v3 model
+    /// (<c>leolee99/PIGuard</c>, ACL 2025, MIT). Trained with the "Mitigating Over-defense for Free"
+    /// strategy: strong on indirect / code-style injection while keeping benign false positives low.
+    /// The ONNX model must be downloaded separately - see <c>eng/download-piguard-model.sh</c>.
+    /// Defaults to a 0.9 threshold (PIGuard's argmax over-blocks; 0.9 is the measured operating point).
+    /// </summary>
+    /// <param name="builder">The policy builder.</param>
+    /// <param name="options">PIGuard model options including model and tokenizer file paths.</param>
+    /// <returns>The builder for chaining.</returns>
+    public static GuardrailPolicyBuilder BlockPromptInjectionWithPIGuard(
+        this GuardrailPolicyBuilder builder,
+        PIGuardPromptInjectionOptions options)
+    {
+        builder.AddRule(new PIGuardPromptInjectionRule(options));
+        return builder;
+    }
+
+    /// <summary>
+    /// Adds ONNX-based prompt injection detection (order 12) using the PIGuard DeBERTa v3 model.
+    /// The ONNX model must be downloaded separately - see <c>eng/download-piguard-model.sh</c>.
+    /// </summary>
+    /// <param name="builder">The policy builder.</param>
+    /// <param name="modelPath">Path to the PIGuard ONNX model file.</param>
+    /// <param name="tokenizerPath">Path to the DeBERTa v3 SentencePiece model file (<c>spm.model</c>).</param>
+    /// <param name="threshold">Confidence threshold (0.0-1.0). Default: 0.9.</param>
+    /// <returns>The builder for chaining.</returns>
+    public static GuardrailPolicyBuilder BlockPromptInjectionWithPIGuard(
+        this GuardrailPolicyBuilder builder,
+        string modelPath,
+        string tokenizerPath,
+        float threshold = 0.9f)
+    {
+        return builder.BlockPromptInjectionWithPIGuard(new PIGuardPromptInjectionOptions
         {
             ModelPath = modelPath,
             TokenizerPath = tokenizerPath,
