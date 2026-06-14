@@ -355,25 +355,49 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
 
     <h3 class="bench-heading">Prompt injection</h3>
     <p class="bench-note">
-      The bundled Defender model (minilm-multihead-v5, ~22&nbsp;MB, ~8&nbsp;ms, no download) is a strong default:
-      <strong>90.6% recall at 0.8% FPR</strong> on held-out jailbreaks (jackhhao). A direct-injection sentence
-      classifier is weaker by design on indirect, code-style payloads hidden in tool results &mdash; the optional
-      PIGuard model (DeBERTa-v3) layers on top to cover those.
+      The real rules head to head on a balanced 25/class held-out sample (jackhhao English jailbreaks,
+      deepset German injections); cells are recall&nbsp;/&nbsp;FPR. The bundled Defender model is the
+      fast default &mdash; on the full jackhhao test split it scores 90.6% / 0.8%. The LLM-as-judge tier
+      (<code>LlmPromptInjectionRule</code>) runs on <strong>any <code>IChatClient</code> you supply &mdash;
+      AgentGuard bundles no LLM</strong>; the two models below are <strong>illustrative bring-your-own
+      examples</strong> (one capable, one tiny), not shipped components. Per-call latency measured on an Apple M4 Pro.
+    </p>
+    <table class="rule-table bench-table">
+      <thead>
+        <tr><th>Classifier</th><th>jackhhao</th><th>deepset (German)</th><th>per call</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>regex (medium)</td><td>60% / 8%</td><td>8% / 0%</td><td>&lt;1 ms</td></tr>
+        <tr><td>Defender (bundled)</td><td>92% / 4%</td><td>64% / 0%</td><td>~8 ms</td></tr>
+        <tr><td>LLM (BYO) &middot; gemma-4-26b-a4b</td><td><strong>96% / 0%</strong></td><td><strong>68% / 0%</strong></td><td>~6 s</td></tr>
+        <tr><td>LLM (BYO) &middot; qwen3-0.6b</td><td>32% / 16%</td><td>16% / 0%</td><td>~1.5 s</td></tr>
+      </tbody>
+    </table>
+    <p class="bench-note">
+      The LLM rows illustrate that quality scales hard with the model you bring: the MoE gemma-4-26b-a4b (~4B active)
+      tops every column, while a tiny 0.6B lands well below Defender. Both happen to run fully locally, so an LLM
+      tier is a real option for offline deployments &mdash; but the model is yours to choose, so budget the latency
+      and pick a capable one. PIGuard isn't in this table: both datasets are in its training set, so its numbers
+      would be optimistic &mdash; it's shown on indirect injection below, where it's held-out.
+    </p>
+
+    <h3 class="bench-heading">Indirect / code-style injection</h3>
+    <p class="bench-note">
+      A direct-injection sentence classifier is weak by design on payloads hidden in tool results. The optional
+      PIGuard model (DeBERTa-v3) is built for these and layers on top of Defender &mdash; held-out indirect set
+      (BIPIA) and an over-defense benign set (NotInject).
     </p>
     <table class="rule-table bench-table">
       <thead>
         <tr><th>Check</th><th>Defender &mdash; bundled</th><th>PIGuard &mdash; optional</th></tr>
       </thead>
       <tbody>
-        <tr><td>Held-out jailbreaks (jackhhao), recall / FPR</td><td>90.6% / 0.8%</td><td>&mdash;</td></tr>
         <tr><td>Indirect / code injection (BIPIA), recall</td><td>34%</td><td><strong>96%</strong></td></tr>
         <tr><td>Over-defense (NotInject benign FPR, lower better)</td><td>10.3%</td><td>8.3%</td></tr>
       </tbody>
     </table>
     <p class="bench-note">
-      Defender handles the common case fast and offline; PIGuard covers its main blind spot. Run them together
-      &mdash; PIGuard after Defender &mdash; rather than choosing one. (jackhhao sits in PIGuard's training data,
-      so a fair held-out recall figure for it isn't available.)
+      Run them together &mdash; PIGuard after Defender &mdash; rather than choosing one.
     </p>
 
     <h3 class="bench-heading">Multilingual content safety</h3>
