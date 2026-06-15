@@ -78,6 +78,7 @@ var guardedAgent = agent
 - **Token limits** - enforces input/output token budgets using `Microsoft.ML.Tokenizers` (cl100k_base) with configurable overflow strategies (Reject/Truncate/Warn)
 - **Secrets detection** - detects API keys (AWS, GitHub, Azure, Slack), JWT tokens, private keys, connection strings, bearer tokens. Block or redact actions with custom patterns and optional Shannon entropy-based detection
 - **Content safety** - severity-based filtering via pluggable `IContentSafetyClassifier` (Azure AI Content Safety adapter included). Detects harmful content (hate, violence, self-harm, sexual) - a complementary layer to prompt injection detection, not a substitute for it
+- **Offline multilingual content safety** - the [Opir](https://huggingface.co/knowledgator/opir-multitask-multilang-v1.0) mDeBERTa-v3 classifier (GLiClass, Apache 2.0) scores toxicity, hate speech, violence, sexual content, self-harm, and harassment in any language, fully offline. A local alternative to the cloud Azure Content Safety adapter for non-English text, when a per-call cloud API isn't an option (offline/sovereign deployments, PII constraints). Order 50, `AgentGuard.Onnx`, separate download (`./eng/download-opir-model.sh`). See [docs/rules-reference.md](docs/rules-reference.md#content-safety-onnx---opir-offline-multilingual)
 - **Azure Prompt Shields** - dedicated prompt injection detection via Azure AI Content Safety's Prompt Shield API (`text:shieldPrompt`). Detects user prompt attacks (jailbreaks, role-play, encoding attacks) and document attacks (indirect injection in grounded content). Complements the local multi-head Defender model with a cloud-based signal. Order 14. Install via `AgentGuard.Azure` package
 - **Azure Protected Material detection** - detects copyrighted text (lyrics, articles, recipes) and code from GitHub repositories in LLM-generated output via `text:detectProtectedMaterial` and `text:detectProtectedMaterialForCode`. Code detection returns license info and source URLs. No C# SDK exists for these APIs - AgentGuard provides the only .NET client. Output phase (order 76), supports Block/Warn actions. Install via `AgentGuard.Azure` package
 
@@ -194,7 +195,7 @@ See the [Observability docs](docs/observability.md) for the full span and metric
 | `AgentGuard` | **All-in-one package**: core rules engine, bundled Defender multi-head ONNX model, offline classifiers | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.svg)](https://www.nuget.org/packages/AgentGuard) |
 | `AgentGuard.Core` | Framework-agnostic core only: abstractions, rules engine, fluent builder, all 21 built-in rules | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Core.svg)](https://www.nuget.org/packages/AgentGuard.Core) |
 | `AgentGuard.AgentFramework` | Microsoft Agent Framework adapter: `UseAgentGuard()` middleware + workflow guardrails via `.WithGuardrails()` | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.AgentFramework.svg)](https://www.nuget.org/packages/AgentGuard.AgentFramework) |
-| `AgentGuard.Onnx` | ONNX-based ML classifiers - bundled StackOne Defender multi-head model (minilm-multihead-v5) + optional DeBERTa v3 and PIGuard classifiers | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Onnx.svg)](https://www.nuget.org/packages/AgentGuard.Onnx) |
+| `AgentGuard.Onnx` | ONNX-based ML classifiers - bundled StackOne Defender multi-head model (minilm-multihead-v5) + optional DeBERTa v3 and PIGuard injection classifiers + Opir multilingual content-safety classifier | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Onnx.svg)](https://www.nuget.org/packages/AgentGuard.Onnx) |
 | `AgentGuard.RemoteClassifier` | Remote ML classifier via HTTP - call Sentinel-v2, Ollama, vLLM, or custom endpoints | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.RemoteClassifier.svg)](https://www.nuget.org/packages/AgentGuard.RemoteClassifier) |
 | `AgentGuard.Local` | Offline classifiers | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Local.svg)](https://www.nuget.org/packages/AgentGuard.Local) |
 | `AgentGuard.Azure` | Azure AI Content Safety: Prompt Shields (injection detection) + protected material detection (text & code with license citations) + text analysis (harmful content) + blocklists | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Azure.svg)](https://www.nuget.org/packages/AgentGuard.Azure) |
@@ -489,6 +490,7 @@ Rules execute in order of their `Order` property (lower = first). Built-in rules
 | 45 | `ToolCallGuardrailRule` | Regex | Output |
 | 47 | `ToolResultGuardrailRule` | Regex | Output |
 | 50 | `ContentSafetyRule` | Pluggable | Both |
+| 50 | `OpirSafetyRule` | ONNX ML (mDeBERTa, multilingual) | Input |
 | 55 | `LlmOutputPolicyRule` | LLM | Output |
 | 65 | `LlmGroundednessRule` | LLM | Output |
 | 75 | `LlmCopyrightRule` | LLM | Output |
@@ -500,6 +502,7 @@ Rules execute in order of their `Order` property (lower = first). Built-in rules
 - [IChatClient Guardrails](samples/ChatClientGuardrails/) - `UseAgentGuard()` IChatClient decorator with history propagation, topic boundary, output guardrails, and streaming
 - [Agent Framework Integration](samples/AgentFrameworkIntegration/) - `UseAgentGuard()` on a MAF agent with RunAsync and streaming
 - [ONNX Guardrails](samples/OnnxGuardrails/) - offline ML-based prompt injection detection with bundled StackOne Defender model + optional DeBERTa v3
+- [Opir Multilingual Guardrails](samples/OpirMultilingualGuardrails/) - offline multilingual content-safety detection (toxicity across German, Spanish, Russian, Arabic, Chinese, Hindi) with `BlockUnsafeContentWithOpir()`
 - [Custom Rules](samples/CustomRules/) - implementing and composing custom guardrail rules
 - [Azure Integration](samples/AzureIntegration/) - using Azure AI Content Safety for production
 - [Workflow Guardrails](samples/WorkflowGuardrails/) - wrapping MAF workflow executors with `.WithGuardrails()` decorator

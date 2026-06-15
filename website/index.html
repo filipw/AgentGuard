@@ -16,6 +16,7 @@
     <ul class="nav-links">
       <li><a href="#features">Features</a></li>
       <li><a href="#rules">Rules</a></li>
+      <li><a href="#benchmarks">Benchmarks</a></li>
       <li><a href="#packages">Packages</a></li>
       <li><a href="https://github.com/filipw/AgentGuard/tree/main/docs">Docs</a></li>
       <li><a href="https://github.com/filipw/AgentGuard">GitHub</a></li>
@@ -141,13 +142,17 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
     <p class="section-label">Features</p>
     <h2 class="section-title">Rules for input and output.</h2>
     <p class="section-subtitle">
-      21 built-in rules across the input and output phases - regex, ONNX classifiers, and LLM-as-judge.
+      22 built-in rules across the input and output phases - regex, ONNX classifiers, and LLM-as-judge.
     </p>
 
     <div class="feature-grid">
       <div class="feature-card">
         <h3>Prompt Injection Detection</h3>
         <p>Six tiers: regex patterns (from Arcanum taxonomy), bundled StackOne Defender multi-head ONNX model (minilm-multihead-v5, calibrated dual-head, ~8ms, no download), optional DeBERTa v3 classifiers including PIGuard (strong on indirect / code-style injection), remote ML classifier (Sentinel-v2 via HTTP), Azure Prompt Shields (jailbreaks + indirect injection), and LLM-as-judge with structured threat classification.</p>
+      </div>
+      <div class="feature-card">
+        <h3>Content Safety</h3>
+        <p>Toxicity, hate speech, violence, sexual content, self-harm, and harassment. Plug in Azure AI Content Safety, or run the offline Opir mDeBERTa classifier for <strong>non-English</strong> text (German, Spanish, Russian, Arabic, Chinese, Hindi) when a per-call cloud API isn't an option.</p>
       </div>
       <div class="feature-card">
         <h3>PII Redaction</h3>
@@ -185,7 +190,7 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
 <!-- ── Rules ──────────────────────────────────────── -->
 <section id="rules">
   <p class="section-label">Built-in Rules</p>
-  <h2 class="section-title">21 rules. Ordered by cost.</h2>
+  <h2 class="section-title">22 rules. Ordered by cost.</h2>
   <p class="section-subtitle">
     Cheap regex checks run first and short-circuit. Expensive LLM calls only run if needed.
   </p>
@@ -303,6 +308,12 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
         <td>Both</td>
       </tr>
       <tr>
+        <td>50</td>
+        <td><code>OpirSafetyRule</code></td>
+        <td><span class="badge badge-onnx">ONNX ML (mDeBERTa, multilingual)</span></td>
+        <td>Input</td>
+      </tr>
+      <tr>
         <td>55</td>
         <td><code>LlmOutputPolicyRule</code></td>
         <td><span class="badge badge-llm">LLM</span></td>
@@ -328,6 +339,93 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
       </tr>
     </tbody>
   </table>
+</section>
+
+<!-- ── Benchmarks ───────────────────────────────── -->
+<section id="benchmarks">
+  <div class="section-inner">
+    <p class="section-label">Benchmarks</p>
+    <h2 class="section-title">How the classifiers compare.</h2>
+    <p class="section-subtitle">
+      The classifiers are complementary, not competing. The bundled Defender model is the fast default
+      for English prompt injection; PIGuard and Opir are optional models you can layer on for cases it
+      isn't built for. Numbers are from held-out datasets &mdash; full method and data in the
+      <code>eng/*-eval</code> RESULTS files. Recall = % of unsafe inputs blocked; FPR = % of safe inputs blocked.
+    </p>
+
+    <h3 class="bench-heading">Prompt injection</h3>
+    <p class="bench-note">
+      The real rules head to head on a balanced 25/class held-out sample (jackhhao English jailbreaks,
+      deepset German injections); cells are recall&nbsp;/&nbsp;FPR. The bundled Defender model is the
+      fast default &mdash; on the full jackhhao test split it scores 90.6% / 0.8%. The LLM-as-judge tier
+      (<code>LlmPromptInjectionRule</code>) runs on <strong>any <code>IChatClient</code> you supply &mdash;
+      AgentGuard bundles no LLM</strong>; the two models below are <strong>illustrative bring-your-own
+      examples</strong> (one capable, one tiny), not shipped components. Per-call latency measured on an Apple M4 Pro.
+    </p>
+    <table class="rule-table bench-table">
+      <thead>
+        <tr><th>Classifier</th><th>jackhhao</th><th>deepset (German)</th><th>per call</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>regex (medium)</td><td>60% / 8%</td><td>8% / 0%</td><td>&lt;1 ms</td></tr>
+        <tr><td>Defender (bundled)</td><td>92% / 4%</td><td>64% / 0%</td><td>~8 ms</td></tr>
+        <tr><td>LLM (BYO) &middot; gemma-4-26b-a4b</td><td><strong>96% / 0%</strong></td><td><strong>68% / 0%</strong></td><td>~6 s</td></tr>
+        <tr><td>LLM (BYO) &middot; qwen3-0.6b</td><td>32% / 16%</td><td>16% / 0%</td><td>~1.5 s</td></tr>
+      </tbody>
+    </table>
+    <p class="bench-note">
+      The LLM rows illustrate that quality scales hard with the model you bring: the MoE gemma-4-26b-a4b (~4B active)
+      tops every column, while a tiny 0.6B lands well below Defender. Both happen to run fully locally, so an LLM
+      tier is a real option for offline deployments &mdash; but the model is yours to choose, so budget the latency
+      and pick a capable one. PIGuard isn't in this table: both datasets are in its training set, so its numbers
+      would be optimistic &mdash; it's shown on indirect injection below, where it's held-out.
+    </p>
+
+    <h3 class="bench-heading">Indirect / code-style injection</h3>
+    <p class="bench-note">
+      A direct-injection sentence classifier is weak by design on payloads hidden in tool results. The optional
+      PIGuard model (DeBERTa-v3) is built for these and layers on top of Defender &mdash; held-out indirect set
+      (BIPIA) and an over-defense benign set (NotInject).
+    </p>
+    <table class="rule-table bench-table">
+      <thead>
+        <tr><th>Check</th><th>Defender &mdash; bundled</th><th>PIGuard &mdash; optional</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Indirect / code injection (BIPIA), recall</td><td>34%</td><td><strong>96%</strong></td></tr>
+        <tr><td>Over-defense (NotInject benign FPR, lower better)</td><td>10.3%</td><td>8.3%</td></tr>
+      </tbody>
+    </table>
+    <p class="bench-note">
+      Run them together &mdash; PIGuard after Defender &mdash; rather than choosing one.
+    </p>
+
+    <h3 class="bench-heading">Multilingual content safety</h3>
+    <p class="bench-note">
+      Content safety is a different job from injection detection. For non-English toxicity you can call Azure AI
+      Content Safety (cloud, billed per call) or run the optional Opir model (mDeBERTa-v3) fully offline. Toxicity
+      on <code>textdetox/multilingual_toxicity_dataset</code>, balanced per language; cells are recall&nbsp;/&nbsp;FPR.
+      textdetox negatives are real, partly borderline social-media comments, so absolute FPRs run high for every model.
+    </p>
+    <table class="rule-table bench-table">
+      <thead>
+        <tr><th>Language</th><th>Opir &mdash; offline</th><th>Azure CS &mdash; cloud</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>German</td><td>72% / 24%</td><td>92% / 52%</td></tr>
+        <tr><td>Spanish</td><td>76% / 24%</td><td>92% / 20%</td></tr>
+        <tr><td>Russian</td><td>52% / 16%</td><td>76% / 8%</td></tr>
+        <tr><td>Arabic</td><td>40% / 36%</td><td>84% / 24%</td></tr>
+        <tr><td>Chinese</td><td>40% / 28%</td><td>44% / 32%</td></tr>
+        <tr><td>Hindi</td><td>56% / 16%</td><td>64% / 4%</td></tr>
+      </tbody>
+    </table>
+    <p class="bench-note">
+      Azure generally leads on recall; Opir trades some of that for running locally, free, and PII-safe, with
+      comparable-or-lower FPR on German and Chinese. Use Opir when you need offline or sovereign deployment;
+      reach for Azure when a cloud call is fine and you want maximum recall.
+    </p>
+  </div>
 </section>
 
 <!-- ── Architecture ───────────────────────────────── -->
@@ -514,7 +612,8 @@ var policy = new GuardrailPolicyBuilder()
     AgentGuard is open source under the <a href="https://github.com/filipw/AgentGuard/blob/main/LICENSE">MIT License</a>.
     Prompt injection patterns informed by the <a href="https://github.com/Arcanum-Sec/arc_pi_taxonomy">Arcanum PI Taxonomy</a>.
     Bundled ML model by <a href="https://github.com/StackOneHQ/defender">StackOne Defender</a> (Apache 2.0).
-    Optional <a href="https://huggingface.co/leolee99/PIGuard">PIGuard</a> model (MIT).
+    Optional <a href="https://huggingface.co/leolee99/PIGuard">PIGuard</a> (MIT) and
+    <a href="https://huggingface.co/knowledgator/opir-multitask-multilang-v1.0">Opir</a> (Apache 2.0) models.
   </p>
 </footer>
 

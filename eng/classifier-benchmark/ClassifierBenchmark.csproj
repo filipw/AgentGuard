@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <!-- standalone eng tool, intentionally not in AgentGuard.slnx so CI doesn't build it.
+         Benchmarks the real AgentGuard injection rules (regex, Defender, LLM-as-judge) side by
+         side on held-out datasets, reporting precision/recall/F1/FPR. -->
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/AgentGuard.Core/AgentGuard.Core.csproj" />
+    <ProjectReference Include="../../src/AgentGuard.Onnx/AgentGuard.Onnx.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.AI.OpenAI" />
+  </ItemGroup>
+</Project>
