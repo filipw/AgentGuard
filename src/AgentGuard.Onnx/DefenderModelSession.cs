@@ -156,7 +156,7 @@ internal sealed class DefenderModelSession : IDisposable
     {
         if (_cacheKey is not { } key)
         {
-            // not from the shared cache (e.g. a directly-constructed instance) — dispose directly
+            // not from the shared cache (e.g. a directly-constructed instance) - dispose directly
             _session.Dispose();
             return;
         }

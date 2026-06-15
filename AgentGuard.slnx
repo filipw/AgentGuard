@@ -31,5 +31,6 @@
     <Project Path="samples/ToolCallGuardrails/ToolCallGuardrails.csproj" />
     <Project Path="samples/ToolResultGuardrails/ToolResultGuardrails.csproj" />
     <Project Path="samples/DynamicGuardrails/DynamicGuardrails.csproj" />
+    <Project Path="samples/OpirMultilingualGuardrails/OpirMultilingualGuardrails.csproj" />
   </Folder>
 </Solution>
