@@ -13,6 +13,7 @@ using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Builders;
 using AgentGuard.Core.Guardrails;
 using AgentGuard.Core.Rules.ContentSafety;
+using AgentGuard.Pii;
 using Azure;
 using Azure.AI.ContentSafety;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -108,7 +109,7 @@ Console.WriteLine("\n\n--- Example 3: Full Pipeline (injection + PII + content s
 var policy3 = new GuardrailPolicyBuilder("full-pipeline")
     .NormalizeInput()
     .BlockPromptInjection()
-    .RedactPII()
+    .RedactPii()
     .BlockHarmfulContent(classifier, new ContentSafetyOptions
     {
         MaxAllowedSeverity = ContentSafetySeverity.Low

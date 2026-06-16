@@ -2,6 +2,7 @@ using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Builders;
 using AgentGuard.Core.Guardrails;
 using AgentGuard.Core.Rules.LLM;
+using AgentGuard.Pii;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
@@ -69,7 +70,7 @@ public class PipelineE2ETests : IClassFixture<LlmTestFixture>
             .NormalizeInput()
             .BlockPromptInjection()
             .DetectPromptInjectionWithLlm(_fixture.ChatClient!, chatOptions: _fixture.ChatOptions)
-            .RedactPII()
+            .RedactPii("[REDACTED]")
             .EnforceTopicBoundaryWithLlm(_fixture.ChatClient!,
                 new LlmTopicGuardrailOptions { AllowedTopics = ["billing", "payments", "account management"] },
                 chatOptions: _fixture.ChatOptions)
@@ -90,7 +91,7 @@ public class PipelineE2ETests : IClassFixture<LlmTestFixture>
     public async Task FullPipeline_ShouldRedactPiiThenPassTopicCheck()
     {
         var policy = new GuardrailPolicyBuilder("pii-then-topic")
-            .RedactPII()
+            .RedactPii("[REDACTED]")
             .EnforceTopicBoundaryWithLlm(_fixture.ChatClient!,
                 new LlmTopicGuardrailOptions { AllowedTopics = ["customer support", "account management"] },
                 chatOptions: _fixture.ChatOptions)

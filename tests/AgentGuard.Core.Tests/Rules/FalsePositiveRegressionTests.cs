@@ -2,9 +2,9 @@ using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Builders;
 using AgentGuard.Core.Guardrails;
 using AgentGuard.Core.Rules.Normalization;
-using AgentGuard.Core.Rules.PII;
 using AgentGuard.Core.Rules.PromptInjection;
 using AgentGuard.Core.Rules.TokenLimits;
+using AgentGuard.Pii;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
@@ -26,7 +26,7 @@ public class FalsePositiveRegressionTests
         var policy = new GuardrailPolicyBuilder("false-positive-test")
             .NormalizeInput()
             .BlockPromptInjection(Sensitivity.High)
-            .RedactPII()
+            .RedactPii()
             .LimitInputTokens(10000)
             .Build();
 

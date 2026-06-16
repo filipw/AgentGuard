@@ -37,7 +37,7 @@ var policy = new GuardrailPolicyBuilder()
     .NormalizeInput()              // decode base64/hex/unicode evasion tricks
     .GuardRetrieval()              // filter poisoned RAG chunks
     .BlockPromptInjection()        // regex-based injection detection
-    .RedactPII(PiiCategory.Email | PiiCategory.Phone | PiiCategory.SSN)
+    .RedactPii(new PiiOptions { Entities = ["EMAIL_ADDRESS", "PHONE_NUMBER", "US_SSN"] })
     .DetectSecrets()               // block API keys, tokens, connection strings
     .EnforceTopicBoundaryWithLlm(chatClient, "customer-support", "billing", "returns")
     .LimitInputTokens(4000)
@@ -138,7 +138,7 @@ AgentGuard works with both `RunAsync` and `RunStreamingAsync` when used with MAF
 ```csharp
 // Enable progressive streaming
 var policy = new GuardrailPolicyBuilder()
-    .RedactPII()
+    .RedactPii()
     .CheckGroundedness(chatClient)
     .UseProgressiveStreaming()  // tokens flow immediately, retract on violation
     .Build();
@@ -219,7 +219,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 var policy = new GuardrailPolicyBuilder()
     .BlockPromptInjection()
-    .RedactPII()
+    .RedactPii()
     .EnforceTopicBoundaryWithLlm(chatClient, "customer-support")
     .OnViolation(v => v.RejectWithMessage("I can only help with customer support topics."))
     .Build();
@@ -248,7 +248,7 @@ using AgentGuard.Core.ChatClient;
 // Wrap any IChatClient - works with OpenAI, Azure OpenAI, Ollama, or any Microsoft.Extensions.AI client
 var guardedClient = chatClient.UseAgentGuard(g => g
     .BlockPromptInjection()
-    .RedactPII()
+    .RedactPii()
     .EnforceTopicBoundaryWithLlm(chatClient, "customer-support")
     .OnViolation(v => v.RejectWithMessage("I can only help with customer support topics."))
 );
@@ -275,7 +275,7 @@ var guardedAgent = agent
     .AsBuilder()
     .UseAgentGuard(g => g
         .BlockPromptInjection()
-        .RedactPII()
+        .RedactPii()
         .EnforceTopicBoundaryWithLlm(chatClient, "customer-support")
         .OnViolation(v => v.RejectWithMessage("I can only help with customer support topics."))
     )
@@ -312,12 +312,12 @@ builder.Services.AddAgentGuard(options =>
 {
     options.DefaultPolicy(policy => policy
         .BlockPromptInjection()
-        .RedactPII()
+        .RedactPii()
         .LimitOutputTokens(2000));
 
     options.AddPolicy("strict", policy => policy
         .BlockPromptInjection(sensitivity: Sensitivity.High)
-        .RedactPII(PiiCategory.All)
+        .RedactPii()
         .EnforceTopicBoundaryWithLlm(sp.GetRequiredService<IChatClient>(), "billing"));
 });
 ```
@@ -362,11 +362,11 @@ using AgentGuard.AgentFramework.Workflows;
 var guardedInput = myInputExecutor.WithGuardrails(b => b
     .NormalizeInput()
     .BlockPromptInjection(Sensitivity.High)
-    .RedactPII());
+    .RedactPii());
 
 // Wrap a typed executor with input + output guardrails
 var guardedProcessor = myProcessorExecutor.WithGuardrails(b => b
-    .RedactPII()
+    .RedactPii()
     .ValidateOutput(text => !text.Contains("internal-only"), "Leaked internal info"));
 
 // Use in your workflow - GuardedExecutor is still an Executor
@@ -430,7 +430,7 @@ var agent = chatClient
         RetrievalFunc = async (query, ct) => await vectorStore.SearchAsync(query, ct),
         GuardrailOptions = new() { DetectPromptInjection = true, DetectSecrets = true }
     }))
-    .UseAgentGuard(g => g.BlockPromptInjection().RedactPII())
+    .UseAgentGuard(g => g.BlockPromptInjection().RedactPii())
     .Build();
 
 // Or standalone - evaluate chunks directly
@@ -482,7 +482,7 @@ Rules execute in order of their `Order` property (lower = first). Built-in rules
 | 13 | `RemotePromptInjectionRule` | Remote ML | Input |
 | 14 | `AzurePromptShieldRule` | Azure API | Input |
 | 15 | `LlmPromptInjectionRule` | LLM | Input |
-| 20 | `PiiRedactionRule` | Regex | Both |
+| 20 | `PiiRule` | Regex + checksum (offline) | Both |
 | 22 | `SecretsDetectionRule` | Regex | Both |
 | 25 | `LlmPiiDetectionRule` | LLM | Both |
 | 35 | `LlmTopicGuardrailRule` | LLM | Input |

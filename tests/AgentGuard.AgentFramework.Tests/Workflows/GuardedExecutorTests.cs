@@ -1,7 +1,7 @@
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Guardrails;
-using AgentGuard.Core.Rules.PII;
 using AgentGuard.Core.Rules.PromptInjection;
+using AgentGuard.Pii;
 using AgentGuard.AgentFramework.Workflows;
 using FluentAssertions;
 using Microsoft.Agents.AI.Workflows;
@@ -237,7 +237,7 @@ public class GuardedExecutorTests
     {
         string? received = null;
         var inner = new TestVoidExecutor("inner", (msg, _) => { received = msg; return ValueTask.CompletedTask; });
-        var policy = new GuardrailPolicy("pii-test", new[] { new PiiRedactionRule() });
+        var policy = new GuardrailPolicy("pii-test", new IGuardrailRule[] { new PiiRule(new PiiOptions { Replacement = "[REDACTED]" }) });
         var guarded = inner.WithGuardrails(policy);
 
         await guarded.HandleAsync("Contact me at user@example.com for details", Mock.Of<IWorkflowContext>());
@@ -274,7 +274,7 @@ public class GuardedExecutorTests
     {
         ChatMessage? received = null;
         var inner = new TestVoidExecutor<ChatMessage>("inner", (msg, _) => { received = msg; return ValueTask.CompletedTask; });
-        var policy = new GuardrailPolicy("pii-test", new[] { new PiiRedactionRule() });
+        var policy = new GuardrailPolicy("pii-test", new IGuardrailRule[] { new PiiRule(new PiiOptions { Replacement = "[REDACTED]" }) });
         var guarded = inner.WithGuardrails(policy);
 
         await guarded.HandleAsync(new ChatMessage(ChatRole.User, "Call me at user@example.com"), Mock.Of<IWorkflowContext>());

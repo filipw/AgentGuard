@@ -9,6 +9,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../AgentGuard.Core/AgentGuard.Core.csproj" />
+    <ProjectReference Include="../AgentGuard.Pii/AgentGuard.Pii.csproj" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.ML.OnnxRuntime" />

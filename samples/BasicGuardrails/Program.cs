@@ -2,11 +2,11 @@
 // Demonstrates standalone rule evaluation without an LLM.
 
 using AgentGuard.Core.Abstractions;
-using AgentGuard.Core.Rules.PII;
 using AgentGuard.Core.Rules.PromptInjection;
+using AgentGuard.Pii;
 
 var injectionRule = new PromptInjectionRule();
-var piiRule = new PiiRedactionRule();
+var piiRule = new PiiRule();
 
 Console.WriteLine("AgentGuard - Basic Guardrails Demo");
 Console.WriteLine(new string('=', 50));

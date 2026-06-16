@@ -1,4 +1,5 @@
 using AgentGuard.Core.Builders;
+using AgentGuard.Pii;
 
 namespace AgentGuard.Onnx;
 
@@ -181,7 +182,7 @@ public static class OnnxGuardrailBuilderExtensions
             .NormalizeInput()
             .BlockPromptInjection()
             .BlockPromptInjectionWithDefender()
-            .RedactPII()
+            .RedactPii()
             .DetectSecrets()
             .GuardToolCalls()
             .GuardToolResults();
