@@ -19,7 +19,7 @@ var policy = new GuardrailPolicyBuilder()
 //   .NormalizeInput()                    (order 5)
 //   .BlockPromptInjection()             (order 10)
 //   .BlockPromptInjectionWithDefender() (order 11)
-//   .RedactPII()                        (order 20)
+//   .RedactPii()                        (order 20)
 //   .DetectSecrets()                    (order 22)
 //   .GuardToolCalls()                   (order 45)
 //   .GuardToolResults()                 (order 47)
@@ -216,19 +216,30 @@ When `IncludeClassification` is true, blocked results include `Metadata` with:
 - `evasion` - e.g. `none`, `base64`, `hex`, `reversed`, `unicode`
 - `confidence` - `high`, `medium`, or `low`
 
-## PII Redaction (Regex)
+## PII Detection & De-identification
 
-`.RedactPII(categories, replacement)`
+`.RedactPii(options?)` or `.RedactPii(replacement, entities?)` (from `AgentGuard.Pii`)
 
-Order 20, Both phases.
+Order 20, Both phases. Offline PII detection and anonymization using validated regex recognizers
+with confidence scoring, overlap resolution, context-aware score boosting, and configurable
+anonymization operators. Inspired by the architecture of Microsoft Presidio (see THIRD_PARTY_NOTICES.txt).
 
-Categories: `Email`, `Phone`, `SSN`, `CreditCard`, `IpAddress`, `DateOfBirth`, `Default`, `All`
+Entity types detected (Stage 1): `CREDIT_CARD` (Luhn), `EMAIL_ADDRESS`, `IBAN_CODE` (mod-97),
+`CRYPTO` (Bitcoin checksum), `IP_ADDRESS`, `URL`, `MAC_ADDRESS`, `PHONE_NUMBER` (libphonenumber),
+`US_SSN`, `US_ITIN`. By default all are detected; pass `Entities` to restrict.
 
-| Option | Type | Default |
+Anonymization operators: `replace` (default, `<ENTITY_TYPE>`), `redact`, `mask`, `hash`,
+`encrypt`/`decrypt` (reversible AES), `keep`, `custom`. Configure per-entity via `Operators`.
+
+| `PiiOptions` | Type | Default |
 |--------|------|---------|
-| Categories | `PiiCategory` | Default (Email, Phone, SSN, CreditCard) |
-| Replacement | `string` | `[REDACTED]` |
-| CustomPatterns | `IDictionary<string, string>` | {} |
+| Entities | `IReadOnlyList<string>?` | null (all entities) |
+| Operators | `IReadOnlyDictionary<string, OperatorConfig>?` | null (replace with `<ENTITY_TYPE>`) |
+| Replacement | `string?` | null (flat replacement, e.g. `[REDACTED]`) |
+| Language | `string` | `en` |
+| ScoreThreshold | `double` | 0.4 |
+| AllowList | `IReadOnlyList<string>?` | null |
+| RedactOutput | `bool` | true (Both phase; false = Input only) |
 
 ## PII Detection (LLM)
 
@@ -429,13 +440,13 @@ Wraps `Executor<TInput>` or `Executor<TInput, TOutput>` with a `GuardedExecutor`
 
 ```csharp
 // Builder overload
-var guarded = executor.WithGuardrails(b => b.BlockPromptInjection().RedactPII());
+var guarded = executor.WithGuardrails(b => b.BlockPromptInjection().RedactPii());
 
 // Pre-built policy overload
 var guarded = executor.WithGuardrails(existingPolicy);
 
 // With options (custom text extractor, logger)
-var guarded = executor.WithGuardrails(b => b.RedactPII(),
+var guarded = executor.WithGuardrails(b => b.RedactPii(),
     new GuardedExecutorOptions { TextExtractor = myExtractor });
 ```
 

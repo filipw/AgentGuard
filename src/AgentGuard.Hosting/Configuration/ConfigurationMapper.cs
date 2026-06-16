@@ -3,10 +3,10 @@ using AgentGuard.Core.Builders;
 using AgentGuard.Core.Rules.ContentSafety;
 using AgentGuard.Core.Rules.LLM;
 using AgentGuard.Core.Rules.Normalization;
-using AgentGuard.Core.Rules.PII;
 using AgentGuard.Core.Rules.PromptInjection;
 using AgentGuard.Core.Rules.TokenLimits;
 using AgentGuard.Onnx;
+using AgentGuard.Pii;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -55,8 +55,11 @@ internal static class ConfigurationMapper
                 break;
 
             case "piiredaction":
-                var categories = ParseEnum<PiiCategory>(rule.Categories, PiiCategory.Default);
-                builder.RedactPII(categories, rule.Replacement ?? "[REDACTED]");
+                builder.RedactPii(new PiiOptions
+                {
+                    Entities = rule.Entities is { Count: > 0 } ? rule.Entities : null,
+                    Replacement = rule.Replacement ?? "[REDACTED]",
+                });
                 break;
 
             case "tokenlimit":

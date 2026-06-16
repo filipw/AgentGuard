@@ -5,10 +5,10 @@
 ```csharp
 builder.Services.AddAgentGuard(options =>
 {
-    options.DefaultPolicy(p => p.BlockPromptInjection().RedactPII().LimitOutputTokens(2000));
+    options.DefaultPolicy(p => p.BlockPromptInjection().RedactPii().LimitOutputTokens(2000));
     options.AddPolicy("strict", p => p
         .BlockPromptInjection(Sensitivity.High)
-        .RedactPII(PiiCategory.All)
+        .RedactPii()
         .EnforceTopicBoundaryWithLlm(sp.GetRequiredService<IChatClient>(), "billing"));
 });
 ```
@@ -49,7 +49,7 @@ builder.Services.AddAgentGuard(builder.Configuration.GetSection("AgentGuard"));
         { "Type": "InputNormalization" },
         { "Type": "PromptInjection", "Sensitivity": "High" },
         { "Type": "OnnxPromptInjection", "ModelPath": "./models/deberta-v3-prompt-injection/model.onnx", "TokenizerPath": "./models/deberta-v3-prompt-injection/spm.model" },
-        { "Type": "PiiRedaction", "Categories": "All", "Replacement": "[REDACTED]" },
+        { "Type": "PiiRedaction", "Entities": ["EMAIL_ADDRESS", "US_SSN"], "Replacement": "[REDACTED]" },
         { "Type": "LlmTopicBoundary", "AllowedTopics": ["billing", "support"] },
         { "Type": "TokenLimit", "MaxTokens": 4000, "Phase": "Input", "OverflowStrategy": "Reject" }
       ],
@@ -59,7 +59,7 @@ builder.Services.AddAgentGuard(builder.Configuration.GetSection("AgentGuard"));
       "strict": {
         "Rules": [
           { "Type": "PromptInjection", "Sensitivity": "High" },
-          { "Type": "PiiRedaction", "Categories": "All" },
+          { "Type": "PiiRedaction" },
           { "Type": "TokenLimit", "MaxTokens": 2000 }
         ]
       }
@@ -75,7 +75,7 @@ builder.Services.AddAgentGuard(builder.Configuration.GetSection("AgentGuard"));
 | `InputNormalization` | `DecodeBase64`, `DecodeHex`, `DetectReversedText`, `NormalizeUnicode` (all bool, default true) | Decodes evasion encodings |
 | `PromptInjection` | `Sensitivity` (Low/Medium/High, default Medium) | Regex-based detection |
 | `OnnxPromptInjection` | `ModelPath` (string, required), `TokenizerPath` (string, required), `Threshold` (float, default 0.5) | Requires `AgentGuard.Onnx` package. Download model via `eng/download-onnx-model.sh` |
-| `PiiRedaction` | `Categories` (Default/All/Email,Phone,...), `Replacement` (default [REDACTED]) | Regex-based redaction |
+| `PiiRedaction` | `Entities` (string[], e.g. EMAIL_ADDRESS/US_SSN/CREDIT_CARD; empty = all), `Replacement` (default [REDACTED]) | Offline PII redaction (`AgentGuard.Pii`); regex + checksum recognizers |
 | `TokenLimit` | `MaxTokens` (int), `Phase` (Input/Output), `OverflowStrategy` (Reject/Truncate/Warn) | Token counting via ML.Tokenizers |
 | `ToolCallGuardrail` | `Categories` (Default/All/SqlInjection,...) | Inspects tool call arguments for injection |
 | `ToolResultGuardrail` | `Action` (Block/Sanitize), `StripUnicodeControl` (bool, default true) | Detects indirect injection in tool results |

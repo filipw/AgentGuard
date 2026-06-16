@@ -6,9 +6,9 @@
 // decorated with AgentGuard.AgentFramework.Workflows' GuardedExecutor decorator.
 
 using AgentGuard.Core.Abstractions;
-using AgentGuard.Core.Rules.PII;
 using AgentGuard.Core.Rules.PromptInjection;
 using AgentGuard.AgentFramework.Workflows;
+using AgentGuard.Pii;
 using Microsoft.Agents.AI.Workflows;
 using Microsoft.Extensions.AI;
 
@@ -24,7 +24,7 @@ var inputExecutor = new InputSanitizer()
     .WithGuardrails(b => b
         .NormalizeInput()
         .BlockPromptInjection(Sensitivity.High)
-        .RedactPII(PiiCategory.Email | PiiCategory.Phone | PiiCategory.SSN)
+        .RedactPii(new PiiOptions { Entities = ["EMAIL_ADDRESS", "PHONE_NUMBER", "US_SSN"] })
         .LimitInputTokens(500));
 
 // Step 2: Data processor - accepts sanitized text, returns a response.
