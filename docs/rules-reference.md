@@ -221,12 +221,27 @@ When `IncludeClassification` is true, blocked results include `Metadata` with:
 `.RedactPii(options?)` or `.RedactPii(replacement, entities?)` (from `AgentGuard.Pii`)
 
 Order 20, Both phases. Offline PII detection and anonymization using validated regex recognizers
-with confidence scoring, overlap resolution, context-aware score boosting, and configurable
+with confidence scoring, overlap resolution, lemma-aware context score boosting, and configurable
 anonymization operators. Inspired by the architecture of Microsoft Presidio (see THIRD_PARTY_NOTICES.txt).
 
-Entity types detected (Stage 1): `CREDIT_CARD` (Luhn), `EMAIL_ADDRESS`, `IBAN_CODE` (mod-97),
-`CRYPTO` (Bitcoin checksum), `IP_ADDRESS`, `URL`, `MAC_ADDRESS`, `PHONE_NUMBER` (libphonenumber),
-`US_SSN`, `US_ITIN`. By default all are detected; pass `Entities` to restrict.
+**Generic entities (always on):** `CREDIT_CARD` (Luhn), `EMAIL_ADDRESS`, `IBAN_CODE` (mod-97),
+`CRYPTO` (Bitcoin checksum), `IP_ADDRESS`, `URL`, `MAC_ADDRESS`, `PHONE_NUMBER` (libphonenumber).
+
+**US pack (always on):** `US_SSN`, `US_ITIN`, `ABA_ROUTING_NUMBER` (checksum), `US_BANK_NUMBER`,
+`US_DRIVER_LICENSE`, `US_PASSPORT`, `US_NPI` (Luhn), `US_MBI`, `MEDICAL_LICENSE` (DEA checksum).
+
+**Country packs (opt-in via `Countries`):** enabling every national identifier at once inflates
+false positives, so non-US packs are opt-in by ISO 3166-1 alpha-2 code:
+
+- `uk`: `UK_NINO`, `UK_NHS` (mod-11), `UK_POSTCODE`, `UK_PASSPORT`, `UK_DRIVING_LICENCE`, `UK_VEHICLE_REGISTRATION`
+- `de`: `DE_ID_CARD` (checksum), `DE_TAX_ID` (checksum), `DE_PASSPORT` (checksum), `DE_PLZ`,
+  `DE_SOCIAL_SECURITY` (checksum), `DE_VAT_ID` (checksum), `DE_FUEHRERSCHEIN`, `DE_KFZ`,
+  `DE_TAX_NUMBER`, `DE_HANDELSREGISTER`
+- `in`: `IN_AADHAAR` (Verhoeff), `IN_PAN`, `IN_GSTIN` (structure), `IN_PASSPORT`, `IN_VOTER`, `IN_VEHICLE_REGISTRATION`
+- `it`: `IT_FISCAL_CODE` (checksum), `IT_VAT_CODE` (checksum), `IT_DRIVER_LICENSE`, `IT_IDENTITY_CARD`, `IT_PASSPORT`
+- `es`: `ES_NIF` (mod-23), `ES_NIE` (mod-23), `ES_PASSPORT`
+
+By default all enabled entities are detected; pass `Entities` to restrict.
 
 Anonymization operators: `replace` (default, `<ENTITY_TYPE>`), `redact`, `mask`, `hash`,
 `encrypt`/`decrypt` (reversible AES), `keep`, `custom`. Configure per-entity via `Operators`.
@@ -234,12 +249,23 @@ Anonymization operators: `replace` (default, `<ENTITY_TYPE>`), `redact`, `mask`,
 | `PiiOptions` | Type | Default |
 |--------|------|---------|
 | Entities | `IReadOnlyList<string>?` | null (all entities) |
+| Countries | `IReadOnlyList<string>?` | null (generic + US only) |
 | Operators | `IReadOnlyDictionary<string, OperatorConfig>?` | null (replace with `<ENTITY_TYPE>`) |
 | Replacement | `string?` | null (flat replacement, e.g. `[REDACTED]`) |
 | Language | `string` | `en` |
 | ScoreThreshold | `double` | 0.4 |
+| ContextMatchingMode | `Substring` / `WholeWord` | `Substring` |
 | AllowList | `IReadOnlyList<string>?` | null |
 | RedactOutput | `bool` | true (Both phase; false = Input only) |
+
+`ContextMatchingMode` controls how a recognizer's context words are matched against the
+(stemmed) tokens around a candidate: `Substring` (default) matches `card` inside `creditcard`;
+`WholeWord` requires an exact token match, reducing false context hits.
+
+```csharp
+// enable UK + German packs on top of the generic + US defaults
+builder.RedactPii(new PiiOptions { Countries = ["uk", "de"] });
+```
 
 ## PII Detection (LLM)
 

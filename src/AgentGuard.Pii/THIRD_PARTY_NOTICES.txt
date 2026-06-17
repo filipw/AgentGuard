@@ -6,9 +6,12 @@ open source software.
 --------------------------------------------------------------------------------
 1. Microsoft Presidio
 --------------------------------------------------------------------------------
-The analyzer recognizers (regex patterns, checksum/validation logic) and the
-anonymizer engine and operators in this package are a C# port of Microsoft
-Presidio (presidio-analyzer and presidio-anonymizer).
+The analyzer recognizers (the generic and country-specific regex patterns,
+checksum/validation logic, and context word lists), the lemma-based context-aware
+score enhancement approach, and the anonymizer engine and operators in this package
+are a C# port of, and adaptation of, Microsoft Presidio (presidio-analyzer and
+presidio-anonymizer). The country recognizer packs ported here cover the United
+States, United Kingdom, Germany, India, Italy and Spain.
 
 Project: https://github.com/microsoft/presidio
 Copyright (c) Microsoft Corporation.
@@ -43,3 +46,12 @@ libphonenumber.
 
 Project: https://github.com/twcclegg/libphonenumber-csharp
 License: Apache-2.0
+
+--------------------------------------------------------------------------------
+3. Public-domain algorithms
+--------------------------------------------------------------------------------
+The context-aware enhancer uses the Porter stemming algorithm (M.F. Porter, 1980),
+which is in the public domain. Several country recognizers use published, public
+checksum algorithms (Luhn, ISO 7064 Mod 11,10, ICAO Doc 9303 Machine Readable
+Travel Document check digit, the Verhoeff scheme, and various national mod-23 /
+mod-26 control characters); these algorithms carry no licensing restriction.

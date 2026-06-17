@@ -28,8 +28,9 @@ public class PatternRecognizer : EntityRecognizer
         IReadOnlyList<string>? context = null,
         double denyListScore = 1.0,
         RegexOptions regexOptions = DefaultRegexOptions,
-        TimeSpan? timeout = null)
-        : base([supportedEntity], name, supportedLanguage, context)
+        TimeSpan? timeout = null,
+        string? countryCode = null)
+        : base([supportedEntity], name, supportedLanguage, context, countryCode)
     {
         if (string.IsNullOrEmpty(supportedEntity))
         {

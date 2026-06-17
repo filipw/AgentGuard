@@ -1,4 +1,5 @@
 using AgentGuard.Pii.Analyzer;
+using AgentGuard.Pii.Analyzer.Context;
 using AgentGuard.Pii.Anonymizer;
 using AgentGuard.Pii.Anonymizer.Operators;
 
@@ -32,6 +33,17 @@ public sealed class PiiOptions
 
     /// <summary>Language of the analyzed text. Defaults to <c>en</c>.</summary>
     public string Language { get; init; } = "en";
+
+    /// <summary>
+    /// Country packs to enable in addition to the generic recognizers and the always-on US pack,
+    /// by ISO 3166-1 alpha-2 code (e.g. <c>uk</c>, <c>de</c>, <c>in</c>, <c>it</c>, <c>es</c>).
+    /// Country packs are opt-in because enabling every national identifier at once inflates false
+    /// positives. When null or empty, only the generic and US recognizers run.
+    /// </summary>
+    public IReadOnlyList<string>? Countries { get; init; }
+
+    /// <summary>How recognizer context words are matched against surrounding tokens. Defaults to substring.</summary>
+    public ContextMatchingMode ContextMatchingMode { get; init; } = ContextMatchingMode.Substring;
 
     /// <summary>
     /// Minimum confidence for a detection to be acted on. Defaults to 0.4 so weak patterns without

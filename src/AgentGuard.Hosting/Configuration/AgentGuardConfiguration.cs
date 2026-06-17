@@ -57,6 +57,11 @@ public sealed class RuleConfiguration
     public List<string>? Entities { get; set; }
     /// <summary>Replacement text for redacted PII. Default: [REDACTED].</summary>
     public string? Replacement { get; set; }
+    /// <summary>
+    /// Country packs to enable in addition to the generic recognizers and the always-on US pack, by
+    /// ISO 3166-1 alpha-2 code (e.g. uk, de, in, it, es). When empty, only generic + US run.
+    /// </summary>
+    public List<string>? Countries { get; set; }
 
     // --- TopicBoundary / LlmTopicBoundary ---
     /// <summary>List of allowed topic names.</summary>
