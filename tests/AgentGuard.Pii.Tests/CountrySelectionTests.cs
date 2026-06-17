@@ -50,6 +50,20 @@ public class CountrySelectionTests
     }
 
     [Fact]
+    public void ShouldNotDuplicatePack_WhenAliasAndCodeBothRequested()
+    {
+        // "gb" and "uk" resolve to the same pack and must not be added twice
+        var registry = PiiRecognizers.CreateRegistry("en", ["uk", "gb"]);
+        registry.Recognizers.Count(r => r.SupportedEntities.Contains("UK_NHS")).Should().Be(1);
+    }
+
+    [Fact]
+    public void ShouldDetectUkEntities_WhenRequestedByGbAlias()
+    {
+        Engine(["gb"]).Analyze("nhs 943 476 5919").Should().Contain(r => r.EntityType == "UK_NHS");
+    }
+
+    [Fact]
     public void ShouldSurfaceWeakCountryEntity_WhenContextBoostsAboveThreshold()
     {
         var engine = Engine(["uk"]);

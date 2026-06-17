@@ -139,6 +139,23 @@ public class CountryRecognizerTests
         r.Analyze("99AAPFU0939F1ZV", All).Should().BeEmpty(); // state code out of range
     }
 
+    [Fact]
+    public void ShouldPromoteVehicleRegistration_WhenStateDistrictValid()
+    {
+        var r = new InVehicleRegistrationRecognizer();
+        // MH (Maharashtra) RTO district 12 is in the map -> promoted to max
+        r.Analyze("MH12AB1234", All).Should().Contain(x => x.Score == EntityRecognizer.MaxScore);
+        // district 99 is not a valid MH RTO -> keeps its base pattern score, never promoted
+        r.Analyze("MH99AB1234", All).Should().NotContain(x => x.Score == EntityRecognizer.MaxScore)
+            .And.NotBeEmpty();
+    }
+
+    [Fact]
+    public void ShouldDetectPan_WhenFormatValid()
+    {
+        new InPanRecognizer().Analyze("ABCPD1234E", All).Should().NotBeEmpty();
+    }
+
     // --- Italy ---
 
     [Fact]

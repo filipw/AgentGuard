@@ -39,10 +39,12 @@ public static class PiiRecognizers
 
         if (countries is { Count: > 0 })
         {
-            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "us" };
+            // dedup on the resolved pack, not the raw code, so aliases (e.g. "gb"/"uk") and the
+            // always-on US pack are never added twice
+            var seen = new HashSet<string>(StringComparer.Ordinal) { "us" };
             foreach (var country in countries)
             {
-                if (seen.Add(country))
+                if (seen.Add(CanonicalCountry(country)))
                 {
                     recognizers.AddRange(CreateForCountry(country, language));
                 }
@@ -65,12 +67,19 @@ public static class PiiRecognizers
         new PhoneRecognizer(supportedLanguage: language),
     ];
 
+    // maps aliases to a single canonical pack code so a pack is never selected twice
+    private static string CanonicalCountry(string country)
+    {
+        var code = country.ToLowerInvariant();
+        return code == "gb" ? "uk" : code;
+    }
+
     /// <summary>
     /// Creates the recognizer pack for a single country (by ISO 3166-1 alpha-2 code,
     /// case-insensitive). Returns an empty list for an unknown code.
     /// </summary>
     public static IReadOnlyList<EntityRecognizer> CreateForCountry(string country, string language = "en") =>
-        country.ToLowerInvariant() switch
+        CanonicalCountry(country) switch
         {
             "us" =>
             [
@@ -84,7 +93,7 @@ public static class PiiRecognizers
                 new UsMbiRecognizer(supportedLanguage: language),
                 new MedicalLicenseRecognizer(supportedLanguage: language),
             ],
-            "uk" or "gb" =>
+            "uk" =>
             [
                 new UkNinoRecognizer(supportedLanguage: language),
                 new UkNhsRecognizer(supportedLanguage: language),
