@@ -267,6 +267,46 @@ Anonymization operators: `replace` (default, `<ENTITY_TYPE>`), `redact`, `mask`,
 builder.RedactPii(new PiiOptions { Countries = ["uk", "de"] });
 ```
 
+### Named-entity recognition (ONNX, offline, multilingual)
+
+`.RedactPiiWithNer(nerOptions, piiOptions?)` or
+`.RedactPiiWithNer(modelPath, tokenizerPath, configPath, threshold, piiOptions?)` (from `AgentGuard.Onnx`)
+
+Order 20, same `PiiRule` pass. Augments the regex/checksum recognizers with an offline ONNX
+named-entity recognizer that detects the span entity types regex cannot catch - **`PERSON`,
+`LOCATION`, `ORGANIZATION`, `DATE_TIME`** - and resolves them against the regex entities in a single
+analyzer -> anonymizer pass (so overlap resolution and anonymization treat them uniformly). The NER
+spans flow through the same engine, so the redaction output mixes `<PERSON>`, `<LOCATION>`,
+`<EMAIL_ADDRESS>`, etc. transparently.
+
+Uses a [GLiNER](https://huggingface.co/urchade/gliner_multi_pii-v1) span model (mDeBERTa-v3-base
+backbone, Apache-2.0) - **multilingual** (the reason to add it; regex and spaCy-style NER are
+English-leaning) and zero-shot. The model is **not bundled**; download it separately via
+[`eng/download-gliner-model.sh`](../eng/download-gliner-model.sh). Not part of `UseDefaults()`.
+
+`GlinerNerOptions.NerThreshold` (default **0.5**, the micro-F1 optimum - see
+[`eng/gliner-eval/RESULTS.md`](../eng/gliner-eval/RESULTS.md)) is the binding gate for NER spans; the
+analyzer's `PiiOptions.ScoreThreshold` still applies on top. NER coverage targets whitespace-segmented
+scripts (Latin / Cyrillic / Arabic / Devanagari); CJK is out of practical scope for the word splitter.
+
+| `GlinerNerOptions` | Type | Default |
+|--------|------|---------|
+| ModelPath | `string` | *(required)* |
+| TokenizerPath | `string` | *(required)* mDeBERTa-v3 `spm.model` |
+| ConfigPath | `string` | *(required)* `config.json` (special-token ids + max span width) |
+| NerThreshold | `float` | 0.5 |
+| MaxSpanWidth | `int` | 12 |
+| EntityLabelMap | `IReadOnlyDictionary<string,string>` | `person→PERSON`, `location→LOCATION`, `organization→ORGANIZATION`, `date→DATE_TIME` |
+
+```csharp
+// detect names/places/orgs/dates alongside regex PII, in one order-20 pass
+builder.RedactPiiWithNer(
+    modelPath: "models/gliner/model.onnx",
+    tokenizerPath: "models/gliner/spm.model",
+    configPath: "models/gliner/config.json",
+    piiOptions: new PiiOptions { Countries = ["de"] });
+```
+
 ## PII Detection (LLM)
 
 `.DetectPIIWithLlm(chatClient, options?)`
