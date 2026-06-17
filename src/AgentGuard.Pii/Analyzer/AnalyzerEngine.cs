@@ -30,7 +30,7 @@ public sealed class AnalyzerEngine
         double defaultScoreThreshold = 0)
     {
         _registry = registry;
-        _contextAwareEnhancer = contextAwareEnhancer ?? new WindowContextEnhancer();
+        _contextAwareEnhancer = contextAwareEnhancer ?? new LemmaContextAwareEnhancer();
         _defaultScoreThreshold = defaultScoreThreshold;
     }
 

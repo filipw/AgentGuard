@@ -1,5 +1,6 @@
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Pii.Analyzer;
+using AgentGuard.Pii.Analyzer.Context;
 using AgentGuard.Pii.Anonymizer;
 
 namespace AgentGuard.Pii;
@@ -25,7 +26,9 @@ public sealed class PiiRule : IGuardrailRule
         AnonymizerEngine? anonymizer = null)
     {
         _options = options ?? new PiiOptions();
-        _analyzer = analyzer ?? new AnalyzerEngine(PiiRecognizers.CreateDefaultRegistry(_options.Language));
+        _analyzer = analyzer ?? new AnalyzerEngine(
+            PiiRecognizers.CreateRegistry(_options.Language, _options.Countries),
+            new LemmaContextAwareEnhancer(contextMatchingMode: _options.ContextMatchingMode));
         _anonymizer = anonymizer ?? new AnonymizerEngine();
     }
 

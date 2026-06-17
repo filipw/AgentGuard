@@ -19,12 +19,14 @@ public abstract class EntityRecognizer
         IReadOnlyList<string> supportedEntities,
         string? name = null,
         string supportedLanguage = "en",
-        IReadOnlyList<string>? context = null)
+        IReadOnlyList<string>? context = null,
+        string? countryCode = null)
     {
         SupportedEntities = supportedEntities;
         SupportedLanguage = supportedLanguage;
         Name = name ?? GetType().Name;
         Context = context;
+        CountryCode = countryCode;
         Id = $"{Name}_{Interlocked.Increment(ref _idCounter)}";
     }
 
@@ -42,6 +44,12 @@ public abstract class EntityRecognizer
 
     /// <summary>Context words that, when found near a match, boost its confidence.</summary>
     public IReadOnlyList<string>? Context { get; }
+
+    /// <summary>
+    /// ISO 3166-1 alpha-2 country code (lowercase) for a country-specific recognizer, or <c>null</c>
+    /// for a generic recognizer.
+    /// </summary>
+    public string? CountryCode { get; }
 
     /// <summary>Analyzes <paramref name="text"/> for the requested <paramref name="entities"/>.</summary>
     public abstract IReadOnlyList<RecognizerResult> Analyze(string text, IReadOnlyList<string> entities);

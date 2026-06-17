@@ -59,6 +59,7 @@ internal static class ConfigurationMapper
                 {
                     Entities = rule.Entities is { Count: > 0 } ? rule.Entities : null,
                     Replacement = rule.Replacement ?? "[REDACTED]",
+                    Countries = rule.Countries is { Count: > 0 } ? rule.Countries : null,
                 });
                 break;
 
