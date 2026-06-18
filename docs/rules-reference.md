@@ -272,6 +272,22 @@ builder.RedactPii(new PiiOptions { Countries = ["uk", "de"] });
 Beyond the `PiiRule` pipeline rule, `AgentGuard.Pii` exposes its engines directly for richer
 workflows. All are fully offline.
 
+The quickest entry point is the `PiiEngine` facade, configured once from the same `PiiOptions` as the
+rule, with one-liners for every operation:
+
+```csharp
+var pii = new PiiEngine(new PiiOptions { Countries = ["de"] });   // or PiiEngine.Create("en", "de")
+
+pii.Anonymize(text).Text;                       // free-text redaction
+var deid = pii.Deidentify(text);                // PiiDeidentificationResult (persist deid.Items)
+pii.Reidentify(deid, reverseOps).Text;          // restore (decrypt)
+pii.AnonymizeJson(json, scope);                 // structured JSON
+pii.AnonymizeCsv(header, rows);                 // structured CSV
+pii.AnonymizeBatch(records);                    // batch over keyed records
+```
+
+The lower-level engines below are also available directly when you need full control.
+
 **Reversible de-identification** - encrypt PII spans, persist the items, restore later:
 
 ```csharp
