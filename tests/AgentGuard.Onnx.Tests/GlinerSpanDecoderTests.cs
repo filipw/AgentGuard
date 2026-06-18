@@ -18,9 +18,9 @@ public class GlinerSpanDecoderTests
     // three words: "Alice" [0,5), "Smith" [6,11), "London" [12,18)
     private static IReadOnlyList<Word> ThreeWords() =>
     [
-        new Word("Alice", 0, 5, [1]),
-        new Word("Smith", 6, 11, [2]),
-        new Word("London", 12, 18, [3]),
+        new Word(0, 5, [1]),
+        new Word(6, 11, [2]),
+        new Word(12, 18, [3]),
     ];
 
     // logits flat layout [L, K, C], index = (start * maxWidth + width) * numClasses + class

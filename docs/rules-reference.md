@@ -267,6 +267,62 @@ Anonymization operators: `replace` (default, `<ENTITY_TYPE>`), `redact`, `mask`,
 builder.RedactPii(new PiiOptions { Countries = ["uk", "de"] });
 ```
 
+### Reversible de-identification, structured data, and batch (engine APIs)
+
+Beyond the `PiiRule` pipeline rule, `AgentGuard.Pii` exposes its engines directly for richer
+workflows. All are fully offline.
+
+**Reversible de-identification** - encrypt PII spans, persist the items, restore later:
+
+```csharp
+var analyzer   = new AnalyzerEngine(PiiRecognizers.CreateDefaultRegistry("en"));
+var anonymizer = new AnonymizerEngine();
+var encryptOps = new Dictionary<string, OperatorConfig>
+{
+    ["DEFAULT"] = new("encrypt", new Dictionary<string, object> { ["key"] = "0123456789abcdef" }),
+};
+
+var encrypted = anonymizer.Anonymize(text, analyzer.Analyze(text, "en"), encryptOps);
+var deid      = PiiDeidentificationResult.FromEngineResult(encrypted); // .IsReversible
+
+// later, with the same key:
+var decryptOps = new Dictionary<string, OperatorConfig>
+{
+    ["DEFAULT"] = new("decrypt", new Dictionary<string, object> { ["key"] = "0123456789abcdef" }),
+};
+var restored = new DeanonymizerEngine().Deanonymize(deid.AnonymizedText, deid.Items, decryptOps);
+// restored.Text == text (byte-for-byte)
+```
+
+`DeanonymizerEngine` reverses `encrypt` (default `decrypt`) and `custom` spans. Lossy operators
+(`replace`/`redact`/`mask`/`hash`/`keep`) are reported as non-reversible (`IsReversible == false`,
+and `Deanonymize` throws if asked to `decrypt` them); a wrong or missing key throws clearly.
+
+**Structured data** - redact JSON by key path or CSV by inferred column:
+
+```csharp
+var structured = new StructuredEngine(analyzer);
+
+// JSON: allowlist only $.user.email; structure and non-string types preserved
+var redactedJson = structured.AnonymizeJson(
+    json, new JsonRedactionScope { IncludePaths = ["user.email"] });
+
+// CSV/TSV: per-column inference; benign columns are left untouched
+var result = structured.AnonymizeCsv(header, rows);   // result.ColumnEntities reports PII columns
+```
+
+**Batch** - analyze/anonymize lists or keyed records, results aligned to input:
+
+```csharp
+var batchAnalyzer   = new BatchAnalyzerEngine(analyzer);
+var batchAnonymizer = new BatchAnonymizerEngine();
+
+var detections = batchAnalyzer.Analyze(records);                  // IReadOnlyDictionary<string,string>
+var anonymized = batchAnonymizer.Anonymize(records, detections);  // keys preserved
+```
+
+See [`samples/PiiShowcase`](../samples/PiiShowcase) for a runnable end-to-end tour.
+
 ### Named-entity recognition (ONNX, offline, multilingual)
 
 `.RedactPiiWithNer(nerOptions, piiOptions?)` or

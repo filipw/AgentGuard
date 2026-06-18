@@ -27,7 +27,7 @@ internal readonly record struct OpirScore(float MaxProbability, string MaxLabel,
 /// thresholds) reuse one <see cref="InferenceSession"/>.
 /// </para>
 /// </summary>
-internal sealed class OpirModelSession : IDisposable
+internal sealed class OpirModelSession : IRefCountedSession
 {
     private readonly InferenceSession _session;
     private readonly SentencePieceTokenizer _tokenizer;
@@ -41,14 +41,7 @@ internal sealed class OpirModelSession : IDisposable
 
     private readonly record struct SessionKey(string ModelPath, string TokenizerPath, string PrefixPath, int MaxTokenLength);
 
-    private sealed class CacheEntry
-    {
-        public required OpirModelSession Session { get; init; }
-        public int RefCount { get; set; }
-    }
-
-    private static readonly Dictionary<SessionKey, CacheEntry> _cache = [];
-    private static readonly object _cacheLock = new();
+    private static readonly RefCountedSessionPool<SessionKey, OpirModelSession> _pool = new();
 
     private OpirModelSession(string modelPath, string tokenizerPath, string prefixPath, int maxTokenLength, SessionKey? cacheKey)
     {
@@ -92,25 +85,11 @@ internal sealed class OpirModelSession : IDisposable
     internal static OpirModelSession Acquire(string modelPath, string tokenizerPath, string prefixPath, int maxTokenLength)
     {
         var key = new SessionKey(modelPath, tokenizerPath, prefixPath, maxTokenLength);
-        lock (_cacheLock)
-        {
-            if (_cache.TryGetValue(key, out var entry))
-            {
-                entry.RefCount++;
-                return entry.Session;
-            }
-
-            var session = new OpirModelSession(modelPath, tokenizerPath, prefixPath, maxTokenLength, key);
-            _cache[key] = new CacheEntry { Session = session, RefCount = 1 };
-            return session;
-        }
+        return _pool.Acquire(key, () => new OpirModelSession(modelPath, tokenizerPath, prefixPath, maxTokenLength, key));
     }
 
     /// <summary>Number of distinct loaded sessions currently cached. For tests/diagnostics.</summary>
-    internal static int ActiveSessionCount
-    {
-        get { lock (_cacheLock) { return _cache.Count; } }
-    }
+    internal static int ActiveSessionCount => _pool.ActiveCount;
 
     /// <summary>The harm categories the block decision is thresholded over (excludes the safe sentinel).</summary>
     internal IReadOnlyList<string> Labels => _unsafeLabels;
@@ -195,6 +174,7 @@ internal sealed class OpirModelSession : IDisposable
     /// <summary>Sigmoid activation: maps a logit to a [0, 1] probability.</summary>
     internal static float Sigmoid(float x) => 1.0f / (1.0f + MathF.Exp(-x));
 
+    /// <summary>Releases this holder's reference; the pool frees the session at zero.</summary>
     public void Dispose()
     {
         if (_cacheKey is not { } key)
@@ -203,19 +183,10 @@ internal sealed class OpirModelSession : IDisposable
             return;
         }
 
-        lock (_cacheLock)
-        {
-            if (!_cache.TryGetValue(key, out var entry))
-                return; // already fully released
-
-            entry.RefCount--;
-            if (entry.RefCount <= 0)
-            {
-                _cache.Remove(key);
-                _session.Dispose();
-            }
-        }
+        _pool.Release(key);
     }
+
+    void IRefCountedSession.ReleaseResources() => _session.Dispose();
 
     /// <summary>
     /// The frozen-taxonomy prefix metadata shipped alongside the model (<c>prefix.json</c>): the

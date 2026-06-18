@@ -3,7 +3,7 @@ using System.Text.RegularExpressions;
 namespace AgentGuard.Pii.Analyzer.Context;
 
 /// <summary>
-/// A surface-form context-aware enhancer (Stage 1). It tokenizes the text on word boundaries and,
+/// A surface-form context-aware enhancer. It tokenizes the text on word boundaries and,
 /// for each result, checks a window of preceding/following tokens against the recognizer's context
 /// words (case-insensitive substring match), boosting the score when a context word is found.
 /// This is a lemmatization-free approximation of a lemma-context-aware enhancer.

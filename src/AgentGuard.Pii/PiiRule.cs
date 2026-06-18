@@ -18,7 +18,7 @@ public sealed class PiiRule : IGuardrailRule
 
     /// <summary>Initializes a new instance of the <see cref="PiiRule"/> class.</summary>
     /// <param name="options">Detection/anonymization configuration. Defaults to all entities, replace operator.</param>
-    /// <param name="analyzer">Optional custom analyzer engine. Defaults to the Stage 1 recognizers.</param>
+    /// <param name="analyzer">Optional custom analyzer engine.</param>
     /// <param name="anonymizer">Optional custom anonymizer engine.</param>
     public PiiRule(
         PiiOptions? options = null,

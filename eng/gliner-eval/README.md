@@ -1,4 +1,4 @@
-# GLiNER span NER eval harness (AgentGuard.Pii Stage 3)
+# GLiNER span NER eval harness (AgentGuard.Pii)
 
 Offline tooling to export a GLiNER span NER model to ONNX, validate C# parity, and pick the
 operating threshold for the AgentGuard offline named-entity recognizer (PERSON / LOCATION /
@@ -7,9 +7,9 @@ ORGANIZATION / DATE_TIME). Not in `AgentGuard.slnx`; CPU-only.
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
-python export_onnx.py     # Gate 1: export + dump fixtures.json + config.json
+python export_onnx.py     # export + dump fixtures.json + config.json
 python fp16_onnx.py       # fp16 build (default delivery)
-python eval.py            # Gate 4: per-entity P/R/F1 + threshold sweep
+python eval.py            # per-entity P/R/F1 + threshold sweep
 ```
 
 Model: [`urchade/gliner_multi_pii-v1`](https://huggingface.co/urchade/gliner_multi_pii-v1)
@@ -61,8 +61,8 @@ overlap) -> map word span to chars via `start_token_map[start] .. end_token_map[
 cd ../gliner-csharp-eval && dotnet run -c Release
 ```
 
-Replays `fixtures.json` through the C# assembly + decode and asserts id-for-id (Gate 2) and
-span-for-span (Gate 3) against the gliner library. Measured: assembly parity 4/5, decode parity 5/5
+Replays `fixtures.json` through the C# assembly + decode and asserts id-for-id and
+span-for-span against the gliner library. Measured: assembly parity 4/5, decode parity 5/5
 across en / de / ru / ar / zh. The single Gate-2 miss is a CJK fullwidth-punctuation edge (HF emits
 `[UNK]`, SentencePiece emits its piece) on text the whitespace splitter cannot word-segment anyway;
 it detects 0 entities, so decode is unaffected. NER coverage is for whitespace-segmented scripts

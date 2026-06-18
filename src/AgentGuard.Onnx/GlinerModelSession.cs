@@ -28,7 +28,7 @@ internal readonly record struct NerSpan(int CharStart, int CharEnd, string Label
 /// <see cref="InferenceSession"/>.
 /// </para>
 /// </summary>
-internal sealed class GlinerModelSession : IDisposable
+internal sealed class GlinerModelSession : IRefCountedSession
 {
     // gliner words_splitter_type "whitespace": runs of word chars (allowing internal -/_) or any
     // single non-space char. Unicode-aware \w matches accented letters and CJK ideographs.
@@ -45,14 +45,7 @@ internal sealed class GlinerModelSession : IDisposable
 
     private readonly record struct SessionKey(string ModelPath, string TokenizerPath, string ConfigPath, int MaxTokenLength, int MaxSpanWidth, int MaxChunkChars);
 
-    private sealed class CacheEntry
-    {
-        public required GlinerModelSession Session { get; init; }
-        public int RefCount { get; set; }
-    }
-
-    private static readonly Dictionary<SessionKey, CacheEntry> _cache = [];
-    private static readonly object _cacheLock = new();
+    private static readonly RefCountedSessionPool<SessionKey, GlinerModelSession> _pool = new();
 
     private GlinerModelSession(string modelPath, string tokenizerPath, string configPath, int maxTokenLength, int maxSpanWidth, int maxChunkChars, SessionKey? cacheKey)
     {
@@ -80,25 +73,11 @@ internal sealed class GlinerModelSession : IDisposable
     internal static GlinerModelSession Acquire(string modelPath, string tokenizerPath, string configPath, int maxTokenLength, int maxSpanWidth, int maxChunkChars)
     {
         var key = new SessionKey(modelPath, tokenizerPath, configPath, maxTokenLength, maxSpanWidth, maxChunkChars);
-        lock (_cacheLock)
-        {
-            if (_cache.TryGetValue(key, out var entry))
-            {
-                entry.RefCount++;
-                return entry.Session;
-            }
-
-            var session = new GlinerModelSession(modelPath, tokenizerPath, configPath, maxTokenLength, maxSpanWidth, maxChunkChars, key);
-            _cache[key] = new CacheEntry { Session = session, RefCount = 1 };
-            return session;
-        }
+        return _pool.Acquire(key, () => new GlinerModelSession(modelPath, tokenizerPath, configPath, maxTokenLength, maxSpanWidth, maxChunkChars, key));
     }
 
     /// <summary>Number of distinct loaded sessions currently cached. For tests/diagnostics.</summary>
-    internal static int ActiveSessionCount
-    {
-        get { lock (_cacheLock) { return _cache.Count; } }
-    }
+    internal static int ActiveSessionCount => _pool.ActiveCount;
 
     /// <summary>The model's maximum span width (number of words). Exposed for diagnostics.</summary>
     internal int MaxSpanWidth => Math.Min(_maxSpanWidth, _config.MaxWidth);
@@ -117,14 +96,33 @@ internal sealed class GlinerModelSession : IDisposable
             return [];
 
         var maxWidth = MaxSpanWidth;
-        var candidates = new List<SpanCandidate>();
 
-        foreach (var chunk in ChunkWords(words, labels.Count))
+        // encode the (stable) labels once and compute the exact prompt token cost:
+        // [CLS] + sum over labels(<<ENT>> + label-subwords) + <<SEP>>. labelSubwords feeds both the
+        // chunk budget and the per-chunk input assembly, so labels are never re-tokenized per chunk.
+        var labelSubwords = new long[labels.Count][];
+        var promptTokens = 2; // [CLS] and the trailing <<SEP>> that closes the prompt
+        for (var i = 0; i < labels.Count; i++)
         {
-            ScoreChunk(chunk, labels, threshold, maxWidth, candidates);
+            labelSubwords[i] = EncodeWord(labels[i]);
+            promptTokens += 1 + labelSubwords[i].Length; // <<ENT>> + the label's subwords
         }
 
-        var selected = GreedyFlatDecode(candidates);
+        // decode each chunk independently and merge: chunks are word- and char-disjoint, so a span in
+        // one chunk can never overlap a span in another. Decoding the accumulated candidates in one
+        // pass would instead compare chunk-LOCAL word indices and spuriously drop colliding spans.
+        var selected = new List<SpanCandidate>();
+        var chunkCandidates = new List<SpanCandidate>();
+        foreach (var chunk in ChunkWords(words, promptTokens))
+        {
+            chunkCandidates.Clear();
+            ScoreChunk(chunk, labels, labelSubwords, threshold, maxWidth, chunkCandidates);
+            selected.AddRange(GreedyFlatDecode(chunkCandidates));
+        }
+
+        // greedy decode returns each chunk sorted by its local word index; order the merged set by
+        // global char offset for a stable left-to-right result.
+        selected.Sort((a, b) => a.CharStart.CompareTo(b.CharStart));
 
         var spans = new List<NerSpan>(selected.Count);
         foreach (var c in selected)
@@ -133,12 +131,12 @@ internal sealed class GlinerModelSession : IDisposable
         return spans;
     }
 
-    private void ScoreChunk(List<Word> words, IReadOnlyList<string> labels, float threshold, int maxWidth, List<SpanCandidate> sink)
+    private void ScoreChunk(List<Word> words, IReadOnlyList<string> labels, long[][] labelSubwords, float threshold, int maxWidth, List<SpanCandidate> sink)
     {
         var numWords = words.Count;
         var numClasses = labels.Count;
 
-        var (inputIds, wordsMask) = AssembleInput(words, labels);
+        var (inputIds, wordsMask) = AssembleInput(words, labelSubwords);
         var seqLen = inputIds.Length;
 
         // span_idx: for start in [0,numWords), w in [0,maxWidth): (start, start+w). num_spans = numWords*maxWidth
@@ -182,16 +180,16 @@ internal sealed class GlinerModelSession : IDisposable
     }
 
     // assemble [CLS] (<<ENT>> label-subwords)xN <<SEP>> word-subwords... [SEP] + the aligned words_mask
-    private (long[] InputIds, long[] WordsMask) AssembleInput(List<Word> words, IReadOnlyList<string> labels)
+    private (long[] InputIds, long[] WordsMask) AssembleInput(List<Word> words, long[][] labelSubwords)
     {
         var ids = new List<long>(64) { _config.ClsId };
         var mask = new List<long>(64) { 0 };
 
-        foreach (var label in labels)
+        foreach (var label in labelSubwords)
         {
             ids.Add(_config.EntTokenId);
             mask.Add(0);
-            foreach (var sub in EncodeWord(label))
+            foreach (var sub in label)
             {
                 ids.Add(sub);
                 mask.Add(0);
@@ -297,27 +295,40 @@ internal sealed class GlinerModelSession : IDisposable
             var subwords = EncodeWord(m.Value);
             if (subwords.Length == 0)
                 continue;
-            words.Add(new Word(m.Value, m.Index, m.Index + m.Length, subwords));
+            words.Add(new Word(m.Index, m.Index + m.Length, subwords));
         }
 
         return words;
     }
 
-    // pack words into chunks that fit the token budget (prompt + words + trailing [SEP]) and the
-    // char cap. chunks never split a word; spans carry global char offsets so merging is trivial.
-    private IEnumerable<List<Word>> ChunkWords(IReadOnlyList<Word> words, int labelCount)
+    // pack words into chunks that fit the token budget (prompt + words + trailing [SEP]) and the char
+    // cap. chunks never split a word; spans carry global char offsets so merging is trivial.
+    // <paramref name="promptTokens"/> is the exact label-prefix cost ([CLS] + per-label <<ENT>> +
+    // label subwords + <<SEP>>), so the assembled sequence is guaranteed to fit MaxTokenLength.
+    private IEnumerable<List<Word>> ChunkWords(IReadOnlyList<Word> words, int promptTokens)
     {
-        // prompt: [CLS] + labelCount*(<<ENT>> + label-subwords) + <<SEP>>. budget the rest for words + [SEP].
-        var promptTokens = 2 + labelCount; // CLS + SEP-token + one <<ENT>> per label (label subword cost approximated below)
+        // reserve the prompt prefix and the trailing [SEP]; the rest is the per-chunk word budget.
         var budget = Math.Max(8, _maxTokenLength - promptTokens - 1);
 
         var chunk = new List<Word>();
         var tokenCount = 0;
         var charCount = 0;
 
-        foreach (var word in words)
+        foreach (var original in words)
         {
+            var word = original;
             var wordTokens = word.SubwordIds.Length;
+
+            // a single word longer than the whole budget (e.g. a giant unbroken token) would blow the
+            // sequence past MaxTokenLength; truncate its subwords so the assembled input always fits.
+            if (wordTokens > budget)
+            {
+                var truncated = new long[budget];
+                Array.Copy(word.SubwordIds, truncated, budget);
+                word = word with { SubwordIds = truncated };
+                wordTokens = budget;
+            }
+
             var wordChars = word.CharEnd - word.CharStart;
             if (chunk.Count > 0 && (tokenCount + wordTokens > budget || charCount + wordChars > _maxChunkChars))
             {
@@ -351,6 +362,7 @@ internal sealed class GlinerModelSession : IDisposable
     /// <summary>Sigmoid activation: maps a logit to a [0, 1] probability.</summary>
     internal static float Sigmoid(float x) => 1.0f / (1.0f + MathF.Exp(-x));
 
+    /// <summary>Releases this holder's reference; the pool frees the session at zero.</summary>
     public void Dispose()
     {
         if (_cacheKey is not { } key)
@@ -359,22 +371,13 @@ internal sealed class GlinerModelSession : IDisposable
             return;
         }
 
-        lock (_cacheLock)
-        {
-            if (!_cache.TryGetValue(key, out var entry))
-                return;
-
-            entry.RefCount--;
-            if (entry.RefCount <= 0)
-            {
-                _cache.Remove(key);
-                _session.Dispose();
-            }
-        }
+        _pool.Release(key);
     }
 
+    void IRefCountedSession.ReleaseResources() => _session.Dispose();
+
     /// <summary>A text word with its char span and precomputed subword ids.</summary>
-    internal readonly record struct Word(string Text, int CharStart, int CharEnd, long[] SubwordIds);
+    internal readonly record struct Word(int CharStart, int CharEnd, long[] SubwordIds);
 
     /// <summary>A candidate span during decoding: word indices, char offsets, label and score.</summary>
     internal readonly record struct SpanCandidate(int WordStart, int WordEnd, int CharStart, int CharEnd, string Label, float Score);
