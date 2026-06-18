@@ -35,5 +35,6 @@
     <Project Path="samples/DynamicGuardrails/DynamicGuardrails.csproj" />
     <Project Path="samples/OpirMultilingualGuardrails/OpirMultilingualGuardrails.csproj" />
     <Project Path="samples/PiiShowcase/PiiShowcase.csproj" />
+    <Project Path="samples/AgentFrameworkPii/AgentFrameworkPii.csproj" />
   </Folder>
 </Solution>

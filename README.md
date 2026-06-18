@@ -505,6 +505,7 @@ Rules execute in order of their `Order` property (lower = first). Built-in rules
 - [ONNX Guardrails](samples/OnnxGuardrails/) - offline ML-based prompt injection detection with bundled StackOne Defender model + optional DeBERTa v3
 - [Opir Multilingual Guardrails](samples/OpirMultilingualGuardrails/) - offline multilingual content-safety detection (toxicity across German, Spanish, Russian, Arabic, Chinese, Hindi) with `BlockUnsafeContentWithOpir()`
 - [PII Showcase](samples/PiiShowcase/) - end-to-end tour of the offline PII engine: detection breadth + scores + context boosting, all operators incl. encrypt->deanonymize round-trip, structured JSON/CSV redaction, batch API, allow-lists, and optional multilingual NER (gated on `AGENTGUARD_GLINER_*`)
+- [PII in Agent Framework](samples/AgentFrameworkPii/) - PII handling around a MAF agent: standard input/output redaction, reversible redaction (`.UsePiiReversibleRedaction()` - encrypt before the model, decrypt in the response), and tool-result redaction. Redaction parts run offline against a scripted agent; the tool-calling part is gated on `OPENAI_BASE_URL`/`OPENAI_MODEL`
 - [Custom Rules](samples/CustomRules/) - implementing and composing custom guardrail rules
 - [Azure Integration](samples/AzureIntegration/) - using Azure AI Content Safety for production
 - [Workflow Guardrails](samples/WorkflowGuardrails/) - wrapping MAF workflow executors with `.WithGuardrails()` decorator
