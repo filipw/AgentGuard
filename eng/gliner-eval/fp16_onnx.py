@@ -12,6 +12,7 @@ Validation: fp16 vs fp32 max |delta sigmoid(logit)| over all enumerated spans, r
 collated tensors captured in fixtures.json (so we don't reload the 1.1 GB PyTorch model).
 """
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -90,4 +91,6 @@ for fx in fixtures:
     d = float(np.max(np.abs(a - b)))
     worst = max(worst, d)
     print(f"  {d:.4f}   {fx['text'][:48]!r}")
-print(f"\nmax |delta P(span)| = {worst:.4f}  ->  {'OK' if worst < 0.02 else 'CHECK'}")
+ok = worst < 0.02
+print(f"\nmax |delta P(span)| = {worst:.4f}  ->  {'OK' if ok else 'CHECK'}")
+sys.exit(0 if ok else 1)

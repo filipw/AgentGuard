@@ -40,44 +40,56 @@ public sealed class GlinerNerRecognizer : EntityRecognizer, IDisposable
     {
         ArgumentNullException.ThrowIfNull(options);
 
-        var modelPath = RequireFile(options.ModelPath, nameof(options.ModelPath), "NER ONNX model");
-        var tokenizerPath = RequireFile(options.TokenizerPath, nameof(options.TokenizerPath), "mDeBERTa SentencePiece tokenizer");
-        var configPath = RequireFile(options.ConfigPath, nameof(options.ConfigPath), "NER config.json");
+        var modelPath = OnnxFileValidation.RequireFile(options.ModelPath, nameof(options.ModelPath), "NER ONNX model");
+        var tokenizerPath = OnnxFileValidation.RequireFile(options.TokenizerPath, nameof(options.TokenizerPath), "mDeBERTa SentencePiece tokenizer");
+        var configPath = OnnxFileValidation.RequireFile(options.ConfigPath, nameof(options.ConfigPath), "NER config.json");
 
         if (options.NerThreshold is < 0f or > 1f)
             throw new ArgumentOutOfRangeException(nameof(options), "NerThreshold must be between 0.0 and 1.0.");
 
         _options = options;
-        _entityToLabel = new Dictionary<string, string>(StringComparer.Ordinal);
-        _labelToEntity = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var (label, entity) in options.EntityLabelMap)
-        {
-            _labelToEntity[label] = entity;
-            _entityToLabel[entity] = label;
-        }
+        BuildLabelMaps(options, out _labelToEntity, out _entityToLabel);
 
         _session = GlinerModelSession.Acquire(modelPath, tokenizerPath, configPath, options.MaxTokenLength, options.MaxSpanWidth, options.MaxChunkChars);
     }
 
-    /// <summary>Internal constructor for testing - accepts a pre-built session.</summary>
+    /// <summary>
+    /// Internal constructor for testing - accepts a pre-built session.
+    /// <para>
+    /// Contract: <paramref name="session"/> must be non-null before any call to
+    /// <see cref="Analyze"/> that reaches the model. Tests may pass <c>null</c> only to exercise the
+    /// metadata surface (supported entities, country code, context) or the early-exit paths in
+    /// <see cref="Analyze"/> (empty/whitespace text, no requested entity supported), which never touch
+    /// the session.
+    /// </para>
+    /// </summary>
     internal GlinerNerRecognizer(GlinerModelSession session, GlinerNerOptions options, string supportedLanguage = "en")
         : base(BuildSupportedEntities(options), name: "GlinerNerRecognizer", supportedLanguage: supportedLanguage, context: null, countryCode: null)
     {
         _session = session;
         _options = options;
-        _entityToLabel = new Dictionary<string, string>(StringComparer.Ordinal);
-        _labelToEntity = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var (label, entity) in options.EntityLabelMap)
-        {
-            _labelToEntity[label] = entity;
-            _entityToLabel[entity] = label;
-        }
+        BuildLabelMaps(options, out _labelToEntity, out _entityToLabel);
     }
 
     private static List<string> BuildSupportedEntities(GlinerNerOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
         return options.EntityLabelMap.Values.Distinct(StringComparer.Ordinal).ToList();
+    }
+
+    // build the forward (label -> entity) and reverse (entity -> label) maps from the options.
+    private static void BuildLabelMaps(
+        GlinerNerOptions options,
+        out Dictionary<string, string> labelToEntity,
+        out Dictionary<string, string> entityToLabel)
+    {
+        labelToEntity = new Dictionary<string, string>(StringComparer.Ordinal);
+        entityToLabel = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var (label, entity) in options.EntityLabelMap)
+        {
+            labelToEntity[label] = entity;
+            entityToLabel[entity] = label;
+        }
     }
 
     /// <inheritdoc />
@@ -123,18 +135,6 @@ public sealed class GlinerNerRecognizer : EntityRecognizer, IDisposable
         }
 
         return results;
-    }
-
-    private static string RequireFile(string? path, string paramName, string description)
-    {
-        if (string.IsNullOrWhiteSpace(path))
-            throw new ArgumentException($"{description} path is required.", paramName);
-
-        var full = Path.GetFullPath(path);
-        if (!File.Exists(full))
-            throw new FileNotFoundException($"{description} not found at '{full}'.", full);
-
-        return full;
     }
 
     /// <summary>Releases this recognizer's reference to the pooled ONNX inference session.</summary>

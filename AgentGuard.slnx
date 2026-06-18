@@ -34,6 +34,6 @@
     <Project Path="samples/ToolResultGuardrails/ToolResultGuardrails.csproj" />
     <Project Path="samples/DynamicGuardrails/DynamicGuardrails.csproj" />
     <Project Path="samples/OpirMultilingualGuardrails/OpirMultilingualGuardrails.csproj" />
-    <Project Path="samples/PiiNerGuardrails/PiiNerGuardrails.csproj" />
+    <Project Path="samples/PiiShowcase/PiiShowcase.csproj" />
   </Folder>
 </Solution>

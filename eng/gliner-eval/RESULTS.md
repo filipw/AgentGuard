@@ -1,4 +1,4 @@
-# GLiNER span NER - measured results (AgentGuard.Pii Stage 3)
+# GLiNER span NER - measured results (AgentGuard.Pii)
 
 Model: [`urchade/gliner_multi_pii-v1`](https://huggingface.co/urchade/gliner_multi_pii-v1)
 (mDeBERTa-v3-base, Apache-2.0), ONNX export (opset 19), default fp16. Re-run with

@@ -25,6 +25,11 @@ public sealed class OperatorsFactory
 
         _anonymizers = builtIn.Where(o => o.Type == OperatorType.Anonymize).ToDictionary(o => o.Name);
         _deanonymizers = builtIn.Where(o => o.Type == OperatorType.Deanonymize).ToDictionary(o => o.Name);
+
+        // the custom operator applies an arbitrary lambda and is valid in both directions, so it is
+        // also offered as a reverse operator for callers that anonymized with a custom transform.
+        var custom = new CustomOperator();
+        _deanonymizers[custom.Name] = custom;
     }
 
     /// <summary>Registers or replaces an operator.</summary>
@@ -48,4 +53,7 @@ public sealed class OperatorsFactory
 
     /// <summary>Returns the names of all anonymize operators.</summary>
     public IReadOnlyCollection<string> GetAnonymizers() => _anonymizers.Keys;
+
+    /// <summary>Returns the names of all deanonymize (reverse) operators.</summary>
+    public IReadOnlyCollection<string> GetDeanonymizers() => _deanonymizers.Keys;
 }

@@ -13,7 +13,7 @@ namespace AgentGuard.E2E.Tests;
 /// export. These validate the production path (ONNX load, per-word SentencePiece assembly with
 /// manual special-token ids, span enumeration, sigmoid threshold, flat-greedy decode, word->char
 /// mapping) detects PERSON / LOCATION / ORGANIZATION / DATE_TIME across languages, respects the
-/// threshold, and that NER spans redact in one pass with the regex entities (Stage 3 of AgentGuard.Pii).
+/// threshold, and that NER spans redact in one pass with the regex entities.
 ///
 /// Required environment variables:
 ///   AGENTGUARD_GLINER_ONNX_MODEL_PATH - path to the GLiNER ONNX model file
@@ -52,6 +52,26 @@ public class GlinerNerE2ETests : IClassFixture<GlinerTestFixture>
         Surface(results, text, "PERSON").Should().Be("Иван Петров");
         Surface(results, text, "LOCATION").Should().Be("Москве");
         Surface(results, text, "ORGANIZATION").Should().Be("Газпром");
+    }
+
+    [GlinerFact]
+    public void ShouldDetectEntitiesInEveryChunk_WhenInputIsChunked()
+    {
+        // regression: when text is long enough to chunk, each chunk is decoded independently. A prior
+        // bug compared chunk-LOCAL word indices across chunks, so a second entity landing at the same
+        // local word position as a first was spuriously treated as overlapping and dropped. A small
+        // MaxChunkChars forces ≥2 chunks; both distinct PERSONs must survive.
+        using var recognizer = _fixture.CreateRecognizer(maxChunkChars: 55);
+        const string text =
+            "Jane Doe lives in Berlin and works there happily. Klaus Mueller lives in Munich and works there too.";
+
+        var persons = recognizer.Analyze(text, recognizer.SupportedEntities)
+            .Where(r => r.EntityType == "PERSON")
+            .Select(r => text[r.Start..r.End])
+            .ToList();
+
+        persons.Should().Contain("Jane Doe");
+        persons.Should().Contain("Klaus Mueller", "an entity in a later chunk must not be dropped by cross-chunk index collision");
     }
 
     [GlinerFact]
@@ -128,7 +148,7 @@ public sealed class GlinerTestFixture : IDisposable
         _configPath = Environment.GetEnvironmentVariable("AGENTGUARD_GLINER_CONFIG_PATH");
     }
 
-    public GlinerNerRecognizer CreateRecognizer(float threshold = 0.5f)
+    public GlinerNerRecognizer CreateRecognizer(float threshold = 0.5f, int maxChunkChars = 1200)
     {
         return new GlinerNerRecognizer(new GlinerNerOptions
         {
@@ -136,6 +156,7 @@ public sealed class GlinerTestFixture : IDisposable
             TokenizerPath = _tokenizerPath!,
             ConfigPath = _configPath!,
             NerThreshold = threshold,
+            MaxChunkChars = maxChunkChars,
         });
     }
 

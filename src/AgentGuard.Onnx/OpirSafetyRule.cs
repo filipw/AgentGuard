@@ -45,9 +45,9 @@ public sealed class OpirSafetyRule : IGuardrailRule, IDisposable
     {
         ArgumentNullException.ThrowIfNull(options);
 
-        var modelPath = RequireFile(options.ModelPath, nameof(options.ModelPath), "Opir ONNX model");
-        var tokenizerPath = RequireFile(options.TokenizerPath, nameof(options.TokenizerPath), "mDeBERTa SentencePiece tokenizer");
-        var prefixPath = RequireFile(options.PrefixPath, nameof(options.PrefixPath), "Opir prefix.json");
+        var modelPath = OnnxFileValidation.RequireFile(options.ModelPath, nameof(options.ModelPath), "Opir ONNX model");
+        var tokenizerPath = OnnxFileValidation.RequireFile(options.TokenizerPath, nameof(options.TokenizerPath), "mDeBERTa SentencePiece tokenizer");
+        var prefixPath = OnnxFileValidation.RequireFile(options.PrefixPath, nameof(options.PrefixPath), "Opir prefix.json");
 
         if (options.Threshold is < 0f or > 1f)
             throw new ArgumentOutOfRangeException(nameof(options), "Threshold must be between 0.0 and 1.0.");
@@ -63,18 +63,6 @@ public sealed class OpirSafetyRule : IGuardrailRule, IDisposable
     {
         _session = session;
         _options = options;
-    }
-
-    private static string RequireFile(string? path, string paramName, string description)
-    {
-        if (string.IsNullOrWhiteSpace(path))
-            throw new ArgumentException($"{description} path is required.", paramName);
-
-        var full = Path.GetFullPath(path);
-        if (!File.Exists(full))
-            throw new FileNotFoundException($"{description} not found at '{full}'.", full);
-
-        return full;
     }
 
     /// <inheritdoc />

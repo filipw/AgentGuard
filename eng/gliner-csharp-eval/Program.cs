@@ -47,6 +47,8 @@ long sepId = cfg.GetProperty("sep_id").GetInt64();
 long entTokenId = cfg.GetProperty("ent_token_id").GetInt64();
 long sepTokenId = cfg.GetProperty("sep_token_id").GetInt64();
 int maxWidth = cfg.GetProperty("max_width").GetInt32();
+// decode threshold from config (the value the eval/library use), not a hardcoded 0.5
+float decodeThreshold = cfg.TryGetProperty("default_threshold", out var dt) ? (float)dt.GetDouble() : 0.5f;
 
 using var spmStream = File.OpenRead(spmPath);
 var tokenizer = SentencePieceTokenizer.Create(spmStream, addBeginningOfSentence: false, addEndOfSentence: false);
@@ -140,7 +142,7 @@ foreach (var fx in fixtures)
             for (var c = 0; c < numClasses; c++)
             {
                 float prob = 1f / (1f + MathF.Exp(-logits[bIdx + c]));
-                if (prob >= 0.5f) cands.Add((s, end, labels[c], prob));
+                if (prob >= decodeThreshold) cands.Add((s, end, labels[c], prob));
             }
         }
 
@@ -160,8 +162,12 @@ foreach (var fx in fixtures)
                       label: e.GetProperty("label").GetString()!, score: (float)e.GetProperty("score").GetDouble()))
         .ToList();
 
+    // compare span, label AND sigmoid score (small tolerance), so a scoring regression cannot pass green
+    const float scoreTol = 1e-3f;
     bool decodeOk = decodedCs.Count == expDecoded.Count &&
-        decodedCs.Zip(expDecoded).All(p => p.First.start == p.Second.start && p.First.end == p.Second.end && p.First.label == p.Second.label);
+        decodedCs.Zip(expDecoded).All(p =>
+            p.First.start == p.Second.start && p.First.end == p.Second.end && p.First.label == p.Second.label &&
+            MathF.Abs(p.First.score - p.Second.score) <= scoreTol);
     if (decodeOk) gate3Pass++;
     Console.WriteLine($"  Gate3 decode={(decodeOk ? "OK" : "MISMATCH")} (c# {decodedCs.Count} vs lib {expDecoded.Count})");
     foreach (var d in decodedCs)

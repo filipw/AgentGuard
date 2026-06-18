@@ -1,6 +1,6 @@
 #!/bin/bash
 # Downloads the GLiNER span NER ONNX model + mDeBERTa-v3 tokenizer + config for AgentGuard.Pii
-# Stage 3 (offline PERSON / LOCATION / ORGANIZATION / DATE_TIME detection).
+# (offline PERSON / LOCATION / ORGANIZATION / DATE_TIME detection).
 #
 # GLiNER (urchade/gliner_multi_pii-v1, mDeBERTa-v3 backbone, Apache-2.0) ships only PyTorch weights
 # upstream, so AgentGuard distributes an ONNX export (produced by eng/gliner-eval/export_onnx.py).
