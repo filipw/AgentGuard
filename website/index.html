@@ -156,8 +156,8 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
         <p>Toxicity, hate speech, violence, sexual content, self-harm, and harassment. Plug in Azure AI Content Safety, or run the offline Opir mDeBERTa classifier for <strong>non-English</strong> text (German, Spanish, Russian, Arabic, Chinese, Hindi) when a per-call cloud API isn't an option.</p>
       </div>
       <div class="feature-card">
-        <h3>PII Engine <span class="badge badge-onnx" style="vertical-align:middle">Flagship</span></h3>
-        <p>A complete offline PII detection + de-identification engine &mdash; ~50 entity types, reversible encryption, structured JSON/CSV redaction, and a batch API. Always-on generic + US recognizers, opt-in country packs (UK/DE/IN/IT/ES), and an optional multilingual NER add-on. <a href="#pii">See the full breakdown &rarr;</a></p>
+        <h3>PII Engine</h3>
+        <p>A complete offline PII detection + de-identification engine - ~50 entity types, reversible encryption, structured JSON/CSV redaction, and a batch API. Always-on generic + US recognizers, opt-in country packs (UK/DE/IN/IT/ES), and an optional multilingual NER add-on. <a href="#pii">See the full breakdown &rarr;</a></p>
       </div>
       <div class="feature-card">
         <h3>Topic Enforcement</h3>
@@ -177,23 +177,22 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
       </div>
       <div class="feature-card">
         <h3>Dynamic Rule Enabling</h3>
-        <p>Gate any rule per request with <code>.When()</code> / <code>.Unless()</code>. The predicate sees the guardrail context and can capture ambient services like <code>IHttpContextAccessor</code> &mdash; enable, disable, or retune a rule based on <code>ClaimsPrincipal</code>, tenant, feature flag, or detected language (e.g. run the English-centric Defender classifier at a higher threshold for non-English users).</p>
+        <p>Gate any rule per request with <code>.When()</code> / <code>.Unless()</code>. The predicate sees the guardrail context and can capture ambient services like <code>IHttpContextAccessor</code> - enable, disable, or retune a rule based on <code>ClaimsPrincipal</code>, tenant, feature flag, or detected language (e.g. run the English-centric Defender classifier at a higher threshold for non-English users).</p>
       </div>
       <div class="feature-card">
         <h3>Observability (OpenTelemetry)</h3>
-        <p>Built-in spans and metrics for every pipeline run, rule evaluation, re-ask attempt, and streaming retraction. Uses <code>System.Diagnostics</code> &mdash; no SDK dependency. Works with Aspire Dashboard, Jaeger, Zipkin, and any OTel collector.</p>
+        <p>Built-in spans and metrics for every pipeline run, rule evaluation, re-ask attempt, and streaming retraction. Uses <code>System.Diagnostics</code> - no SDK dependency. Works with Aspire Dashboard, Jaeger, Zipkin, and any OTel collector.</p>
       </div>
     </div>
   </div>
 </section>
 
 
-<!-- ── PII flagship ───────────────────────────────── -->
 <section id="pii">
   <p class="section-label">Flagship Capability</p>
   <h2 class="section-title">A complete, offline PII engine for .NET.</h2>
   <p class="section-subtitle">
-    Detection and reversible de-identification, written from scratch in C# &mdash; architecture inspired by
+    Detection and reversible de-identification, written from scratch in C# - architecture inspired by
     <a href="https://github.com/microsoft/presidio" target="_blank">Microsoft Presidio</a>
     (<a href="https://github.com/microsoft/presidio/blob/main/LICENSE" target="_blank">MIT</a>; not affiliated or endorsed).
     No cloud, no ML required for the core. PII never leaves your process.
@@ -241,7 +240,7 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
   </div>
 
   <!-- before / after -->
-  <p class="code-label" style="margin-top:3rem">De-identify, then restore &mdash; encrypt is fully reversible</p>
+  <p class="code-label" style="margin-top:3rem">De-identify, then restore - encrypt is fully reversible</p>
 <pre><code>var analyzer   = new AnalyzerEngine(PiiRecognizers.CreateDefaultRegistry("en"));
 var anonymizer = new AnonymizerEngine();
 
@@ -255,6 +254,19 @@ var deid     = PiiDeidentificationResult.FromEngineResult(encrypted); // deid.Is
 var restored = new DeanonymizerEngine().Deanonymize(deid.AnonymizedText, deid.Items, decryptOps);
 // restored.Text == original text   (byte-for-byte)</code></pre>
 
+  <!-- agent framework integration -->
+  <p class="code-label" style="margin-top:3rem">In a Microsoft Agent Framework agent - PII never reaches the model</p>
+<pre><code>var agent = chatClient
+    .AsAIAgent(instructions, name: "SupportBot", tools: [lookupCustomer])
+    .AsBuilder()
+    .UseAgentGuard(g =&gt; g.RedactPii().GuardToolResults()) // input, output &amp; tool-result redaction
+    .UsePiiReversibleRedaction(key)                       // encrypt in, decrypt out
+    .Build();
+
+// user : "Email me at john@example.com about order 12345"
+// model sees : "Email me at &lt;AES ciphertext token&gt; about order 12345"
+// user gets  : "...follow up on john@example.com"   (decrypted only on the way out)</code></pre>
+
   <div class="feature-grid" style="margin-top:3rem">
     <div class="feature-card">
       <h3>Reversible de-identification</h3>
@@ -262,7 +274,7 @@ var restored = new DeanonymizerEngine().Deanonymize(deid.AnonymizedText, deid.It
     </div>
     <div class="feature-card">
       <h3>Structured data</h3>
-      <p>Redact JSON by key path (allow / deny) preserving shape and non-string types, or infer PII columns in CSV/TSV and redact them consistently &mdash; reusing the same recognizers and operators.</p>
+      <p>Redact JSON by key path (allow / deny) preserving shape and non-string types, or infer PII columns in CSV/TSV and redact them consistently - reusing the same recognizers and operators.</p>
     </div>
     <div class="feature-card">
       <h3>Batch API</h3>
@@ -270,7 +282,7 @@ var restored = new DeanonymizerEngine().Deanonymize(deid.AnonymizedText, deid.It
     </div>
     <div class="feature-card">
       <h3>Fully offline &amp; sovereign-friendly</h3>
-      <p>Deterministic regex + checksums with no network calls and no telemetry. Sensitive data stays inside the process &mdash; suitable for air-gapped and regulated environments.</p>
+      <p>Deterministic regex + checksums with no network calls and no telemetry. Sensitive data stays inside the process - suitable for air-gapped and regulated environments.</p>
     </div>
     <div class="feature-card">
       <h3>Country packs</h3>
@@ -278,7 +290,7 @@ var restored = new DeanonymizerEngine().Deanonymize(deid.AnonymizedText, deid.It
     </div>
     <div class="feature-card">
       <h3>Optional multilingual NER</h3>
-      <p>A separate offline ONNX model adds names, places, organizations, and dates across languages &mdash; merged into the same order-20 pass as the regex recognizers when you want it.</p>
+      <p>A separate offline ONNX model adds names, places, organizations, and dates across languages - merged into the same order-20 pass as the regex recognizers when you want it.</p>
     </div>
   </div>
 </section>
@@ -359,7 +371,7 @@ var restored = new DeanonymizerEngine().Deanonymize(deid.AnonymizedText, deid.It
       <tr>
         <td>20</td>
         <td><code>PiiRule</code> (+ optional <code>GlinerNerRecognizer</code>)</td>
-        <td><span class="badge badge-regex">Regex / ONNX NER</span></td>
+        <td><span class="badge badge-regex">Regex</span><span class="badge badge-onnx">ONNX NER</span></td>
         <td>Both</td>
       </tr>
       <tr>
@@ -446,7 +458,7 @@ var restored = new DeanonymizerEngine().Deanonymize(deid.AnonymizedText, deid.It
     <p class="section-subtitle">
       The classifiers are complementary, not competing. The bundled Defender model is the fast default
       for English prompt injection; PIGuard and Opir are optional models you can layer on for cases it
-      isn't built for. Numbers are from held-out datasets &mdash; full method and data in the
+      isn't built for. Numbers are from held-out datasets - full method and data in the
       <code>eng/*-eval</code> RESULTS files. Recall = % of unsafe inputs blocked; FPR = % of safe inputs blocked.
     </p>
 
@@ -454,8 +466,8 @@ var restored = new DeanonymizerEngine().Deanonymize(deid.AnonymizedText, deid.It
     <p class="bench-note">
       The real rules head to head on a balanced 25/class held-out sample (jackhhao English jailbreaks,
       deepset German injections); cells are recall&nbsp;/&nbsp;FPR. The bundled Defender model is the
-      fast default &mdash; on the full jackhhao test split it scores 90.6% / 0.8%. The LLM-as-judge tier
-      (<code>LlmPromptInjectionRule</code>) runs on <strong>any <code>IChatClient</code> you supply &mdash;
+      fast default - on the full jackhhao test split it scores 90.6% / 0.8%. The LLM-as-judge tier
+      (<code>LlmPromptInjectionRule</code>) runs on <strong>any <code>IChatClient</code> you supply -
       AgentGuard bundles no LLM</strong>; the two models below are <strong>illustrative bring-your-own
       examples</strong> (one capable, one tiny), not shipped components. Per-call latency measured on an Apple M4 Pro.
     </p>
@@ -473,20 +485,20 @@ var restored = new DeanonymizerEngine().Deanonymize(deid.AnonymizedText, deid.It
     <p class="bench-note">
       The LLM rows illustrate that quality scales hard with the model you bring: the MoE gemma-4-26b-a4b (~4B active)
       tops every column, while a tiny 0.6B lands well below Defender. Both happen to run fully locally, so an LLM
-      tier is a real option for offline deployments &mdash; but the model is yours to choose, so budget the latency
+      tier is a real option for offline deployments - but the model is yours to choose, so budget the latency
       and pick a capable one. PIGuard isn't in this table: both datasets are in its training set, so its numbers
-      would be optimistic &mdash; it's shown on indirect injection below, where it's held-out.
+      would be optimistic - it's shown on indirect injection below, where it's held-out.
     </p>
 
     <h3 class="bench-heading">Indirect / code-style injection</h3>
     <p class="bench-note">
       A direct-injection sentence classifier is weak by design on payloads hidden in tool results. The optional
-      PIGuard model (DeBERTa-v3) is built for these and layers on top of Defender &mdash; held-out indirect set
+      PIGuard model (DeBERTa-v3) is built for these and layers on top of Defender - held-out indirect set
       (BIPIA) and an over-defense benign set (NotInject).
     </p>
     <table class="rule-table bench-table">
       <thead>
-        <tr><th>Check</th><th>Defender &mdash; bundled</th><th>PIGuard &mdash; optional</th></tr>
+        <tr><th>Check</th><th>Defender - bundled</th><th>PIGuard - optional</th></tr>
       </thead>
       <tbody>
         <tr><td>Indirect / code injection (BIPIA), recall</td><td>34%</td><td><strong>96%</strong></td></tr>
@@ -494,7 +506,7 @@ var restored = new DeanonymizerEngine().Deanonymize(deid.AnonymizedText, deid.It
       </tbody>
     </table>
     <p class="bench-note">
-      Run them together &mdash; PIGuard after Defender &mdash; rather than choosing one.
+      Run them together - PIGuard after Defender - rather than choosing one.
     </p>
 
     <h3 class="bench-heading">Multilingual content safety</h3>
@@ -506,7 +518,7 @@ var restored = new DeanonymizerEngine().Deanonymize(deid.AnonymizedText, deid.It
     </p>
     <table class="rule-table bench-table">
       <thead>
-        <tr><th>Language</th><th>Opir &mdash; offline</th><th>Azure CS &mdash; cloud</th></tr>
+        <tr><th>Language</th><th>Opir - offline</th><th>Azure CS - cloud</th></tr>
       </thead>
       <tbody>
         <tr><td>German</td><td>72% / 24%</td><td>92% / 52%</td></tr>
@@ -648,7 +660,7 @@ if (result.WasReasked)
     <p class="section-label">Observability</p>
     <h2 class="section-title">See every rule fire.</h2>
     <p class="section-subtitle">
-      OpenTelemetry-compatible spans and metrics out of the box. Register with one line &mdash; works with Aspire, Jaeger, Zipkin, and any OTel collector.
+      OpenTelemetry-compatible spans and metrics out of the box. Register with one line - works with Aspire, Jaeger, Zipkin, and any OTel collector.
     </p>
 <pre><code>using AgentGuard.Hosting;
 
