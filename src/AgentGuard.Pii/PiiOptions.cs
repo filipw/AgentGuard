@@ -12,9 +12,10 @@ namespace AgentGuard.Pii;
 public sealed class PiiOptions
 {
     /// <summary>
-    /// Entity types to detect. When null or empty, all supported entities are detected.
-    /// Examples: <c>CREDIT_CARD</c>, <c>EMAIL_ADDRESS</c>, <c>US_SSN</c>, <c>IBAN_CODE</c>,
-    /// <c>CRYPTO</c>, <c>IP_ADDRESS</c>, <c>URL</c>, <c>MAC_ADDRESS</c>, <c>PHONE_NUMBER</c>, <c>US_ITIN</c>.
+    /// Entity types to detect. When null or empty, all supported entities are detected. Use the
+    /// <see cref="PiiEntities"/> constants for discoverability (e.g.
+    /// <c>[PiiEntities.EmailAddress, PiiEntities.PhoneNumber, PiiEntities.UsSsn]</c>); custom
+    /// entity-type strings from your own recognizers are also accepted.
     /// </summary>
     public IReadOnlyList<string>? Entities { get; init; }
 
@@ -35,10 +36,11 @@ public sealed class PiiOptions
     public string Language { get; init; } = "en";
 
     /// <summary>
-    /// Country packs to enable in addition to the generic recognizers and the always-on US pack,
-    /// by ISO 3166-1 alpha-2 code (e.g. <c>uk</c>, <c>de</c>, <c>in</c>, <c>it</c>, <c>es</c>).
-    /// Country packs are opt-in because enabling every national identifier at once inflates false
-    /// positives. When null or empty, only the generic and US recognizers run.
+    /// Country packs to enable in addition to the generic recognizers and the always-on US pack, by
+    /// ISO 3166-1 alpha-2 code - use the <see cref="PiiCountries"/> constants (e.g.
+    /// <c>[PiiCountries.Uk, PiiCountries.De]</c>). Country packs are opt-in because enabling every
+    /// national identifier at once inflates false positives. When null or empty, only the generic and
+    /// US recognizers run.
     /// </summary>
     public IReadOnlyList<string>? Countries { get; init; }
 

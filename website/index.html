@@ -732,5 +732,42 @@ var policy = new GuardrailPolicyBuilder()
   </p>
 </footer>
 
+<!-- ── Syntax highlighting ─────────────────────────────
+     Tiny self-contained C# highlighter: no external libraries, no network, runs once on load.
+     Read-only - it only wraps tokens in <span>s for colouring. -->
+<script>
+(function () {
+  var KEYWORDS = new Set("using namespace var new await async foreach for while do in is as if else switch case return public private protected internal static sealed partial abstract virtual override class record struct interface enum void true false null this base throw try catch finally get set init params out ref readonly const default yield break continue lock typeof nameof when".split(" "));
+  var PRIMS = new Set("string int long double float decimal bool byte char object short uint ulong sbyte ushort void".split(" "));
+
+  function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+
+  function highlight(code) {
+    var out = "", i = 0, n = code.length;
+    while (i < n) {
+      var rest = code.slice(i), m;
+      // line comment
+      if (m = /^\/\/[^\n]*/.exec(rest)) { out += '<span class="tok-com">' + esc(m[0]) + "</span>"; i += m[0].length; continue; }
+      // string (optionally verbatim/interpolated); doubled "" escapes are consumed
+      if (m = /^[@$]*"(?:[^"\\]|\\.|"")*"/.exec(rest)) { out += '<span class="tok-str">' + esc(m[0]) + "</span>"; i += m[0].length; continue; }
+      // number
+      if (m = /^\d[\d_]*(?:\.\d+)?[fFdDmMlLuU]*\b/.exec(rest)) { out += '<span class="tok-num">' + esc(m[0]) + "</span>"; i += m[0].length; continue; }
+      // identifier / keyword / type (consumed whole so keywords are never matched mid-word)
+      if (m = /^[A-Za-z_][A-Za-z0-9_]*/.exec(rest)) {
+        var w = m[0], cls = KEYWORDS.has(w) || PRIMS.has(w) ? "tok-kw" : (/^[A-Z]/.test(w) ? "tok-type" : null);
+        out += cls ? '<span class="' + cls + '">' + esc(w) + "</span>" : esc(w);
+        i += w.length; continue;
+      }
+      out += esc(code[i]); i++;
+    }
+    return out;
+  }
+
+  document.querySelectorAll("pre code").forEach(function (el) {
+    el.innerHTML = highlight(el.textContent);
+  });
+})();
+</script>
+
 </body>
 </html>
