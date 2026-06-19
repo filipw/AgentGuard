@@ -241,7 +241,17 @@ false positives, so non-US packs are opt-in by ISO 3166-1 alpha-2 code:
 - `it`: `IT_FISCAL_CODE` (checksum), `IT_VAT_CODE` (checksum), `IT_DRIVER_LICENSE`, `IT_IDENTITY_CARD`, `IT_PASSPORT`
 - `es`: `ES_NIF` (mod-23), `ES_NIE` (mod-23), `ES_PASSPORT`
 
-By default all enabled entities are detected; pass `Entities` to restrict.
+By default all enabled entities are detected; pass `Entities` to restrict. Entity types and country
+codes are open string vocabularies (custom recognizers can add their own), so the API takes `string`;
+the `PiiEntities` and `PiiCountries` constant classes provide discoverability and typo-safety:
+
+```csharp
+builder.RedactPii(new PiiOptions
+{
+    Entities  = [PiiEntities.EmailAddress, PiiEntities.PhoneNumber, PiiEntities.UsSsn],
+    Countries = [PiiCountries.Uk, PiiCountries.De],
+});
+```
 
 Anonymization operators: `replace` (default, `<ENTITY_TYPE>`), `redact`, `mask`, `hash`,
 `encrypt`/`decrypt` (reversible AES), `keep`, `custom`. Configure per-entity via `Operators`.

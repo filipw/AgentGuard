@@ -241,6 +241,13 @@ pre code {
   color: var(--color-text);
 }
 
+/* syntax highlighting tokens (GitHub-light inspired) */
+.tok-com { color: #6a737d; font-style: italic; }
+.tok-str { color: #032f62; }
+.tok-kw { color: #d73a49; }
+.tok-type { color: #6f42c1; }
+.tok-num { color: #005cc5; }
+
 .code-label {
   font-size: 0.75rem;
   font-weight: 600;
