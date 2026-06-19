@@ -10,8 +10,8 @@
 
 using System.ClientModel;
 using AgentGuard.AgentFramework;
-using AgentGuard.Core.Rules.PII;
 using AgentGuard.Core.Rules.PromptInjection;
+using AgentGuard.Pii;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using OpenAI;
@@ -52,7 +52,7 @@ var agent = chatClient
     .UseAgentGuard(g => g
         .NormalizeInput()
         .BlockPromptInjection(Sensitivity.Medium)
-        .RedactPII()
+        .RedactPii()
         .LimitInputTokens(4000)
         .LimitOutputTokens(500)
         .OnViolation(v => v.RejectWithMessage("Sorry, I can't process that request."))
@@ -108,7 +108,7 @@ var topicAgent = chatClient
     .AsBuilder()
     .UseAgentGuard(g => g
         .BlockPromptInjection()
-        .RedactPII(PiiCategory.All)
+        .RedactPii()
         .EnforceTopicBoundaryWithLlm(chatClient, "billing", "payments", "invoices", "refunds")
         .OnViolation(v => v.RejectWithMessage("I can only help with billing topics."))
     )
@@ -147,7 +147,7 @@ var stackedAgent = chatClient
         runStreamingFunc: null)
     .UseAgentGuard(g => g
         .BlockPromptInjection()
-        .RedactPII()
+        .RedactPii()
     )
     .Build();
 

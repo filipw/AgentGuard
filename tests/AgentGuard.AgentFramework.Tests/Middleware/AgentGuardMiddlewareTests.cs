@@ -2,6 +2,7 @@ using AgentGuard.AgentFramework;
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Builders;
 using AgentGuard.Core.Rules.ToolCall;
+using AgentGuard.Pii;
 using FluentAssertions;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
@@ -49,7 +50,7 @@ public class AgentGuardMiddlewareTests
                 receivedInput = messages.Last().Text;
                 return Task.FromResult(new AgentResponse(new ChatMessage(ChatRole.Assistant, "Got it.")));
             },
-            configure: b => b.RedactPII());
+            configure: b => b.RedactPii("[REDACTED]"));
 
         await agent.RunAsync("My email is test@example.com", null, null, CancellationToken.None);
         receivedInput.Should().Contain("[REDACTED]");
@@ -61,7 +62,7 @@ public class AgentGuardMiddlewareTests
     {
         var agent = BuildGuardedAgent(
             innerResponse: "Contact alice@contoso.com for help.",
-            configure: b => b.RedactPII());
+            configure: b => b.RedactPii("[REDACTED]"));
 
         var response = await agent.RunAsync("How do I get help?", null, null, CancellationToken.None);
         response.Messages.Last().Text.Should().Contain("[REDACTED]");
@@ -128,7 +129,7 @@ public class AgentGuardMiddlewareTests
         var chunks = new[] { "Contact ", "alice@contoso.com", " for help." };
         var agent = BuildGuardedAgent(
             streamingChunks: chunks,
-            configure: b => b.RedactPII());
+            configure: b => b.RedactPii("[REDACTED]"));
 
         var result = new List<string>();
         await foreach (var update in agent.RunStreamingAsync("How do I get help?", null, null, CancellationToken.None))
@@ -154,14 +155,14 @@ public class AgentGuardMiddlewareTests
                 receivedInput = messages.Last().Text;
                 return ToAsyncEnumerable(["OK"], ct);
             },
-            configure: b => b.RedactPII());
+            configure: b => b.RedactPii("[REDACTED]"));
 
         await foreach (var _ in agent.RunStreamingAsync(
-            "My SSN is 123-45-6789", null, null, CancellationToken.None))
+            "My SSN is 234-56-7890", null, null, CancellationToken.None))
         { }
 
         receivedInput.Should().Contain("[REDACTED]");
-        receivedInput.Should().NotContain("123-45-6789");
+        receivedInput.Should().NotContain("234-56-7890");
     }
 
     [Fact]
@@ -206,7 +207,7 @@ public class AgentGuardMiddlewareTests
     {
         var agent = BuildGuardedAgent(
             streamingChunks: ["Your order is ready. Contact support@internal.example.com for details."],
-            configure: b => b.BlockPromptInjection().RedactPII());
+            configure: b => b.BlockPromptInjection().RedactPii("[REDACTED]"));
 
         var result = new List<string>();
         await foreach (var update in agent.RunStreamingAsync(

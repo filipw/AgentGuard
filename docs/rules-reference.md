@@ -19,7 +19,7 @@ var policy = new GuardrailPolicyBuilder()
 //   .NormalizeInput()                    (order 5)
 //   .BlockPromptInjection()             (order 10)
 //   .BlockPromptInjectionWithDefender() (order 11)
-//   .RedactPII()                        (order 20)
+//   .RedactPii()                        (order 20)
 //   .DetectSecrets()                    (order 22)
 //   .GuardToolCalls()                   (order 45)
 //   .GuardToolResults()                 (order 47)
@@ -216,19 +216,168 @@ When `IncludeClassification` is true, blocked results include `Metadata` with:
 - `evasion` - e.g. `none`, `base64`, `hex`, `reversed`, `unicode`
 - `confidence` - `high`, `medium`, or `low`
 
-## PII Redaction (Regex)
+## PII Detection & De-identification
 
-`.RedactPII(categories, replacement)`
+`.RedactPii(options?)` or `.RedactPii(replacement, entities?)` (from `AgentGuard.Pii`)
 
-Order 20, Both phases.
+Order 20, Both phases. Offline PII detection and anonymization using validated regex recognizers
+with confidence scoring, overlap resolution, lemma-aware context score boosting, and configurable
+anonymization operators. Inspired by the architecture of Microsoft Presidio (see THIRD_PARTY_NOTICES.txt).
 
-Categories: `Email`, `Phone`, `SSN`, `CreditCard`, `IpAddress`, `DateOfBirth`, `Default`, `All`
+**Generic entities (always on):** `CREDIT_CARD` (Luhn), `EMAIL_ADDRESS`, `IBAN_CODE` (mod-97),
+`CRYPTO` (Bitcoin checksum), `IP_ADDRESS`, `URL`, `MAC_ADDRESS`, `PHONE_NUMBER` (libphonenumber).
 
-| Option | Type | Default |
+**US pack (always on):** `US_SSN`, `US_ITIN`, `ABA_ROUTING_NUMBER` (checksum), `US_BANK_NUMBER`,
+`US_DRIVER_LICENSE`, `US_PASSPORT`, `US_NPI` (Luhn), `US_MBI`, `MEDICAL_LICENSE` (DEA checksum).
+
+**Country packs (opt-in via `Countries`):** enabling every national identifier at once inflates
+false positives, so non-US packs are opt-in by ISO 3166-1 alpha-2 code:
+
+- `uk`: `UK_NINO`, `UK_NHS` (mod-11), `UK_POSTCODE`, `UK_PASSPORT`, `UK_DRIVING_LICENCE`, `UK_VEHICLE_REGISTRATION`
+- `de`: `DE_ID_CARD` (checksum), `DE_TAX_ID` (checksum), `DE_PASSPORT` (checksum), `DE_PLZ`,
+  `DE_SOCIAL_SECURITY` (checksum), `DE_VAT_ID` (checksum), `DE_FUEHRERSCHEIN`, `DE_KFZ`,
+  `DE_TAX_NUMBER`, `DE_HANDELSREGISTER`
+- `in`: `IN_AADHAAR` (Verhoeff), `IN_PAN`, `IN_GSTIN` (structure), `IN_PASSPORT`, `IN_VOTER`, `IN_VEHICLE_REGISTRATION`
+- `it`: `IT_FISCAL_CODE` (checksum), `IT_VAT_CODE` (checksum), `IT_DRIVER_LICENSE`, `IT_IDENTITY_CARD`, `IT_PASSPORT`
+- `es`: `ES_NIF` (mod-23), `ES_NIE` (mod-23), `ES_PASSPORT`
+
+By default all enabled entities are detected; pass `Entities` to restrict.
+
+Anonymization operators: `replace` (default, `<ENTITY_TYPE>`), `redact`, `mask`, `hash`,
+`encrypt`/`decrypt` (reversible AES), `keep`, `custom`. Configure per-entity via `Operators`.
+
+| `PiiOptions` | Type | Default |
 |--------|------|---------|
-| Categories | `PiiCategory` | Default (Email, Phone, SSN, CreditCard) |
-| Replacement | `string` | `[REDACTED]` |
-| CustomPatterns | `IDictionary<string, string>` | {} |
+| Entities | `IReadOnlyList<string>?` | null (all entities) |
+| Countries | `IReadOnlyList<string>?` | null (generic + US only) |
+| Operators | `IReadOnlyDictionary<string, OperatorConfig>?` | null (replace with `<ENTITY_TYPE>`) |
+| Replacement | `string?` | null (flat replacement, e.g. `[REDACTED]`) |
+| Language | `string` | `en` |
+| ScoreThreshold | `double` | 0.4 |
+| ContextMatchingMode | `Substring` / `WholeWord` | `Substring` |
+| AllowList | `IReadOnlyList<string>?` | null |
+| RedactOutput | `bool` | true (Both phase; false = Input only) |
+
+`ContextMatchingMode` controls how a recognizer's context words are matched against the
+(stemmed) tokens around a candidate: `Substring` (default) matches `card` inside `creditcard`;
+`WholeWord` requires an exact token match, reducing false context hits.
+
+```csharp
+// enable UK + German packs on top of the generic + US defaults
+builder.RedactPii(new PiiOptions { Countries = ["uk", "de"] });
+```
+
+### Reversible de-identification, structured data, and batch (engine APIs)
+
+Beyond the `PiiRule` pipeline rule, `AgentGuard.Pii` exposes its engines directly for richer
+workflows. All are fully offline.
+
+The quickest entry point is the `PiiEngine` facade, configured once from the same `PiiOptions` as the
+rule, with one-liners for every operation:
+
+```csharp
+var pii = new PiiEngine(new PiiOptions { Countries = ["de"] });   // or PiiEngine.Create("en", "de")
+
+pii.Anonymize(text).Text;                       // free-text redaction
+var deid = pii.Deidentify(text);                // PiiDeidentificationResult (persist deid.Items)
+pii.Reidentify(deid, reverseOps).Text;          // restore (decrypt)
+pii.AnonymizeJson(json, scope);                 // structured JSON
+pii.AnonymizeCsv(header, rows);                 // structured CSV
+pii.AnonymizeBatch(records);                    // batch over keyed records
+```
+
+The lower-level engines below are also available directly when you need full control.
+
+**Reversible de-identification** - encrypt PII spans, persist the items, restore later:
+
+```csharp
+var analyzer   = new AnalyzerEngine(PiiRecognizers.CreateDefaultRegistry("en"));
+var anonymizer = new AnonymizerEngine();
+var encryptOps = new Dictionary<string, OperatorConfig>
+{
+    ["DEFAULT"] = new("encrypt", new Dictionary<string, object> { ["key"] = "0123456789abcdef" }),
+};
+
+var encrypted = anonymizer.Anonymize(text, analyzer.Analyze(text, "en"), encryptOps);
+var deid      = PiiDeidentificationResult.FromEngineResult(encrypted); // .IsReversible
+
+// later, with the same key:
+var decryptOps = new Dictionary<string, OperatorConfig>
+{
+    ["DEFAULT"] = new("decrypt", new Dictionary<string, object> { ["key"] = "0123456789abcdef" }),
+};
+var restored = new DeanonymizerEngine().Deanonymize(deid.AnonymizedText, deid.Items, decryptOps);
+// restored.Text == text (byte-for-byte)
+```
+
+`DeanonymizerEngine` reverses `encrypt` (default `decrypt`) and `custom` spans. Lossy operators
+(`replace`/`redact`/`mask`/`hash`/`keep`) are reported as non-reversible (`IsReversible == false`,
+and `Deanonymize` throws if asked to `decrypt` them); a wrong or missing key throws clearly.
+
+**Structured data** - redact JSON by key path or CSV by inferred column:
+
+```csharp
+var structured = new StructuredEngine(analyzer);
+
+// JSON: allowlist only $.user.email; structure and non-string types preserved
+var redactedJson = structured.AnonymizeJson(
+    json, new JsonRedactionScope { IncludePaths = ["user.email"] });
+
+// CSV/TSV: per-column inference; benign columns are left untouched
+var result = structured.AnonymizeCsv(header, rows);   // result.ColumnEntities reports PII columns
+```
+
+**Batch** - analyze/anonymize lists or keyed records, results aligned to input:
+
+```csharp
+var batchAnalyzer   = new BatchAnalyzerEngine(analyzer);
+var batchAnonymizer = new BatchAnonymizerEngine();
+
+var detections = batchAnalyzer.Analyze(records);                  // IReadOnlyDictionary<string,string>
+var anonymized = batchAnonymizer.Anonymize(records, detections);  // keys preserved
+```
+
+See [`samples/PiiShowcase`](../samples/PiiShowcase) for a runnable end-to-end tour.
+
+### Named-entity recognition (ONNX, offline, multilingual)
+
+`.RedactPiiWithNer(nerOptions, piiOptions?)` or
+`.RedactPiiWithNer(modelPath, tokenizerPath, configPath, threshold, piiOptions?)` (from `AgentGuard.Onnx`)
+
+Order 20, same `PiiRule` pass. Augments the regex/checksum recognizers with an offline ONNX
+named-entity recognizer that detects the span entity types regex cannot catch - **`PERSON`,
+`LOCATION`, `ORGANIZATION`, `DATE_TIME`** - and resolves them against the regex entities in a single
+analyzer -> anonymizer pass (so overlap resolution and anonymization treat them uniformly). The NER
+spans flow through the same engine, so the redaction output mixes `<PERSON>`, `<LOCATION>`,
+`<EMAIL_ADDRESS>`, etc. transparently.
+
+Uses a [GLiNER](https://huggingface.co/urchade/gliner_multi_pii-v1) span model (mDeBERTa-v3-base
+backbone, Apache-2.0) - **multilingual** (the reason to add it; regex and spaCy-style NER are
+English-leaning) and zero-shot. The model is **not bundled**; download it separately via
+[`eng/download-gliner-model.sh`](../eng/download-gliner-model.sh). Not part of `UseDefaults()`.
+
+`GlinerNerOptions.NerThreshold` (default **0.5**, the micro-F1 optimum - see
+[`eng/gliner-eval/RESULTS.md`](../eng/gliner-eval/RESULTS.md)) is the binding gate for NER spans; the
+analyzer's `PiiOptions.ScoreThreshold` still applies on top. NER coverage targets whitespace-segmented
+scripts (Latin / Cyrillic / Arabic / Devanagari); CJK is out of practical scope for the word splitter.
+
+| `GlinerNerOptions` | Type | Default |
+|--------|------|---------|
+| ModelPath | `string` | *(required)* |
+| TokenizerPath | `string` | *(required)* mDeBERTa-v3 `spm.model` |
+| ConfigPath | `string` | *(required)* `config.json` (special-token ids + max span width) |
+| NerThreshold | `float` | 0.5 |
+| MaxSpanWidth | `int` | 12 |
+| EntityLabelMap | `IReadOnlyDictionary<string,string>` | `person→PERSON`, `location→LOCATION`, `organization→ORGANIZATION`, `date→DATE_TIME` |
+
+```csharp
+// detect names/places/orgs/dates alongside regex PII, in one order-20 pass
+builder.RedactPiiWithNer(
+    modelPath: "models/gliner/model.onnx",
+    tokenizerPath: "models/gliner/spm.model",
+    configPath: "models/gliner/config.json",
+    piiOptions: new PiiOptions { Countries = ["de"] });
+```
 
 ## PII Detection (LLM)
 
@@ -429,13 +578,13 @@ Wraps `Executor<TInput>` or `Executor<TInput, TOutput>` with a `GuardedExecutor`
 
 ```csharp
 // Builder overload
-var guarded = executor.WithGuardrails(b => b.BlockPromptInjection().RedactPII());
+var guarded = executor.WithGuardrails(b => b.BlockPromptInjection().RedactPii());
 
 // Pre-built policy overload
 var guarded = executor.WithGuardrails(existingPolicy);
 
 // With options (custom text extractor, logger)
-var guarded = executor.WithGuardrails(b => b.RedactPII(),
+var guarded = executor.WithGuardrails(b => b.RedactPii(),
     new GuardedExecutorOptions { TextExtractor = myExtractor });
 ```
 

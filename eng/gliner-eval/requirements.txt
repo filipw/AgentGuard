@@ -1,0 +1,16 @@
+# GLiNER span NER export + eval harness (AgentGuard.Pii).
+# CPU-only is fine; this is an offline export/measurement tool, not shipped code.
+#
+# The gliner lib version is pinned because the ONNX input/output signature (input_ids,
+# attention_mask, words_mask, text_lengths, span_idx, span_mask -> logits[B,L,K,C]) and the
+# collator/decoder it must reproduce in C# vary by version.
+gliner==0.2.27
+torch>=2.4
+transformers>=4.44
+sentencepiece>=0.2
+onnx>=1.16
+onnxruntime>=1.18
+onnxconverter-common>=1.14  # fp16 conversion (realign-Cast pass)
+numpy>=1.26
+huggingface_hub>=0.24
+datasets>=3.0  #eval sets (ai4privacy / CoNLL-style)

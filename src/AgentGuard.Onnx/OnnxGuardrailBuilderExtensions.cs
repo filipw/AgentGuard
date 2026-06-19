@@ -1,4 +1,7 @@
 using AgentGuard.Core.Builders;
+using AgentGuard.Pii;
+using AgentGuard.Pii.Analyzer;
+using AgentGuard.Pii.Analyzer.Context;
 
 namespace AgentGuard.Onnx;
 
@@ -166,6 +169,77 @@ public static class OnnxGuardrailBuilderExtensions
     }
 
     /// <summary>
+    /// Adds offline, multilingual PII redaction (order 20) that augments the regex/checksum
+    /// recognizers with ONNX named-entity recognition, detecting the span entity types regex cannot
+    /// catch - <c>PERSON</c>, <c>LOCATION</c>, <c>ORGANIZATION</c>, <c>DATE_TIME</c> - and resolving
+    /// them against the regex entities in a single <c>PiiRule</c> pass. Opt-in and BYO-download (the
+    /// NER model is not bundled - see <c>eng/download-gliner-model.sh</c>); not part of
+    /// <see cref="UseDefaults"/>.
+    /// <para>
+    /// The NER spans flow through the same analyzer as the regex entities, so overlap resolution and
+    /// anonymization treat them uniformly. <see cref="GlinerNerOptions.NerThreshold"/> (default 0.5) is
+    /// the binding gate for NER spans; the analyzer's <see cref="PiiOptions.ScoreThreshold"/> still
+    /// applies on top.
+    /// </para>
+    /// </summary>
+    /// <param name="builder">The policy builder.</param>
+    /// <param name="nerOptions">NER model paths, threshold, span width, and label map.</param>
+    /// <param name="piiOptions">Optional PII detection/anonymization configuration (entities, countries, operators).</param>
+    /// <returns>The builder for chaining.</returns>
+    public static GuardrailPolicyBuilder RedactPiiWithNer(
+        this GuardrailPolicyBuilder builder,
+        GlinerNerOptions nerOptions,
+        PiiOptions? piiOptions = null)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(nerOptions);
+
+        var language = piiOptions?.Language ?? "en";
+        var registry = PiiRecognizers.CreateRegistry(language, piiOptions?.Countries);
+        registry.AddRecognizer(new GlinerNerRecognizer(nerOptions, supportedLanguage: language));
+
+        // defaultScoreThreshold 0 here; PiiRule applies PiiOptions.ScoreThreshold per evaluation.
+        var engine = new AnalyzerEngine(
+            registry,
+            new LemmaContextAwareEnhancer(contextMatchingMode: piiOptions?.ContextMatchingMode ?? ContextMatchingMode.Substring),
+            defaultScoreThreshold: 0);
+
+        builder.AddRule(new PiiRule(piiOptions, analyzer: engine));
+        return builder;
+    }
+
+    /// <summary>
+    /// Adds offline, multilingual PII redaction (order 20) augmented with ONNX named-entity
+    /// recognition (PERSON/LOCATION/ORGANIZATION/DATE_TIME). The NER model must be downloaded
+    /// separately - see <c>eng/download-gliner-model.sh</c>.
+    /// </summary>
+    /// <param name="builder">The policy builder.</param>
+    /// <param name="modelPath">Path to the NER ONNX model file.</param>
+    /// <param name="tokenizerPath">Path to the mDeBERTa-v3 SentencePiece model file (<c>spm.model</c>).</param>
+    /// <param name="configPath">Path to the model <c>config.json</c> (special-token ids + max span width).</param>
+    /// <param name="threshold">Span emission threshold (0.0-1.0). Default: 0.5.</param>
+    /// <param name="piiOptions">Optional PII detection/anonymization configuration.</param>
+    /// <returns>The builder for chaining.</returns>
+    public static GuardrailPolicyBuilder RedactPiiWithNer(
+        this GuardrailPolicyBuilder builder,
+        string modelPath,
+        string tokenizerPath,
+        string configPath,
+        float threshold = 0.5f,
+        PiiOptions? piiOptions = null)
+    {
+        return builder.RedactPiiWithNer(
+            new GlinerNerOptions
+            {
+                ModelPath = modelPath,
+                TokenizerPath = tokenizerPath,
+                ConfigPath = configPath,
+                NerThreshold = threshold,
+            },
+            piiOptions);
+    }
+
+    /// <summary>
     /// Configures a sensible set of default guardrail rules including:
     /// input normalization (order 5), regex-based prompt injection (order 10),
     /// Defender ML-based prompt injection (order 11), PII redaction (order 20),
@@ -181,7 +255,7 @@ public static class OnnxGuardrailBuilderExtensions
             .NormalizeInput()
             .BlockPromptInjection()
             .BlockPromptInjectionWithDefender()
-            .RedactPII()
+            .RedactPii()
             .DetectSecrets()
             .GuardToolCalls()
             .GuardToolResults();

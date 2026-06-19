@@ -4,6 +4,7 @@ using System.Text.Json;
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Builders;
 using AgentGuard.Core.Telemetry;
+using AgentGuard.Pii;
 using FluentAssertions;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
@@ -101,7 +102,7 @@ public class MiddlewareTelemetryTests : IDisposable
     {
         var agent = BuildGuardedAgent(
             innerResponse: "Contact alice@contoso.com for help.",
-            configure: b => b.RedactPII());
+            configure: b => b.RedactPii("[REDACTED]"));
 
         await agent.RunAsync("How do I get help?", null, null, CancellationToken.None);
 

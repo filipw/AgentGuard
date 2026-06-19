@@ -417,6 +417,106 @@ section.alt .feature-card {
   line-height: 1.5;
 }
 
+/* ── PII flagship ────────────────────────────────────── */
+
+.pii-stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1.25rem;
+  margin-bottom: 2.5rem;
+}
+
+.pii-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 1.5rem 1rem;
+  border: 1px solid var(--color-border);
+  border-radius: 16px;
+  background: var(--color-code-bg);
+}
+
+.pii-stat-num {
+  font-size: 2.25rem;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1;
+}
+
+.pii-stat-label {
+  margin-top: 0.5rem;
+  font-size: 0.8125rem;
+  color: var(--color-text-secondary);
+  line-height: 1.3;
+}
+
+.pii-prose {
+  font-size: 1.0625rem;
+  color: var(--color-text-secondary);
+  line-height: 1.6;
+  max-width: 760px;
+  margin-bottom: 2.5rem;
+}
+
+.pii-prose code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background: var(--color-code-bg);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+}
+
+.pii-pipeline {
+  display: flex;
+  align-items: stretch;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.pipe-stage {
+  flex: 1 1 0;
+  min-width: 160px;
+  position: relative;
+  padding: 1.5rem 1.25rem;
+  border: 1px solid var(--color-border);
+  border-radius: 16px;
+  background: var(--color-bg);
+}
+
+.pipe-stage strong {
+  display: block;
+  font-size: 1rem;
+  margin: 0.75rem 0 0.4rem;
+  letter-spacing: -0.01em;
+}
+
+.pipe-stage span:not(.pipe-step) {
+  font-size: 0.8125rem;
+  color: var(--color-text-secondary);
+  line-height: 1.45;
+}
+
+.pipe-step {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 980px;
+  background: var(--color-badge-bg);
+  color: var(--color-badge-text);
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.pipe-arrow {
+  display: flex;
+  align-items: center;
+  color: var(--color-text-secondary);
+  font-size: 1.25rem;
+}
+
 /* ── Packages ────────────────────────────────────────── */
 
 .package-grid {
@@ -515,6 +615,18 @@ footer a:hover {
     grid-template-columns: 1fr;
   }
 
+  .pii-stats {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .pii-pipeline {
+    flex-direction: column;
+  }
+
+  .pipe-arrow {
+    justify-content: center;
+    transform: rotate(90deg);
+  }
 
   nav .nav-links {
     display: none;

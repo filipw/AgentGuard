@@ -11,8 +11,8 @@
 
 using System.ClientModel;
 using AgentGuard.Core.ChatClient;
-using AgentGuard.Core.Rules.PII;
 using AgentGuard.Core.Rules.PromptInjection;
+using AgentGuard.Pii;
 using Microsoft.Extensions.AI;
 using OpenAI;
 
@@ -47,7 +47,7 @@ Console.WriteLine(new string('─', 60));
 var guardedClient = chatClient.UseAgentGuard(g => g
     .NormalizeInput()
     .BlockPromptInjection(Sensitivity.Medium)
-    .RedactPII()
+    .RedactPii()
     .LimitInputTokens(4000)
     .OnViolation(v => v.RejectWithMessage("Sorry, I can't process that request."))
 );
@@ -99,7 +99,7 @@ Console.WriteLine(new string('─', 60));
 
 var topicClient = chatClient.UseAgentGuard(g => g
     .BlockPromptInjection()
-    .RedactPII(PiiCategory.All)
+    .RedactPii()
     .EnforceTopicBoundaryWithLlm(chatClient, "billing", "payments", "invoices", "refunds")
     .OnViolation(v => v.RejectWithMessage("I can only help with billing topics."))
 );
@@ -126,7 +126,7 @@ Console.WriteLine(new string('─', 60));
 var outputClient = chatClient.UseAgentGuard(g => g
     .BlockPromptInjection()
     .DetectSecrets()
-    .RedactPII()
+    .RedactPii()
     .OnViolation(v => v.RejectWithMessage("Response blocked by output safety policy."))
 );
 
@@ -169,7 +169,7 @@ Console.WriteLine(new string('─', 60));
 
 var sharedPolicy = new AgentGuard.Core.Builders.GuardrailPolicyBuilder()
     .BlockPromptInjection(Sensitivity.High)
-    .RedactPII()
+    .RedactPii()
     .OnViolation(v => v.RejectWithMessage("Blocked by shared policy."))
     .Build();
 

@@ -1,6 +1,7 @@
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Builders;
 using AgentGuard.Core.ChatClient;
+using AgentGuard.Pii;
 using FluentAssertions;
 using Microsoft.Extensions.AI;
 using Moq;
@@ -72,7 +73,7 @@ public class GuardrailChatClientTests
             .Callback<IEnumerable<ChatMessage>, ChatOptions?, CancellationToken>((msgs, _, _) => capturedMessages = msgs.ToList())
             .ReturnsAsync(new ChatResponse([new ChatMessage(ChatRole.Assistant, "Got it.")]));
 
-        var client = BuildClient(inner, b => b.RedactPII());
+        var client = BuildClient(inner, b => b.RedactPii("[REDACTED]"));
 
         await client.GetResponseAsync([new(ChatRole.User, "My email is test@example.com, help me with billing.")]);
 

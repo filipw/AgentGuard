@@ -15,6 +15,7 @@
     <a href="/" class="logo">AgentGuard</a>
     <ul class="nav-links">
       <li><a href="#features">Features</a></li>
+      <li><a href="#pii">PII</a></li>
       <li><a href="#rules">Rules</a></li>
       <li><a href="#benchmarks">Benchmarks</a></li>
       <li><a href="#packages">Packages</a></li>
@@ -61,7 +62,7 @@ var policy = new GuardrailPolicyBuilder()
     .NormalizeInput()
     .BlockPromptInjection()
     .BlockPromptInjectionWithDefender()
-    .RedactPII()
+    .RedactPii()
     .EnforceTopicBoundaryWithLlm(chatClient, "billing", "returns")
     .LimitInputTokens(4000)
     .Build();
@@ -93,7 +94,7 @@ var guardedClient = chatClient.UseAgentGuard(g => g
     .NormalizeInput()
     .BlockPromptInjection()
     .BlockPromptInjectionWithDefender()
-    .RedactPII()
+    .RedactPii()
     .EnforceTopicBoundaryWithLlm(chatClient, "billing", "returns")
     .LimitInputTokens(4000)
 );
@@ -118,7 +119,7 @@ var guardedAgent = agent
         .NormalizeInput()
         .BlockPromptInjection()
         .BlockPromptInjectionWithDefender()
-        .RedactPII()
+        .RedactPii()
         .EnforceTopicBoundaryWithLlm(chatClient, "billing", "returns")
         .LimitInputTokens(4000)
     )
@@ -155,8 +156,8 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
         <p>Toxicity, hate speech, violence, sexual content, self-harm, and harassment. Plug in Azure AI Content Safety, or run the offline Opir mDeBERTa classifier for <strong>non-English</strong> text (German, Spanish, Russian, Arabic, Chinese, Hindi) when a per-call cloud API isn't an option.</p>
       </div>
       <div class="feature-card">
-        <h3>PII Redaction</h3>
-        <p>Regex-based redaction for emails, phones, SSNs, credit cards, IPs, and dates of birth. LLM-based detection catches names, addresses, and contextual identifiers.</p>
+        <h3>PII Engine <span class="badge badge-onnx" style="vertical-align:middle">Flagship</span></h3>
+        <p>A complete offline PII detection + de-identification engine &mdash; ~50 entity types, reversible encryption, structured JSON/CSV redaction, and a batch API. Always-on generic + US recognizers, opt-in country packs (UK/DE/IN/IT/ES), and an optional multilingual NER add-on. <a href="#pii">See the full breakdown &rarr;</a></p>
       </div>
       <div class="feature-card">
         <h3>Topic Enforcement</h3>
@@ -182,6 +183,102 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
         <h3>Observability (OpenTelemetry)</h3>
         <p>Built-in spans and metrics for every pipeline run, rule evaluation, re-ask attempt, and streaming retraction. Uses <code>System.Diagnostics</code> &mdash; no SDK dependency. Works with Aspire Dashboard, Jaeger, Zipkin, and any OTel collector.</p>
       </div>
+    </div>
+  </div>
+</section>
+
+
+<!-- ── PII flagship ───────────────────────────────── -->
+<section id="pii">
+  <p class="section-label">Flagship Capability</p>
+  <h2 class="section-title">A complete, offline PII engine for .NET.</h2>
+  <p class="section-subtitle">
+    Detection and reversible de-identification, written from scratch in C# &mdash; architecture inspired by
+    <a href="https://github.com/microsoft/presidio" target="_blank">Microsoft Presidio</a>
+    (<a href="https://github.com/microsoft/presidio/blob/main/LICENSE" target="_blank">MIT</a>; not affiliated or endorsed).
+    No cloud, no ML required for the core. PII never leaves your process.
+  </p>
+
+  <div class="pii-stats">
+    <div class="pii-stat"><span class="pii-stat-num">~50</span><span class="pii-stat-label">entity types</span></div>
+    <div class="pii-stat"><span class="pii-stat-num">6</span><span class="pii-stat-label">country packs (US always on)</span></div>
+    <div class="pii-stat"><span class="pii-stat-num">7</span><span class="pii-stat-label">anonymization operators</span></div>
+    <div class="pii-stat"><span class="pii-stat-num">0</span><span class="pii-stat-label">network calls</span></div>
+  </div>
+
+  <p class="pii-prose">
+    8 generic recognizers (email, phone via libphonenumber, credit card / Luhn, IBAN / mod-97, crypto, IP, URL, MAC) and a
+    9-entity US pack are <strong>always on</strong>. Opt-in country packs add national IDs, tax numbers, and passports for the
+    UK, Germany, India, Italy, and Spain. An optional offline ONNX add-on layers in multilingual named-entity detection
+    (<code>PERSON</code>, <code>LOCATION</code>, <code>ORGANIZATION</code>, <code>DATE_TIME</code>), all resolved in one pass.
+  </p>
+
+  <!-- pipeline diagram (static, no JS) -->
+  <div class="pii-pipeline" aria-label="PII processing pipeline">
+    <div class="pipe-stage">
+      <span class="pipe-step">1</span>
+      <strong>Recognizers</strong>
+      <span>Validated regex + checksums<br>Luhn · mod-97 · Verhoeff · ISO-7064</span>
+    </div>
+    <div class="pipe-arrow" aria-hidden="true">&rarr;</div>
+    <div class="pipe-stage">
+      <span class="pipe-step">2</span>
+      <strong>Context boosting</strong>
+      <span>Lemma-aware confidence scoring<br>offline Porter stemmer</span>
+    </div>
+    <div class="pipe-arrow" aria-hidden="true">&rarr;</div>
+    <div class="pipe-stage">
+      <span class="pipe-step">3</span>
+      <strong>Conflict resolution</strong>
+      <span>Overlap / containment merge<br>threshold + allow-list</span>
+    </div>
+    <div class="pipe-arrow" aria-hidden="true">&rarr;</div>
+    <div class="pipe-stage">
+      <span class="pipe-step">4</span>
+      <strong>Operators</strong>
+      <span>replace · redact · mask · hash<br>encrypt &harr; decrypt · keep · custom</span>
+    </div>
+  </div>
+
+  <!-- before / after -->
+  <p class="code-label" style="margin-top:3rem">De-identify, then restore &mdash; encrypt is fully reversible</p>
+<pre><code>var analyzer   = new AnalyzerEngine(PiiRecognizers.CreateDefaultRegistry("en"));
+var anonymizer = new AnonymizerEngine();
+
+// input  : "Email ada@acme.com or call +1 415 555 0132"
+var results    = analyzer.Analyze(text, "en");
+var anonymized = anonymizer.Anonymize(text, results);
+// replace: "Email &lt;EMAIL_ADDRESS&gt; or call &lt;PHONE_NUMBER&gt;"
+
+// reversible round-trip: encrypt with a key, persist the items, decrypt later
+var deid     = PiiDeidentificationResult.FromEngineResult(encrypted); // deid.IsReversible == true
+var restored = new DeanonymizerEngine().Deanonymize(deid.AnonymizedText, deid.Items, decryptOps);
+// restored.Text == original text   (byte-for-byte)</code></pre>
+
+  <div class="feature-grid" style="margin-top:3rem">
+    <div class="feature-card">
+      <h3>Reversible de-identification</h3>
+      <p>Encrypt PII spans (AES) and restore them later with <code>DeanonymizerEngine</code>. Lossy operators (mask, hash, redact) report themselves as non-reversible; a wrong key fails loudly, never silently.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Structured data</h3>
+      <p>Redact JSON by key path (allow / deny) preserving shape and non-string types, or infer PII columns in CSV/TSV and redact them consistently &mdash; reusing the same recognizers and operators.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Batch API</h3>
+      <p>Analyze and anonymize lists or keyed record dictionaries in one call, with results aligned to the input. Sequential, allocation-light, and safe to share across threads.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Fully offline &amp; sovereign-friendly</h3>
+      <p>Deterministic regex + checksums with no network calls and no telemetry. Sensitive data stays inside the process &mdash; suitable for air-gapped and regulated environments.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Country packs</h3>
+      <p>Opt-in national identifier packs (UK / DE / IN / IT / ES) are validated with real checksums and disabled by default to keep false positives low. The US pack is always on.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Optional multilingual NER</h3>
+      <p>A separate offline ONNX model adds names, places, organizations, and dates across languages &mdash; merged into the same order-20 pass as the regex recognizers when you want it.</p>
     </div>
   </div>
 </section>
@@ -261,8 +358,8 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
       </tr>
       <tr>
         <td>20</td>
-        <td><code>PiiRedactionRule</code></td>
-        <td><span class="badge badge-regex">Regex</span></td>
+        <td><code>PiiRule</code> (+ optional <code>GlinerNerRecognizer</code>)</td>
+        <td><span class="badge badge-regex">Regex / ONNX NER</span></td>
         <td>Both</td>
       </tr>
       <tr>
@@ -468,6 +565,10 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
       <div class="package-desc">All-in-one package. Core rules engine, bundled Defender multi-head ONNX model (minilm-multihead-v5), and offline classifiers. No agent framework dependency.</div>
     </div>
     <div class="package-card">
+      <div class="package-name">AgentGuard.Pii</div>
+      <div class="package-desc">Flagship offline PII engine: ~50 entity types across generic + always-on US + opt-in country packs, lemma-aware context scoring, anonymization operators, reversible de-identification, and structured JSON/CSV + batch APIs. Architecture inspired by Microsoft Presidio (MIT). Fully offline.</div>
+    </div>
+    <div class="package-card">
       <div class="package-name">AgentGuard.AgentFramework</div>
       <div class="package-desc">Microsoft Agent Framework adapter. <code>UseAgentGuard()</code> middleware + workflow guardrails via <code>.WithGuardrails()</code>.</div>
     </div>
@@ -612,8 +713,10 @@ var policy = new GuardrailPolicyBuilder()
     AgentGuard is open source under the <a href="https://github.com/filipw/AgentGuard/blob/main/LICENSE">MIT License</a>.
     Prompt injection patterns informed by the <a href="https://github.com/Arcanum-Sec/arc_pi_taxonomy">Arcanum PI Taxonomy</a>.
     Bundled ML model by <a href="https://github.com/StackOneHQ/defender">StackOne Defender</a> (Apache 2.0).
-    Optional <a href="https://huggingface.co/leolee99/PIGuard">PIGuard</a> (MIT) and
-    <a href="https://huggingface.co/knowledgator/opir-multitask-multilang-v1.0">Opir</a> (Apache 2.0) models.
+    Optional <a href="https://huggingface.co/leolee99/PIGuard">PIGuard</a> (MIT),
+    <a href="https://huggingface.co/knowledgator/opir-multitask-multilang-v1.0">Opir</a> (Apache 2.0), and
+    <a href="https://huggingface.co/urchade/gliner_multi_pii-v1">GLiNER</a> (Apache 2.0) models.
+    PII engine architecture inspired by <a href="https://github.com/microsoft/presidio">Microsoft Presidio</a> (MIT).
   </p>
 </footer>
 

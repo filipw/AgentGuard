@@ -13,6 +13,7 @@ multilingual probes. Inputs are built exactly like the gliclass UniEncoder pipel
 label prefix + text via the HF tokenizer) so we don't need to reload the 1.1 GB PyTorch model.
 """
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -104,4 +105,6 @@ for t in probes:
     a, b = punsafe(sess_32, t), punsafe(sess_16, t)
     worst = max(worst, abs(a - b))
     print(f"  {a:.4f}   {b:.4f}   {abs(a-b):.4f}   {t[:45]!r}")
-print(f"\nmax |delta P(unsafe)| = {worst:.4f}  ->  {'OK' if worst < 0.02 else 'CHECK'}")
+ok = worst < 0.02
+print(f"\nmax |delta P(unsafe)| = {worst:.4f}  ->  {'OK' if ok else 'CHECK'}")
+sys.exit(0 if ok else 1)

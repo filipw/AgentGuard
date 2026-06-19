@@ -110,7 +110,8 @@ If any rule blocks, the agent never runs. The user gets a configurable rejection
 | `BlockPromptInjectionWithAzurePromptShield()` | Input | 14 | Azure |
 | `BlockPromptInjectionWithLlm()` | Input | 15 | Core |
 | `DetectSecrets()` | Both | 22 | Core |
-| `RedactPII()` | Both | 20 | Core |
+| `RedactPii()` | Both | 20 | Pii |
+| `RedactPiiWithNer()` | Both | 20 | Onnx (GLiNER, optional download) |
 | `DetectPIIWithLlm()` | Both | 25 | Core |
 | `EnforceTopicBoundaryWithLlm()` | Input | 35 | Core |
 | `LimitInputTokens()` / `LimitOutputTokens()` | Input/Output | 40 | Core |
@@ -131,7 +132,7 @@ using AgentGuard.AgentFramework.Workflows;
 
 var guardedExecutor = myExecutor.WithGuardrails(b => b
     .BlockPromptInjection()
-    .RedactPII());
+    .RedactPii());
 
 try
 {

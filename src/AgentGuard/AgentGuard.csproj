@@ -1,11 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <Description>All-in-one guardrails for .NET AI agents. Includes the core rules engine, fluent builder, all built-in rules, bundled StackOne Defender multi-head ONNX model (minilm-multihead-v5), and offline classifiers. No agent framework dependency.</Description>
+    <Description>All-in-one guardrails for .NET AI agents. Includes the core rules engine, fluent builder, all built-in rules, bundled StackOne Defender multi-head ONNX model (minilm-multihead-v5), offline classifiers, and offline PII detection/redaction. No agent framework dependency.</Description>
     <PackageId>AgentGuard</PackageId>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../AgentGuard.Core/AgentGuard.Core.csproj" />
     <ProjectReference Include="../AgentGuard.Onnx/AgentGuard.Onnx.csproj" />
     <ProjectReference Include="../AgentGuard.Local/AgentGuard.Local.csproj" />
+    <ProjectReference Include="../AgentGuard.Pii/AgentGuard.Pii.csproj" />
   </ItemGroup>
 </Project>

@@ -48,3 +48,4 @@ eng/defender-sweep/.cache/
 eng/classifier-benchmark/.cache/
 eng/models/piguard/
 eng/models/opir-multilang/
+eng/models/gliner/

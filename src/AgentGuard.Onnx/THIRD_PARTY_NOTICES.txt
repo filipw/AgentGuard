@@ -77,3 +77,33 @@ See the License for the specific language governing permissions and
 limitations under the License.
 
 -------------------------------------------------------------------------------
+
+GLiNER span NER model (optional, downloaded separately)
+
+Source:  https://huggingface.co/urchade/gliner_multi_pii-v1
+         GLiNER: Generalist Model for Named Entity Recognition using
+         Bidirectional Transformer (https://github.com/urchade/GLiNER),
+         NAACL 2024 (https://aclanthology.org/2024.naacl-long.300/).
+ONNX export distributed at https://huggingface.co/filip-w/gliner-multi-pii-onnx
+Tokenizer / backbone: https://huggingface.co/microsoft/mdeberta-v3-base
+
+The model is NOT bundled with this package; it is fetched on demand via
+eng/download-gliner-model.sh and used by the offline named-entity recognizer to
+detect PERSON / LOCATION / ORGANIZATION / DATE_TIME spans. The mdeberta-v3-base
+tokenizer (spm.model) shipped alongside it is (c) Microsoft, MIT-licensed.
+
+Copyright (c) the GLiNER authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+-------------------------------------------------------------------------------

@@ -41,19 +41,8 @@ public sealed class PIGuardPromptInjectionRule : IGuardrailRule, IDisposable
     {
         ArgumentNullException.ThrowIfNull(options);
 
-        if (string.IsNullOrWhiteSpace(options.ModelPath))
-            throw new ArgumentException("ModelPath is required.", nameof(options));
-
-        var modelPath = Path.GetFullPath(options.ModelPath);
-        if (!File.Exists(modelPath))
-            throw new FileNotFoundException($"PIGuard ONNX model not found at '{modelPath}'.", modelPath);
-
-        if (string.IsNullOrWhiteSpace(options.TokenizerPath))
-            throw new ArgumentException("TokenizerPath is required.", nameof(options));
-
-        var tokenizerPath = Path.GetFullPath(options.TokenizerPath);
-        if (!File.Exists(tokenizerPath))
-            throw new FileNotFoundException($"Tokenizer not found at '{tokenizerPath}'.", tokenizerPath);
+        var modelPath = OnnxFileValidation.RequireFile(options.ModelPath, nameof(options.ModelPath), "PIGuard ONNX model");
+        var tokenizerPath = OnnxFileValidation.RequireFile(options.TokenizerPath, nameof(options.TokenizerPath), "tokenizer");
         if (options.Threshold is < 0f or > 1f)
             throw new ArgumentOutOfRangeException(nameof(options), "Threshold must be between 0.0 and 1.0.");
 

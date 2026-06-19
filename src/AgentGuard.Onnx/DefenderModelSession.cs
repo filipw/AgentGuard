@@ -32,7 +32,7 @@ internal readonly record struct DefenderScore(float Main, float Aux);
 /// The model is a fine-tuned all-MiniLM-L6-v2 (~22 MB int8 quantized) with a dual classification head:
 /// a main injection head and an auxiliary "directed at human reader" head used for the veto rule.
 /// </remarks>
-internal sealed class DefenderModelSession : IDisposable
+internal sealed class DefenderModelSession : IRefCountedSession
 {
     private readonly InferenceSession _session;
     private readonly BertTokenizer _tokenizer;
@@ -42,14 +42,7 @@ internal sealed class DefenderModelSession : IDisposable
 
     private readonly record struct SessionKey(string ModelPath, string VocabPath, int MaxTokenLength, float TemperatureT);
 
-    private sealed class CacheEntry
-    {
-        public required DefenderModelSession Session { get; init; }
-        public int RefCount { get; set; }
-    }
-
-    private static readonly Dictionary<SessionKey, CacheEntry> _cache = [];
-    private static readonly object _cacheLock = new();
+    private static readonly RefCountedSessionPool<SessionKey, DefenderModelSession> _pool = new();
 
     private DefenderModelSession(string modelPath, string vocabPath, int maxTokenLength, float temperatureT, SessionKey? cacheKey)
     {
@@ -68,25 +61,11 @@ internal sealed class DefenderModelSession : IDisposable
     internal static DefenderModelSession Acquire(string modelPath, string vocabPath, int maxTokenLength, float temperatureT)
     {
         var key = new SessionKey(modelPath, vocabPath, maxTokenLength, temperatureT);
-        lock (_cacheLock)
-        {
-            if (_cache.TryGetValue(key, out var entry))
-            {
-                entry.RefCount++;
-                return entry.Session;
-            }
-
-            var session = new DefenderModelSession(modelPath, vocabPath, maxTokenLength, temperatureT, key);
-            _cache[key] = new CacheEntry { Session = session, RefCount = 1 };
-            return session;
-        }
+        return _pool.Acquire(key, () => new DefenderModelSession(modelPath, vocabPath, maxTokenLength, temperatureT, key));
     }
 
     /// <summary>Number of distinct loaded sessions currently cached. For tests/diagnostics.</summary>
-    internal static int ActiveSessionCount
-    {
-        get { lock (_cacheLock) { return _cache.Count; } }
-    }
+    internal static int ActiveSessionCount => _pool.ActiveCount;
 
     /// <summary>
     /// Classifies the text and returns the temperature-calibrated main and aux scores.
@@ -152,6 +131,7 @@ internal sealed class DefenderModelSession : IDisposable
     /// </summary>
     internal static float Sigmoid(float x) => 1.0f / (1.0f + MathF.Exp(-x));
 
+    /// <summary>Releases this holder's reference; the pool frees the session at zero.</summary>
     public void Dispose()
     {
         if (_cacheKey is not { } key)
@@ -161,17 +141,8 @@ internal sealed class DefenderModelSession : IDisposable
             return;
         }
 
-        lock (_cacheLock)
-        {
-            if (!_cache.TryGetValue(key, out var entry))
-                return; // already fully released
-
-            entry.RefCount--;
-            if (entry.RefCount <= 0)
-            {
-                _cache.Remove(key);
-                _session.Dispose();
-            }
-        }
+        _pool.Release(key);
     }
+
+    void IRefCountedSession.ReleaseResources() => _session.Dispose();
 }
