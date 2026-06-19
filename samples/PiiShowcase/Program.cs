@@ -39,7 +39,7 @@ Console.WriteLine("AgentGuard - PII engine showcase");
 Console.WriteLine("Offline PII detection + de-identification, architecture inspired by Microsoft Presidio (MIT).");
 
 // shared engines. enabling the German country pack alongside the always-on generic + US recognizers.
-var registry = PiiRecognizers.CreateRegistry("en", ["de"]);
+var registry = PiiRecognizers.CreateRegistry("en", [PiiCountries.De]);
 var analyzer = new AnalyzerEngine(registry, new LemmaContextAwareEnhancer(), defaultScoreThreshold: 0.4);
 var anonymizer = new AnonymizerEngine();
 var deanonymizer = new DeanonymizerEngine();
@@ -217,7 +217,7 @@ if (string.IsNullOrEmpty(nerModel) || string.IsNullOrEmpty(nerTokenizer) || stri
 else
 {
     // span entities (names, places, orgs, dates) merge with the regex/checksum recognizers in one pass
-    var nerRegistry = PiiRecognizers.CreateRegistry("en", ["de"]);
+    var nerRegistry = PiiRecognizers.CreateRegistry("en", [PiiCountries.De]);
     using var ner = new GlinerNerRecognizer(new GlinerNerOptions
     {
         ModelPath = nerModel,
