@@ -6,11 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <IsPackable>false</IsPackable>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
-    <!-- standalone eng tool, intentionally not in AgentGuard.slnx so CI doesn't build it.
-         Gate 2: confirms Microsoft.ML.Tokenizers' SentencePieceTokenizer over the mdeberta
-         spm.model reproduces HF's text-portion ids on non-Latin scripts, and that the
-         frozen-prefix ONNX assembly (prefix_ids ++ spm(text) ++ [SEP]) matches the upstream
-         gliclass forward. Re-measure (Gate 5) is added here later. -->
+    <!-- standalone eng tool, intentionally not in AgentGuard.slnx so CI doesn't build it. -->
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.ML.OnnxRuntime" />

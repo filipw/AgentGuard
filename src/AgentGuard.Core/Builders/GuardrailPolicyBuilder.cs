@@ -4,7 +4,6 @@ using AgentGuard.Core.Rules;
 using AgentGuard.Core.Rules.ContentSafety;
 using AgentGuard.Core.Rules.LLM;
 using AgentGuard.Core.Rules.Normalization;
-using AgentGuard.Core.Rules.PII;
 using AgentGuard.Core.Rules.PromptInjection;
 using AgentGuard.Core.Rules.Retrieval;
 using AgentGuard.Core.Rules.Secrets;
@@ -40,12 +39,6 @@ public sealed class GuardrailPolicyBuilder
     public GuardrailPolicyBuilder BlockPromptInjection(Sensitivity sensitivity = Sensitivity.Medium)
     {
         _rules.Add(new PromptInjectionRule(new PromptInjectionOptions { Sensitivity = sensitivity }));
-        return this;
-    }
-
-    public GuardrailPolicyBuilder RedactPII(PiiCategory categories = PiiCategory.Default, string replacement = "[REDACTED]")
-    {
-        _rules.Add(new PiiRedactionRule(new PiiRedactionOptions { Categories = categories, Replacement = replacement }));
         return this;
     }
 

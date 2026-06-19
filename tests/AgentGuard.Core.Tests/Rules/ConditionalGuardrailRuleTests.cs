@@ -1,6 +1,7 @@
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Builders;
 using AgentGuard.Core.Rules;
+using AgentGuard.Pii;
 using FluentAssertions;
 using Xunit;
 
@@ -134,13 +135,13 @@ public class ConditionalGuardrailRuleTests
         // two rules; only the second (gated) one is conditional
         var policy = new GuardrailPolicyBuilder()
             .AddRule(new BlockingRule())            // order 11, always runs
-            .RedactPII()
+            .RedactPii()
             .When(_ => false)                        // gate the PII rule off
             .Build();
 
         policy.Rules.Should().HaveCount(2);
         policy.Rules.OfType<ConditionalGuardrailRule>().Should().ContainSingle()
-            .Which.Name.Should().Be("pii-redaction");
+            .Which.Name.Should().Be("pii");
     }
 
     [Fact]

@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Context-aware PII detection and de-identification for AgentGuard. Provides validated regex recognizers (credit card, IBAN, crypto, US SSN/ITIN, email, IP, URL, MAC, phone) with confidence scoring and overlap resolution, plus anonymization operators (replace, redact, mask, hash, encrypt/decrypt, keep, custom). Inspired by the architecture of Microsoft Presidio (MIT). Framework-agnostic, fully offline. See https://github.com/filipw/AgentGuard for details.</Description>
+    <PackageId>AgentGuard.Pii</PackageId>
+    <RootNamespace>AgentGuard.Pii</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="AgentGuard.Pii.Tests" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../AgentGuard.Core/AgentGuard.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="libphonenumber-csharp" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="THIRD_PARTY_NOTICES.txt"
+          Pack="true"
+          PackagePath="/" />
+  </ItemGroup>
+</Project>

@@ -44,7 +44,7 @@ static int Fail(string msg)
 }
 
 // ---------------------------------------------------------------------------
-// Gate 2: tokenizer parity
+// tokenizer parity
 // ---------------------------------------------------------------------------
 static int RunTokenizerParity(string modelDir)
 {
@@ -94,7 +94,7 @@ static int RunTokenizerParity(string modelDir)
 }
 
 // ---------------------------------------------------------------------------
-// Gate 5: multilingual recall/FPR re-measure (C# inference path)
+// multilingual recall/FPR re-measure (C# inference path)
 // ---------------------------------------------------------------------------
 static int RunEval(string modelDir)
 {

@@ -68,7 +68,7 @@ invoke_agent (MAF)
        └─ agentguard.pipeline.run
             ├─ agentguard.rule.evaluate PromptInjectionRule
             ├─ agentguard.rule.evaluate DefenderPromptInjectionRule
-            └─ agentguard.rule.evaluate PiiRedactionRule
+            └─ agentguard.rule.evaluate pii
   └─ agentguard.middleware.output
        └─ agentguard.pipeline.run
             ├─ agentguard.rule.evaluate ToolCallGuardrailRule

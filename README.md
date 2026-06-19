@@ -37,7 +37,7 @@ var policy = new GuardrailPolicyBuilder()
     .NormalizeInput()              // decode base64/hex/unicode evasion tricks
     .GuardRetrieval()              // filter poisoned RAG chunks
     .BlockPromptInjection()        // regex-based injection detection
-    .RedactPII(PiiCategory.Email | PiiCategory.Phone | PiiCategory.SSN)
+    .RedactPii(new PiiOptions { Entities = ["EMAIL_ADDRESS", "PHONE_NUMBER", "US_SSN"] })
     .DetectSecrets()               // block API keys, tokens, connection strings
     .EnforceTopicBoundaryWithLlm(chatClient, "customer-support", "billing", "returns")
     .LimitInputTokens(4000)
@@ -74,11 +74,11 @@ var guardedAgent = agent
 
 - **Input normalization** - decodes evasion encodings (base64, hex, reversed text, Unicode homoglyphs) before downstream rules evaluate the text, catching attacks hidden via encoding tricks
 - **Prompt injection detection** - blocks jailbreak attempts, system prompt extraction, role-play attacks, end sequence injection, variable expansion, framing attacks, and rule addition with configurable sensitivity levels (Low/Medium/High). Patterns based on the [Arcanum Prompt Injection Taxonomy](https://github.com/Arcanum-Sec/arc_pi_taxonomy)
-- **PII redaction** - detects and redacts emails, phone numbers, SSNs, credit cards, IP addresses, dates of birth, and custom patterns on input and output
+- **PII redaction** - a complete offline detection and de-identification engine inspired by the architecture of [Microsoft Presidio](https://github.com/microsoft/presidio) (MIT), with validated regex + checksum recognizers, confidence scoring, overlap resolution, lemma-aware context boosting, and anonymization operators (replace/redact/mask/hash/encrypt/keep/custom). Generic entities (email, phone via libphonenumber, credit card/Luhn, IBAN, crypto, IP, URL, MAC) plus a complete US pack are always on; opt-in country packs for the UK, Germany, India, Italy and Spain add national IDs, tax numbers, passports, driving licences and more via `Countries`. Reversible de-identification (`DeanonymizerEngine` restores AES-encrypted spans), structured-data redaction (`StructuredEngine` for JSON by key path and CSV by column inference), and a batch API (`BatchAnalyzerEngine`/`BatchAnonymizerEngine`) are all built in and fully offline. An optional offline ONNX add-on, `RedactPiiWithNer()` (`AgentGuard.Onnx`, separate [GLiNER](https://huggingface.co/filip-w/gliner-multi-pii-onnx) download), adds multilingual named-entity detection - `PERSON`, `LOCATION`, `ORGANIZATION`, `DATE_TIME` - that regex can't catch, resolved in the same order-20 pass. See [`samples/PiiShowcase`](samples/PiiShowcase) for an end-to-end tour
 - **Token limits** - enforces input/output token budgets using `Microsoft.ML.Tokenizers` (cl100k_base) with configurable overflow strategies (Reject/Truncate/Warn)
 - **Secrets detection** - detects API keys (AWS, GitHub, Azure, Slack), JWT tokens, private keys, connection strings, bearer tokens. Block or redact actions with custom patterns and optional Shannon entropy-based detection
 - **Content safety** - severity-based filtering via pluggable `IContentSafetyClassifier` (Azure AI Content Safety adapter included). Detects harmful content (hate, violence, self-harm, sexual) - a complementary layer to prompt injection detection, not a substitute for it
-- **Offline multilingual content safety** - the [Opir](https://huggingface.co/knowledgator/opir-multitask-multilang-v1.0) mDeBERTa-v3 classifier (GLiClass, Apache 2.0) scores toxicity, hate speech, violence, sexual content, self-harm, and harassment in any language, fully offline. A local alternative to the cloud Azure Content Safety adapter for non-English text, when a per-call cloud API isn't an option (offline/sovereign deployments, PII constraints). Order 50, `AgentGuard.Onnx`, separate download (`./eng/download-opir-model.sh`). See [docs/rules-reference.md](docs/rules-reference.md#content-safety-onnx---opir-offline-multilingual)
+- **Offline multilingual content safety** - the [Opir](https://huggingface.co/filip-w/opir-multilang-onnx) mDeBERTa-v3 classifier (GLiClass, Apache 2.0) scores toxicity, hate speech, violence, sexual content, self-harm, and harassment in any language, fully offline. A local alternative to the cloud Azure Content Safety adapter for non-English text, when a per-call cloud API isn't an option (offline/sovereign deployments, PII constraints). Order 50, `AgentGuard.Onnx`, separate download (`./eng/download-opir-model.sh`). See [docs/rules-reference.md](docs/rules-reference.md#content-safety-onnx---opir-offline-multilingual)
 - **Azure Prompt Shields** - dedicated prompt injection detection via Azure AI Content Safety's Prompt Shield API (`text:shieldPrompt`). Detects user prompt attacks (jailbreaks, role-play, encoding attacks) and document attacks (indirect injection in grounded content). Complements the local multi-head Defender model with a cloud-based signal. Order 14. Install via `AgentGuard.Azure` package
 - **Azure Protected Material detection** - detects copyrighted text (lyrics, articles, recipes) and code from GitHub repositories in LLM-generated output via `text:detectProtectedMaterial` and `text:detectProtectedMaterialForCode`. Code detection returns license info and source URLs. No C# SDK exists for these APIs - AgentGuard provides the only .NET client. Output phase (order 76), supports Block/Warn actions. Install via `AgentGuard.Azure` package
 
@@ -138,7 +138,7 @@ AgentGuard works with both `RunAsync` and `RunStreamingAsync` when used with MAF
 ```csharp
 // Enable progressive streaming
 var policy = new GuardrailPolicyBuilder()
-    .RedactPII()
+    .RedactPii()
     .CheckGroundedness(chatClient)
     .UseProgressiveStreaming()  // tokens flow immediately, retract on violation
     .Build();
@@ -219,7 +219,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 var policy = new GuardrailPolicyBuilder()
     .BlockPromptInjection()
-    .RedactPII()
+    .RedactPii()
     .EnforceTopicBoundaryWithLlm(chatClient, "customer-support")
     .OnViolation(v => v.RejectWithMessage("I can only help with customer support topics."))
     .Build();
@@ -248,7 +248,7 @@ using AgentGuard.Core.ChatClient;
 // Wrap any IChatClient - works with OpenAI, Azure OpenAI, Ollama, or any Microsoft.Extensions.AI client
 var guardedClient = chatClient.UseAgentGuard(g => g
     .BlockPromptInjection()
-    .RedactPII()
+    .RedactPii()
     .EnforceTopicBoundaryWithLlm(chatClient, "customer-support")
     .OnViolation(v => v.RejectWithMessage("I can only help with customer support topics."))
 );
@@ -275,7 +275,7 @@ var guardedAgent = agent
     .AsBuilder()
     .UseAgentGuard(g => g
         .BlockPromptInjection()
-        .RedactPII()
+        .RedactPii()
         .EnforceTopicBoundaryWithLlm(chatClient, "customer-support")
         .OnViolation(v => v.RejectWithMessage("I can only help with customer support topics."))
     )
@@ -312,12 +312,12 @@ builder.Services.AddAgentGuard(options =>
 {
     options.DefaultPolicy(policy => policy
         .BlockPromptInjection()
-        .RedactPII()
+        .RedactPii()
         .LimitOutputTokens(2000));
 
     options.AddPolicy("strict", policy => policy
         .BlockPromptInjection(sensitivity: Sensitivity.High)
-        .RedactPII(PiiCategory.All)
+        .RedactPii()
         .EnforceTopicBoundaryWithLlm(sp.GetRequiredService<IChatClient>(), "billing"));
 });
 ```
@@ -362,11 +362,11 @@ using AgentGuard.AgentFramework.Workflows;
 var guardedInput = myInputExecutor.WithGuardrails(b => b
     .NormalizeInput()
     .BlockPromptInjection(Sensitivity.High)
-    .RedactPII());
+    .RedactPii());
 
 // Wrap a typed executor with input + output guardrails
 var guardedProcessor = myProcessorExecutor.WithGuardrails(b => b
-    .RedactPII()
+    .RedactPii()
     .ValidateOutput(text => !text.Contains("internal-only"), "Leaked internal info"));
 
 // Use in your workflow - GuardedExecutor is still an Executor
@@ -430,7 +430,7 @@ var agent = chatClient
         RetrievalFunc = async (query, ct) => await vectorStore.SearchAsync(query, ct),
         GuardrailOptions = new() { DetectPromptInjection = true, DetectSecrets = true }
     }))
-    .UseAgentGuard(g => g.BlockPromptInjection().RedactPII())
+    .UseAgentGuard(g => g.BlockPromptInjection().RedactPii())
     .Build();
 
 // Or standalone - evaluate chunks directly
@@ -482,7 +482,8 @@ Rules execute in order of their `Order` property (lower = first). Built-in rules
 | 13 | `RemotePromptInjectionRule` | Remote ML | Input |
 | 14 | `AzurePromptShieldRule` | Azure API | Input |
 | 15 | `LlmPromptInjectionRule` | LLM | Input |
-| 20 | `PiiRedactionRule` | Regex | Both |
+| 20 | `PiiRule` | Regex + checksum (offline) | Both |
+| 20 | `GlinerNerRecognizer` (via `RedactPiiWithNer()`) | ONNX ML (GLiNER, multilingual, optional) | Both |
 | 22 | `SecretsDetectionRule` | Regex | Both |
 | 25 | `LlmPiiDetectionRule` | LLM | Both |
 | 35 | `LlmTopicGuardrailRule` | LLM | Input |
@@ -503,6 +504,8 @@ Rules execute in order of their `Order` property (lower = first). Built-in rules
 - [Agent Framework Integration](samples/AgentFrameworkIntegration/) - `UseAgentGuard()` on a MAF agent with RunAsync and streaming
 - [ONNX Guardrails](samples/OnnxGuardrails/) - offline ML-based prompt injection detection with bundled StackOne Defender model + optional DeBERTa v3
 - [Opir Multilingual Guardrails](samples/OpirMultilingualGuardrails/) - offline multilingual content-safety detection (toxicity across German, Spanish, Russian, Arabic, Chinese, Hindi) with `BlockUnsafeContentWithOpir()`
+- [PII Showcase](samples/PiiShowcase/) - end-to-end tour of the offline PII engine: detection breadth + scores + context boosting, all operators incl. encrypt->deanonymize round-trip, structured JSON/CSV redaction, batch API, allow-lists, and optional multilingual NER (gated on `AGENTGUARD_GLINER_*`)
+- [PII in Agent Framework](samples/AgentFrameworkPii/) - PII handling around a MAF agent: standard input/output redaction, reversible redaction (`.UsePiiReversibleRedaction()` - encrypt before the model, decrypt in the response), and tool-result redaction. Redaction parts run offline against a scripted agent; the tool-calling part is gated on `OPENAI_BASE_URL`/`OPENAI_MODEL`
 - [Custom Rules](samples/CustomRules/) - implementing and composing custom guardrail rules
 - [Azure Integration](samples/AzureIntegration/) - using Azure AI Content Safety for production
 - [Workflow Guardrails](samples/WorkflowGuardrails/) - wrapping MAF workflow executors with `.WithGuardrails()` decorator
@@ -524,6 +527,17 @@ Rules execute in order of their `Order` property (lower = first). Built-in rules
 
 - .NET 10.0 or later
 - Microsoft Agent Framework 1.8.0 or later *(only if using `AgentGuard.AgentFramework`)*
+
+### Optional ONNX models
+
+The bundled StackOne Defender prompt-injection model ships inside `AgentGuard.Onnx` and needs no download. The other ONNX models (GLiNER PII NER, Opir multilingual content safety, PIGuard, and the generic DeBERTa injection classifier) are opt-in, BYO-download prebuilt exports hosted on Hugging Face. To pull them for the samples and the gated E2E tests, run the top-level bootstrap script:
+
+```bash
+./bootstrap-models.sh              # all models (~1.9 GB) into ./models (gitignored)
+./bootstrap-models.sh gliner       # or just the PII NER model
+source ./models/env.sh             # export the AGENTGUARD_*_PATH variables
+dotnet test AgentGuard.slnx        # gated ONNX/PII E2E tests now run instead of skipping
+```
 
 
 ## Acknowledgements

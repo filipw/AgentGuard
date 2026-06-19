@@ -1,6 +1,6 @@
 using AgentGuard.Core.Builders;
-using AgentGuard.Core.Rules.PII;
 using AgentGuard.Core.Streaming;
+using AgentGuard.Pii;
 using FluentAssertions;
 using Xunit;
 
@@ -24,16 +24,16 @@ public class GuardrailPolicyBuilderTests
     }
 
     [Fact]
-    public void ShouldAddPiiRedactionRule()
+    public void ShouldAddPiiRule()
     {
-        new GuardrailPolicyBuilder().RedactPII(PiiCategory.Email | PiiCategory.Phone).Build()
-            .Rules.Should().ContainSingle().Which.Name.Should().Be("pii-redaction");
+        new GuardrailPolicyBuilder().RedactPii().Build()
+            .Rules.Should().ContainSingle().Which.Name.Should().Be("pii");
     }
 
     [Fact]
     public void ShouldChainMultipleRules()
     {
-        new GuardrailPolicyBuilder().BlockPromptInjection().RedactPII().LimitInputTokens(2000).Build()
+        new GuardrailPolicyBuilder().BlockPromptInjection().RedactPii().LimitInputTokens(2000).Build()
             .Rules.Should().HaveCount(3);
     }
 
@@ -41,9 +41,9 @@ public class GuardrailPolicyBuilderTests
     public void ShouldOrderRulesByPriority()
     {
         var p = new GuardrailPolicyBuilder()
-            .LimitInputTokens(2000).RedactPII().BlockPromptInjection().Build();
+            .LimitInputTokens(2000).RedactPii().BlockPromptInjection().Build();
         p.Rules[0].Name.Should().Be("prompt-injection");
-        p.Rules[1].Name.Should().Be("pii-redaction");
+        p.Rules[1].Name.Should().Be("pii");
         p.Rules[2].Name.Should().Contain("token-limit");
     }
 

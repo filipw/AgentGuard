@@ -32,6 +32,9 @@
     <!-- Tokenization -->
     <PackageVersion Include="Microsoft.ML.Tokenizers" Version="2.0.0" />
 
+    <!-- PII detection -->
+    <PackageVersion Include="libphonenumber-csharp" Version="9.0.32" />
+
     <!-- ONNX Runtime -->
     <PackageVersion Include="Microsoft.ML.OnnxRuntime" Version="1.21.0" />
 

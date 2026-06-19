@@ -50,10 +50,18 @@ public sealed class RuleConfiguration
     public string? Sensitivity { get; set; }
 
     // --- PiiRedaction ---
-    /// <summary>PII categories: Default, All, or comma-separated (Email, Phone, SSN, CreditCard, IpAddress, DateOfBirth).</summary>
-    public string? Categories { get; set; }
+    /// <summary>
+    /// PII entity types to detect (e.g. EMAIL_ADDRESS, PHONE_NUMBER, US_SSN, CREDIT_CARD, IBAN_CODE,
+    /// CRYPTO, IP_ADDRESS, URL, MAC_ADDRESS, US_ITIN). When empty, all supported entities are detected.
+    /// </summary>
+    public List<string>? Entities { get; set; }
     /// <summary>Replacement text for redacted PII. Default: [REDACTED].</summary>
     public string? Replacement { get; set; }
+    /// <summary>
+    /// Country packs to enable in addition to the generic recognizers and the always-on US pack, by
+    /// ISO 3166-1 alpha-2 code (e.g. uk, de, in, it, es). When empty, only generic + US run.
+    /// </summary>
+    public List<string>? Countries { get; set; }
 
     // --- TopicBoundary / LlmTopicBoundary ---
     /// <summary>List of allowed topic names.</summary>

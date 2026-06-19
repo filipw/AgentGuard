@@ -1,6 +1,7 @@
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Guardrails;
 using AgentGuard.Hosting;
+using AgentGuard.Pii;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -32,7 +33,7 @@ public class HostingIntegrationTests
         services.AddLogging();
         services.AddAgentGuard(options =>
         {
-            options.DefaultPolicy(b => b.BlockPromptInjection().RedactPII());
+            options.DefaultPolicy(b => b.BlockPromptInjection().RedactPii("[REDACTED]"));
         });
 
         var provider = services.BuildServiceProvider();
@@ -50,7 +51,7 @@ public class HostingIntegrationTests
         services.AddAgentGuard(options =>
         {
             options.DefaultPolicy(b => b.BlockPromptInjection());
-            options.AddPolicy("strict", b => b.BlockPromptInjection().RedactPII().LimitInputTokens(2000));
+            options.AddPolicy("strict", b => b.BlockPromptInjection().RedactPii("[REDACTED]").LimitInputTokens(2000));
         });
 
         var provider = services.BuildServiceProvider();
@@ -99,7 +100,7 @@ public class HostingIntegrationTests
         services.AddLogging();
         services.AddAgentGuard(options =>
         {
-            options.DefaultPolicy(b => b.BlockPromptInjection().RedactPII());
+            options.DefaultPolicy(b => b.BlockPromptInjection().RedactPii("[REDACTED]"));
         });
 
         var provider = services.BuildServiceProvider();
@@ -144,7 +145,7 @@ public class HostingIntegrationTests
         services.AddAgentGuard(options =>
         {
             options.AddPolicy("chat", b => b.BlockPromptInjection());
-            options.AddPolicy("api", b => b.RedactPII().LimitInputTokens(8000));
+            options.AddPolicy("api", b => b.RedactPii("[REDACTED]").LimitInputTokens(8000));
         });
 
         var provider = services.BuildServiceProvider();
