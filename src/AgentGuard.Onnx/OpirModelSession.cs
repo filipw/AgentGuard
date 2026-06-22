@@ -45,7 +45,7 @@ internal sealed class OpirModelSession : IRefCountedSession
 
     private OpirModelSession(string modelPath, string tokenizerPath, string prefixPath, int maxTokenLength, SessionKey? cacheKey)
     {
-        _session = new InferenceSession(modelPath);
+        _session = OnnxSessionFactory.Create(modelPath);
 
         using (var tokenizerStream = File.OpenRead(tokenizerPath))
         {

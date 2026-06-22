@@ -91,7 +91,7 @@ if (string.IsNullOrEmpty(endpoint) || string.IsNullOrEmpty(model))
 else
 {
     var chatClient = new OpenAIClient(new ApiKeyCredential(apiKey), new OpenAIClientOptions { Endpoint = new Uri(endpoint) })
-        .GetChatClient(model)
+        .GetChatClient(model)   
         .AsIChatClient();
 
     // a tool that returns a customer record laden with PII (email, phone, SSN)

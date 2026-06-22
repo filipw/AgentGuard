@@ -20,7 +20,7 @@ internal sealed class OnnxModelSession : IDisposable
 
     internal OnnxModelSession(string modelPath, Tokenizer tokenizer, int maxTokenLength)
     {
-        _session = new InferenceSession(modelPath);
+        _session = OnnxSessionFactory.Create(modelPath);
         _tokenizer = tokenizer;
         _maxTokenLength = maxTokenLength;
 
