@@ -46,7 +46,7 @@ internal sealed class DefenderModelSession : IRefCountedSession
 
     private DefenderModelSession(string modelPath, string vocabPath, int maxTokenLength, float temperatureT, SessionKey? cacheKey)
     {
-        _session = new InferenceSession(modelPath);
+        _session = OnnxSessionFactory.Create(modelPath);
         _tokenizer = BertTokenizer.Create(vocabPath, new BertOptions { LowerCaseBeforeTokenization = true });
         _maxTokenLength = maxTokenLength;
         _temperatureT = temperatureT;
