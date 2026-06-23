@@ -32,6 +32,23 @@ internal sealed class RefCountedSessionPool<TKey, TSession>
     private readonly Dictionary<TKey, CacheEntry> _cache = [];
     private readonly object _lock = new();
 
+    public RefCountedSessionPool()
+    {
+        // release this pool's native sessions during managed shutdown, before ONNX Runtime's native
+        // atexit destructors run. the coordinator disposes the shared OrtEnv last (see OnnxRuntimeShutdown).
+        OnnxRuntimeShutdown.RegisterSessionDisposer(DisposeAll);
+    }
+
+    private void DisposeAll()
+    {
+        lock (_lock)
+        {
+            foreach (var entry in _cache.Values)
+                entry.Session.ReleaseResources();
+            _cache.Clear();
+        }
+    }
+
     /// <summary>
     /// Returns the shared session for <paramref name="key"/>, building it with
     /// <paramref name="factory"/> on first use. Reference-counted: balance each call with a

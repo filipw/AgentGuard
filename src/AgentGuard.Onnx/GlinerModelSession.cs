@@ -49,7 +49,7 @@ internal sealed class GlinerModelSession : IRefCountedSession
 
     private GlinerModelSession(string modelPath, string tokenizerPath, string configPath, int maxTokenLength, int maxSpanWidth, int maxChunkChars, SessionKey? cacheKey)
     {
-        _session = new InferenceSession(modelPath);
+        _session = OnnxSessionFactory.Create(modelPath);
 
         using (var tokenizerStream = File.OpenRead(tokenizerPath))
         {

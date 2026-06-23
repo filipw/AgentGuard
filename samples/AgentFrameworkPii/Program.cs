@@ -10,6 +10,10 @@
 //   [3] Tool-result redaction    - PiiRule runs in the tool-result lane (.GuardToolResults()), so PII
 //                                  returned by a tool is scrubbed before it is fed back to the LLM.
 //
+// By default redaction uses the offline regex + checksum recognizers (email, card, phone, SSN, ...).
+// Set the AGENTGUARD_GLINER_* env vars (the optional ONNX NER model) and redaction in [1] and [3] also
+// catches the span entities regex cannot - PERSON / LOCATION / ORGANIZATION / DATE_TIME - multilingually.
+//
 // Parts [1] and [2] run fully offline against a scripted stub agent (deterministic, no LLM needed).
 // Part [3] needs a real function-calling model; set OPENAI_BASE_URL / OPENAI_MODEL to run it.
 
@@ -19,6 +23,7 @@ using System.Runtime.CompilerServices;
 using System.Text.Json;
 using AgentGuard.AgentFramework;
 using AgentGuard.Core.Builders;
+using AgentGuard.Onnx;
 using AgentGuard.Pii;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
@@ -28,6 +33,32 @@ const string piiKey = "0123456789abcdef"; // 128-bit AES key for reversible reda
 
 Console.WriteLine("AgentGuard - PII in Agent Framework");
 Console.WriteLine(new string('=', 64));
+
+// optional multilingual NER. when the GLiNER model is configured via AGENTGUARD_GLINER_*, redaction
+// also catches the span entities regex cannot - names, places, organizations, dates - across languages.
+var nerModel = Environment.GetEnvironmentVariable("AGENTGUARD_GLINER_ONNX_MODEL_PATH");
+var nerTokenizer = Environment.GetEnvironmentVariable("AGENTGUARD_GLINER_TOKENIZER_PATH");
+var nerConfig = Environment.GetEnvironmentVariable("AGENTGUARD_GLINER_CONFIG_PATH");
+var nerEnabled = !string.IsNullOrEmpty(nerModel) && !string.IsNullOrEmpty(nerTokenizer) && !string.IsNullOrEmpty(nerConfig);
+
+Console.WriteLine(nerEnabled
+    ? "  redaction: regex/checksum + GLiNER NER (PERSON/LOCATION/ORGANIZATION/DATE_TIME)"
+    : "  redaction: regex/checksum only (set AGENTGUARD_GLINER_* to add multilingual NER)");
+
+// the redaction step, swapping in NER-augmented redaction when the model is configured.
+void Redact(GuardrailPolicyBuilder g)
+{
+    if (nerEnabled)
+    {
+        Console.WriteLine("  using GLiNER NER for redaction");
+        g.RedactPiiWithNer(nerModel!, nerTokenizer!, nerConfig!);
+    }
+    else
+    {
+        Console.WriteLine("  using regex/checksum only for redaction");
+        g.RedactPii();
+    }
+}
 
 // ─── [1] Standard redaction (input + output) ──────────────────────────────
 Console.WriteLine("\n[1] Standard redaction (.UseAgentGuard(g => g.RedactPii()))");
@@ -41,10 +72,12 @@ var redactingAgent = new ScriptedAgent(messages =>
         return "Thanks - a confirmation was emailed to advisor@bank.com.";
     })
     .AsBuilder()
-    .UseAgentGuard(g => g.RedactPii())
+    .UseAgentGuard(Redact)
     .Build(null!);
 
-const string input1 = "I'm Jane Doe, my email is jane@acme.com and my card is 4012888888881881.";
+// with NER off, only the email + card are caught; with NER on, "Jane Doe", "Acme Corp" and "Berlin"
+// (a PERSON / ORGANIZATION / LOCATION that regex cannot express) are redacted too.
+const string input1 = "I'm Jane Doe from Acme Corp in Berlin. My email is jane@acme.com and my card is 4012888888881881.";
 var reply1 = await redactingAgent.RunAsync(input1, null, null, CancellationToken.None);
 
 Console.WriteLine($"  user typed     : {input1}");
@@ -91,7 +124,7 @@ if (string.IsNullOrEmpty(endpoint) || string.IsNullOrEmpty(model))
 else
 {
     var chatClient = new OpenAIClient(new ApiKeyCredential(apiKey), new OpenAIClientOptions { Endpoint = new Uri(endpoint) })
-        .GetChatClient(model)
+        .GetChatClient(model)   
         .AsIChatClient();
 
     // a tool that returns a customer record laden with PII (email, phone, SSN)
@@ -108,10 +141,10 @@ else
         });
     }
 
-    var policy = new GuardrailPolicyBuilder()
-        .RedactPii()         // order 20 - runs on tool results too
-        .GuardToolResults()  // wires the tool-result interception
-        .Build();
+    var policyBuilder = new GuardrailPolicyBuilder();
+    Redact(policyBuilder);            // order 20 - also runs on tool results (NER-augmented when configured)
+    policyBuilder.GuardToolResults(); // wires the tool-result interception
+    var policy = policyBuilder.Build();
 
     var toolAgent = chatClient
         .AsAIAgent(
