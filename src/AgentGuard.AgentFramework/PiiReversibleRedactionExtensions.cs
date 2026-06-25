@@ -1,7 +1,8 @@
 using System.Text;
 using AgentGuard.Pii;
-using AgentGuard.Pii.Anonymizer;
-using AgentGuard.Pii.Anonymizer.Operators;
+using TasmanianDevil;
+using TasmanianDevil.Anonymizer;
+using TasmanianDevil.Anonymizer.Operators;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 

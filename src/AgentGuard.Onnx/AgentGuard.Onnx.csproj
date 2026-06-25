@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <Description>ONNX-based ML classifiers for AgentGuard - offline prompt injection detection. Includes the bundled StackOne Defender multi-head model (fine-tuned MiniLM-L6, minilm-multihead-v5, ~22 MB, calibrated dual-head with aux veto) which requires no separate download. Also supports the optional DeBERTa v3 model (download separately via eng/download-onnx-model.sh). See https://github.com/filipw/AgentGuard for details.</Description>
+    <Description>AgentGuard guardrail adapters for the Kyoto ONNX classifiers - offline prompt-injection detection (bundled Defender model, generic DeBERTa, PIGuard), multilingual content safety (Opir), and the ONNX NER PII add-on (RedactPiiWithNer via TasmanianDevil.Onnx). See https://github.com/filipw/AgentGuard for details.</Description>
     <PackageId>AgentGuard.Onnx</PackageId>
     <RootNamespace>AgentGuard.Onnx</RootNamespace>
   </PropertyGroup>
@@ -12,35 +12,9 @@
     <ProjectReference Include="../AgentGuard.Pii/AgentGuard.Pii.csproj" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="Microsoft.ML.OnnxRuntime" />
+    <PackageReference Include="Kyoto" />
+    <PackageReference Include="TasmanianDevil.Onnx" />
     <PackageReference Include="Microsoft.ML.Tokenizers" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
-  </ItemGroup>
-
-  <!-- Bundle StackOne Defender model files into build/ so they propagate via MSBuild targets (transitive-safe) -->
-  <ItemGroup>
-    <None Include="../../eng/models/minilm-prompt-injection/model_quantized.onnx"
-          Link="defender-model/model_quantized.onnx"
-          CopyToOutputDirectory="PreserveNewest"
-          Pack="true"
-          PackagePath="build/defender-model/" />
-    <None Include="../../eng/models/minilm-prompt-injection/vocab.txt"
-          Link="defender-model/vocab.txt"
-          CopyToOutputDirectory="PreserveNewest"
-          Pack="true"
-          PackagePath="build/defender-model/" />
-  </ItemGroup>
-
-  <!-- MSBuild targets that copy model files to output - build/ for direct refs, buildTransitive/ for transitive refs -->
-  <ItemGroup>
-    <None Include="build/AgentGuard.Onnx.targets"
-          Pack="true"
-          PackagePath="build/" />
-    <None Include="buildTransitive/AgentGuard.Onnx.targets"
-          Pack="true"
-          PackagePath="buildTransitive/" />
-    <None Include="THIRD_PARTY_NOTICES.txt"
-          Pack="true"
-          PackagePath="/" />
   </ItemGroup>
 </Project>
