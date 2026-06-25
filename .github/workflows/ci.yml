@@ -26,11 +26,6 @@ jobs:
       with:
         dotnet-version: '10.0.x'
 
-    # nuget.config lists a sibling local feed for cross-repo dev; create it empty in CI so restore is
-    # happy. The TasmanianDevil / TasmanianDevil.Onnx / Kyoto packages resolve from nuget.org.
-    - name: Provision empty local feed
-      run: mkdir -p ../.local-nuget
-
     - name: Restore dependencies
       run: dotnet restore AgentGuard.slnx
 
