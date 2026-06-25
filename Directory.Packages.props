@@ -38,6 +38,11 @@
     <!-- ONNX Runtime -->
     <PackageVersion Include="Microsoft.ML.OnnxRuntime" Version="1.21.0" />
 
+    <!-- Extracted standalone libraries (consumed via local feed during the split) -->
+    <PackageVersion Include="TasmanianDevil" Version="0.1.0" />
+    <PackageVersion Include="TasmanianDevil.Onnx" Version="0.1.0" />
+    <PackageVersion Include="Kyoto" Version="0.1.0" />
+
     <!-- Source Link -->
     <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="8.0.0" />
 

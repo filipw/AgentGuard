@@ -1,5 +1,6 @@
 using AgentGuard.Core.Abstractions;
-using AgentGuard.Pii.Anonymizer.Operators;
+using TasmanianDevil;
+using TasmanianDevil.Anonymizer.Operators;
 using FluentAssertions;
 using Xunit;
 

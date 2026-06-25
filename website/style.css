@@ -546,6 +546,13 @@ section.alt .feature-card {
   margin-bottom: 0.375rem;
 }
 
+.builds-on {
+  margin-top: 2rem;
+  text-align: center;
+  font-size: 0.875rem;
+  color: var(--color-text-secondary);
+}
+
 .package-card .package-desc {
   font-size: 0.875rem;
   color: var(--color-text-secondary);

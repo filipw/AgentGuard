@@ -1,8 +1,10 @@
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Onnx;
+using TasmanianDevil.Onnx;
 using AgentGuard.Pii;
-using AgentGuard.Pii.Analyzer;
-using AgentGuard.Pii.Analyzer.Context;
+using TasmanianDevil;
+using TasmanianDevil.Analyzer;
+using TasmanianDevil.Analyzer.Context;
 using FluentAssertions;
 using Xunit;
 

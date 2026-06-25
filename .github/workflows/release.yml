@@ -25,6 +25,11 @@ jobs:
       with:
         dotnet-version: '10.0.x'
 
+    # nuget.config lists a sibling local feed for cross-repo dev; create it empty in CI so restore is
+    # happy. The TasmanianDevil / TasmanianDevil.Onnx / Kyoto packages resolve from nuget.org.
+    - name: Provision empty local feed
+      run: mkdir -p ../.local-nuget
+
     - name: Extract version from tag
       id: version
       run: echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
