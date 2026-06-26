@@ -1,7 +1,8 @@
 using AgentGuard.Core.Abstractions;
-using AgentGuard.Pii.Analyzer;
-using AgentGuard.Pii.Analyzer.Context;
-using AgentGuard.Pii.Anonymizer;
+using TasmanianDevil;
+using TasmanianDevil.Analyzer;
+using TasmanianDevil.Analyzer.Context;
+using TasmanianDevil.Anonymizer;
 
 namespace AgentGuard.Pii;
 

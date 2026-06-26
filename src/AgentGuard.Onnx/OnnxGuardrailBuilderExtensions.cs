@@ -1,7 +1,9 @@
 using AgentGuard.Core.Builders;
 using AgentGuard.Pii;
-using AgentGuard.Pii.Analyzer;
-using AgentGuard.Pii.Analyzer.Context;
+using TasmanianDevil;
+using TasmanianDevil.Analyzer;
+using TasmanianDevil.Analyzer.Context;
+using TasmanianDevil.Onnx;
 
 namespace AgentGuard.Onnx;
 

@@ -39,7 +39,7 @@
 
 <!-- ── Install ────────────────────────────────────── -->
 <div class="install-strip">
-  <code>dotnet add package AgentGuard --prerelease</code>
+  <code>dotnet add package AgentGuard</code>
 </div>
 
 <!-- ── Standalone example ─────────────────────────── -->
@@ -156,8 +156,8 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
         <p>Toxicity, hate speech, violence, sexual content, self-harm, and harassment. Plug in Azure AI Content Safety, or run the offline Opir mDeBERTa classifier for <strong>non-English</strong> text (German, Spanish, Russian, Arabic, Chinese, Hindi) when a per-call cloud API isn't an option.</p>
       </div>
       <div class="feature-card">
-        <h3>PII Engine</h3>
-        <p>A complete offline PII detection + de-identification engine - ~50 entity types, reversible encryption, structured JSON/CSV redaction, and a batch API. Always-on generic + US recognizers, opt-in country packs (UK/DE/IN/IT/ES), and an optional multilingual NER add-on. <a href="#pii">See the full breakdown &rarr;</a></p>
+        <h3>PII Redaction</h3>
+        <p>Strip personal data at every agent boundary - input, output, and tool results - so it never reaches the model or your logs. Reversible redaction encrypts PII before the provider and decrypts it back in the reply. Offline, ~50 entity types, powered by the TasmanianDevil engine. <a href="#pii">See how it works &rarr;</a></p>
       </div>
       <div class="feature-card">
         <h3>Topic Enforcement</h3>
@@ -190,71 +190,43 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
 
 <section id="pii">
   <p class="section-label">Flagship Capability</p>
-  <h2 class="section-title">A complete, offline PII engine for .NET.</h2>
+  <h2 class="section-title">Keep PII out of the model.</h2>
   <p class="section-subtitle">
-    Detection and reversible de-identification, written from scratch in C# - architecture inspired by
-    <a href="https://github.com/microsoft/presidio" target="_blank">Microsoft Presidio</a>
-    (<a href="https://github.com/microsoft/presidio/blob/main/LICENSE" target="_blank">MIT</a>; not affiliated or endorsed).
-    No cloud, no ML required for the core. PII never leaves your process.
+    AgentGuard redacts personal data as a guardrail at every boundary an agent crosses - user input,
+    model output, and tool results - so PII never reaches the LLM provider or your logs. Reversible
+    redaction goes further: encrypt PII before the model and decrypt it back in the reply, so the model
+    reasons over opaque tokens while the user still gets a coherent answer. Fully offline, powered by the
+    <a href="https://github.com/filipw/tasmaniandevil" target="_blank">TasmanianDevil</a> engine.
   </p>
 
-  <div class="pii-stats">
-    <div class="pii-stat"><span class="pii-stat-num">~50</span><span class="pii-stat-label">entity types</span></div>
-    <div class="pii-stat"><span class="pii-stat-num">6</span><span class="pii-stat-label">country packs (US always on)</span></div>
-    <div class="pii-stat"><span class="pii-stat-num">7</span><span class="pii-stat-label">anonymization operators</span></div>
-    <div class="pii-stat"><span class="pii-stat-num">0</span><span class="pii-stat-label">network calls</span></div>
-  </div>
-
-  <p class="pii-prose">
-    8 generic recognizers (email, phone via libphonenumber, credit card / Luhn, IBAN / mod-97, crypto, IP, URL, MAC) and a
-    9-entity US pack are <strong>always on</strong>. Opt-in country packs add national IDs, tax numbers, and passports for the
-    UK, Germany, India, Italy, and Spain. An optional offline ONNX add-on layers in multilingual named-entity detection
-    (<code>PERSON</code>, <code>LOCATION</code>, <code>ORGANIZATION</code>, <code>DATE_TIME</code>), all resolved in one pass.
-  </p>
-
-  <!-- pipeline diagram (static, no JS) -->
-  <div class="pii-pipeline" aria-label="PII processing pipeline">
+  <!-- where redaction happens in the agent loop (static, no JS) -->
+  <div class="pii-pipeline" aria-label="PII redaction across the agent loop">
     <div class="pipe-stage">
       <span class="pipe-step">1</span>
-      <strong>Recognizers</strong>
-      <span>Validated regex + checksums<br>Luhn · mod-97 · Verhoeff · ISO-7064</span>
+      <strong>User input</strong>
+      <span>Redact (or encrypt) PII<br>before the prompt is sent</span>
     </div>
     <div class="pipe-arrow" aria-hidden="true">&rarr;</div>
     <div class="pipe-stage">
       <span class="pipe-step">2</span>
-      <strong>Context boosting</strong>
-      <span>Lemma-aware confidence scoring<br>offline Porter stemmer</span>
+      <strong>Model</strong>
+      <span>Reasons over placeholders<br>or ciphertext tokens</span>
     </div>
     <div class="pipe-arrow" aria-hidden="true">&rarr;</div>
     <div class="pipe-stage">
       <span class="pipe-step">3</span>
-      <strong>Conflict resolution</strong>
-      <span>Overlap / containment merge<br>threshold + allow-list</span>
+      <strong>Tool results</strong>
+      <span>Redact PII in retrieved<br>records before they re-enter context</span>
     </div>
     <div class="pipe-arrow" aria-hidden="true">&rarr;</div>
     <div class="pipe-stage">
       <span class="pipe-step">4</span>
-      <strong>Operators</strong>
-      <span>replace · redact · mask · hash<br>encrypt &harr; decrypt · keep · custom</span>
+      <strong>Response</strong>
+      <span>Restore reversibly, or redact<br>before it reaches the user</span>
     </div>
   </div>
 
-  <!-- before / after -->
-  <p class="code-label" style="margin-top:3rem">De-identify, then restore - encrypt is fully reversible</p>
-<pre><code>var analyzer   = new AnalyzerEngine(PiiRecognizers.CreateDefaultRegistry("en"));
-var anonymizer = new AnonymizerEngine();
-
-// input  : "Email ada@acme.com or call +1 415 555 0132"
-var results    = analyzer.Analyze(text, "en");
-var anonymized = anonymizer.Anonymize(text, results);
-// replace: "Email &lt;EMAIL_ADDRESS&gt; or call &lt;PHONE_NUMBER&gt;"
-
-// reversible round-trip: encrypt with a key, persist the items, decrypt later
-var deid     = PiiDeidentificationResult.FromEngineResult(encrypted); // deid.IsReversible == true
-var restored = new DeanonymizerEngine().Deanonymize(deid.AnonymizedText, deid.Items, decryptOps);
-// restored.Text == original text   (byte-for-byte)</code></pre>
-
-  <!-- agent framework integration -->
+  <!-- agent framework integration (lead) -->
   <p class="code-label" style="margin-top:3rem">In a Microsoft Agent Framework agent - PII never reaches the model</p>
 <pre><code>var agent = chatClient
     .AsAIAgent(instructions, name: "SupportBot", tools: [lookupCustomer])
@@ -267,30 +239,32 @@ var restored = new DeanonymizerEngine().Deanonymize(deid.AnonymizedText, deid.It
 // model sees : "Email me at &lt;AES ciphertext token&gt; about order 12345"
 // user gets  : "...follow up on john@example.com"   (decrypted only on the way out)</code></pre>
 
+  <!-- one-liner on the pipeline / IChatClient -->
+  <p class="code-label" style="margin-top:3rem">Or as a single rule in any pipeline / IChatClient decorator</p>
+<pre><code>var policy = new GuardrailPolicyBuilder()
+    .RedactPii()                 // order 20, runs on input and output
+    .GuardToolResults()          // strip PII from tool output before the model sees it
+    .Build();
+
+// input  : "Email ada@acme.com or call +1 415 555 0132"
+// output : "Email &lt;EMAIL_ADDRESS&gt; or call &lt;PHONE_NUMBER&gt;"</code></pre>
+
   <div class="feature-grid" style="margin-top:3rem">
     <div class="feature-card">
-      <h3>Reversible de-identification</h3>
-      <p>Encrypt PII spans (AES) and restore them later with <code>DeanonymizerEngine</code>. Lossy operators (mask, hash, redact) report themselves as non-reversible; a wrong key fails loudly, never silently.</p>
+      <h3>Every boundary, one rule</h3>
+      <p>The order-20 <code>RedactPii()</code> rule runs on both input and output; <code>GuardToolResults()</code> extends it to tool/function results so retrieved records are scrubbed before they ever re-enter the model's context.</p>
     </div>
     <div class="feature-card">
-      <h3>Structured data</h3>
-      <p>Redact JSON by key path (allow / deny) preserving shape and non-string types, or infer PII columns in CSV/TSV and redact them consistently - reusing the same recognizers and operators.</p>
+      <h3>Reversible round-trip</h3>
+      <p>Encrypt PII before the provider sees it and decrypt the exact value back in the response - the model reasons over tokens, the user gets real data. A wrong key fails loudly; lossy operators report themselves non-reversible.</p>
     </div>
     <div class="feature-card">
-      <h3>Batch API</h3>
-      <p>Analyze and anonymize lists or keyed record dictionaries in one call, with results aligned to the input. Sequential, allocation-light, and safe to share across threads.</p>
+      <h3>Nothing leaves your process</h3>
+      <p>Detection is deterministic regex + checksums with no network calls and no telemetry - so PII isn't shipped to a cloud classifier just to be redacted. Suitable for air-gapped and regulated deployments.</p>
     </div>
     <div class="feature-card">
-      <h3>Fully offline &amp; sovereign-friendly</h3>
-      <p>Deterministic regex + checksums with no network calls and no telemetry. Sensitive data stays inside the process - suitable for air-gapped and regulated environments.</p>
-    </div>
-    <div class="feature-card">
-      <h3>Country packs</h3>
-      <p>Opt-in national identifier packs (UK / DE / IN / IT / ES) are validated with real checksums and disabled by default to keep false positives low. The US pack is always on.</p>
-    </div>
-    <div class="feature-card">
-      <h3>Optional multilingual NER</h3>
-      <p>A separate offline ONNX model adds names, places, organizations, and dates across languages - merged into the same order-20 pass as the regex recognizers when you want it.</p>
+      <h3>Broad, validated coverage</h3>
+      <p>~50 entity types - email, phone, cards (Luhn), IBAN (mod-97), crypto, plus an always-on US pack and opt-in UK/DE/IN/IT/ES packs - with an optional multilingual NER add-on. The full engine, breadth, and operators live in <a href="https://github.com/filipw/tasmaniandevil" target="_blank">TasmanianDevil</a>.</p>
     </div>
   </div>
 </section>
@@ -459,7 +433,8 @@ var restored = new DeanonymizerEngine().Deanonymize(deid.AnonymizedText, deid.It
       The classifiers are complementary, not competing. The bundled Defender model is the fast default
       for English prompt injection; PIGuard and Opir are optional models you can layer on for cases it
       isn't built for. Numbers are from held-out datasets - full method and data in the
-      <code>eng/*-eval</code> RESULTS files. Recall = % of unsafe inputs blocked; FPR = % of safe inputs blocked.
+      <a href="https://github.com/filipw/kyoto" target="_blank">Kyoto repo</a>'s <code>eng/*-eval</code>
+      RESULTS files. Recall = % of unsafe inputs blocked; FPR = % of safe inputs blocked.
     </p>
 
     <h3 class="bench-heading">Prompt injection</h3>
@@ -597,6 +572,12 @@ var restored = new DeanonymizerEngine().Deanonymize(deid.AnonymizedText, deid.It
       <div class="package-desc">DI registration, named policy factory, and <code>appsettings.json</code> configuration binding for ASP.NET Core and Aspire.</div>
     </div>
   </div>
+
+  <p class="builds-on">
+    Built on two standalone engines:
+    <a href="https://github.com/filipw/tasmaniandevil">TasmanianDevil</a> (the PII engine behind <code>AgentGuard.Pii</code>)
+    and <a href="https://github.com/filipw/kyoto">Kyoto</a> (the ONNX classifiers behind <code>AgentGuard.Onnx</code>).
+  </p>
 </section>
 
 <!-- ── LLM rules ─────────────────────────────────── -->
@@ -723,6 +704,7 @@ var policy = new GuardrailPolicyBuilder()
 <footer>
   <p>
     AgentGuard is open source under the <a href="https://github.com/filipw/AgentGuard/blob/main/LICENSE">MIT License</a>.
+    Built on the <a href="https://github.com/filipw/tasmaniandevil">TasmanianDevil</a> PII engine and <a href="https://github.com/filipw/kyoto">Kyoto</a> ONNX classifiers.
     Prompt injection patterns informed by the <a href="https://github.com/Arcanum-Sec/arc_pi_taxonomy">Arcanum PI Taxonomy</a>.
     Bundled ML model by <a href="https://github.com/StackOneHQ/defender">StackOne Defender</a> (Apache 2.0).
     Optional <a href="https://huggingface.co/leolee99/PIGuard">PIGuard</a> (MIT),
