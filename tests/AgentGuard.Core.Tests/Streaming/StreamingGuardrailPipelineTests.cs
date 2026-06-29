@@ -1,5 +1,6 @@
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Guardrails;
+using AgentGuard.Core.Ledger;
 using AgentGuard.Core.Streaming;
 using FluentAssertions;
 using Xunit;
@@ -471,6 +472,67 @@ public class StreamingGuardrailPipelineTests
 
         // EveryCheck should run more frequently than Adaptive
         everyCheckCount.Should().BeGreaterThan(adaptiveCount);
+    }
+
+    // ── Decision ledger ──────────────────────────────────────
+
+    [Fact]
+    public async Task ShouldRecordPassedDecision_WhenStreamPasses()
+    {
+        var ledger = new HashChainLedger();
+        var pipeline = new StreamingGuardrailPipeline(CreatePolicy(), ledger: ledger);
+        var chunks = ToAsyncEnumerable("Hello", " world");
+
+        await foreach (var _ in pipeline.ProcessStreamAsync(chunks, CreateOutputContext())) { }
+
+        ledger.Entries.Should().ContainSingle();
+        ledger.Entries[0].Decision.Outcome.Should().Be("passed");
+        ledger.Verify().Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ShouldRecordBlockedDecision_WhenRuleBlocksMidStream()
+    {
+        var ledger = new HashChainLedger();
+        var blockingRule = new TestOutputRule("blocker", ctx =>
+            ctx.Text.Contains("bad") ? GuardrailResult.Blocked("nope") : GuardrailResult.Passed());
+        var policy = CreatePolicy(blockingRule);
+        var pipeline = new StreamingGuardrailPipeline(policy, new ProgressiveStreamingOptions
+        {
+            MinCharsBeforeFirstCheck = 0,
+            EvaluationIntervalChars = 1
+        }, ledger: ledger);
+
+        var chunks = ToAsyncEnumerable("Hello ", "this is bad");
+
+        await foreach (var _ in pipeline.ProcessStreamAsync(chunks, CreateOutputContext())) { }
+
+        ledger.Entries.Should().ContainSingle();
+        ledger.Entries[0].Decision.Outcome.Should().Be("blocked");
+        ledger.Entries[0].Decision.BlockingRuleName.Should().Be("blocker");
+        ledger.Verify().Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ShouldRecordRuleOutcomes_WhenStreamPasses()
+    {
+        var ledger = new HashChainLedger();
+        var passingRule = new TestOutputRule("pass-rule", _ => GuardrailResult.Passed());
+        var policy = CreatePolicy(passingRule);
+        var pipeline = new StreamingGuardrailPipeline(policy, new ProgressiveStreamingOptions
+        {
+            MinCharsBeforeFirstCheck = 0,
+            EvaluationIntervalChars = 1
+        }, ledger: ledger);
+
+        var chunks = ToAsyncEnumerable("Hello", " world");
+
+        await foreach (var _ in pipeline.ProcessStreamAsync(chunks, CreateOutputContext())) { }
+
+        ledger.Entries.Should().ContainSingle();
+        var decision = ledger.Entries[0].Decision;
+        decision.Outcome.Should().Be("passed");
+        decision.RuleOutcomes.Should().Contain(r => r.RuleName == "pass-rule" && r.Outcome == "passed");
     }
 
     // ── Test helpers ─────────────────────────────────────────

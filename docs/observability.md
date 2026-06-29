@@ -168,7 +168,7 @@ The ledger types live in `AgentGuard.Core.Ledger` and are dependency-free (`Syst
 - `IGuardrailLedger` - append-only sink (`Append(GuardrailDecision)`).
 - `GuardrailDecision` - the immutable decision facts (policy, phase, outcome, blocking rule/severity/reason, per-rule outcomes, input/output hashes, timestamp).
 - `GuardrailLedgerEntry` - a chain record: the decision plus `Seq`, `PreviousHash`, and `Hash`.
-- `HashChainLedger` - the concrete tamper-evident store: thread-safe append, optional append-only JSONL file mirror, `Verify()` (recompute and compare the whole chain), and `Export()` (JSON of the chain).
+- `HashChainLedger` - the concrete tamper-evident store: thread-safe append, optional append-only JSONL file mirror, `Verify()` (recompute and compare the whole chain), `Export()` (JSON of the chain), and `Load(path)` (re-hydrate a persisted JSONL chain so it can be re-verified after a process restart).
 
 A decision is emitted once per pipeline evaluation, so every re-ask attempt is independently auditable.
 
@@ -202,6 +202,24 @@ bool intact = ledger.Verify();          // false if any entry was tampered with
 string auditJson = ledger.Export();     // full chain as JSON
 ```
 
+Decisions are recorded for both the buffered pipeline and the progressive **streaming** pipeline (each terminal outcome - passed, blocked mid-stream, or modified - is one entry).
+
+### Verifying a persisted chain
+
+When a ledger is configured with a JSONL file, the chain can be re-loaded and re-verified later (for example by an auditor on another machine). The stored hashes are preserved as-is, so tampering with any persisted line is detected:
+
+```csharp
+var loaded = HashChainLedger.Load("audit/decisions.jsonl");
+if (!loaded.Verify(out var brokenAtSeq))
+    Console.WriteLine($"chain broken at entry {brokenAtSeq}");
+```
+
+The loaded ledger is verification-only by default. Pass `resumeWriting: true` to keep appending to (and persisting into) the same chain after a restart. The JSONL directory is created eagerly when the ledger is constructed, so the first append cannot fail on a missing directory.
+
+### Failure isolation
+
+The ledger is an audit **side-channel**: if recording a decision fails (for example a JSONL write error), the failure is logged and swallowed so it never breaks guardrail evaluation. The in-memory chain and the request both continue.
+
 ### Privacy
 
-The ledger is **hash-only by default**: it records `InputHash` / `OutputHash` (SHA-256 of the text) but not the raw content. Raw `Input` / `Output` are captured only when content capture is enabled - the same `AgentGuardTelemetry.EnableSensitiveData` flag (env `AGENTGUARD_CAPTURE_CONTENT=true`) that gates span content. There is no separate toggle.
+The ledger is **hash-only by default**: it records `InputHash` / `OutputHash` (SHA-256 of the text) but not the raw content. Raw `Input` / `Output` are captured only when content capture is enabled - the same `AgentGuardTelemetry.EnableSensitiveData` flag (env `AGENTGUARD_CAPTURE_CONTENT=true`) that gates span content. There is no separate toggle. When raw content is captured it is also bound into the hash chain, so tampering with the stored `Input` / `Output` (not just their hashes) is detected by `Verify()`.

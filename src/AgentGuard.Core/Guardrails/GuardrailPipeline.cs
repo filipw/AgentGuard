@@ -20,6 +20,11 @@ public sealed partial class GuardrailPipeline
         _ledger = ledger;
     }
 
+    /// <summary>
+    /// The decision ledger this pipeline records to, or <c>null</c> when no ledger is configured.
+    /// </summary>
+    public IGuardrailLedger? Ledger => _ledger;
+
     public async ValueTask<GuardrailPipelineResult> RunAsync(
         GuardrailContext context, CancellationToken cancellationToken = default)
     {
@@ -149,37 +154,18 @@ public sealed partial class GuardrailPipeline
         if (_ledger is null)
             return;
 
-        var captureContent = AgentGuardTelemetry.EnableSensitiveData;
-
-        var ruleOutcomes = new List<RuleOutcome>(results.Count);
-        foreach (var r in results)
+        // the ledger is an audit side-channel: a failure to record (e.g. a JSONL write
+        // error) must never break guardrail evaluation, so emission is fail-open.
+        try
         {
-            var ruleOutcome = r.IsBlocked ? AgentGuardTelemetry.Outcomes.Blocked
-                : r.IsModified ? AgentGuardTelemetry.Outcomes.Modified
-                : r.IsError ? AgentGuardTelemetry.Outcomes.Error
-                : AgentGuardTelemetry.Outcomes.Passed;
-            ruleOutcomes.Add(new RuleOutcome(r.RuleName, ruleOutcome));
+            var decision = GuardrailDecisionFactory.Create(
+                _policy.Name, context, finalText, results, outcome, blockingResult, wasModified);
+            _ledger.Append(decision);
         }
-
-        var decision = new GuardrailDecision
+        catch (Exception ex)
         {
-            PolicyName = _policy.Name,
-            Phase = context.Phase,
-            AgentName = context.AgentName,
-            Outcome = outcome,
-            BlockingRuleName = blockingResult?.RuleName,
-            Severity = blockingResult?.Severity ?? GuardrailSeverity.None,
-            BlockReason = blockingResult?.Reason,
-            RuleOutcomes = ruleOutcomes,
-            WasModified = wasModified,
-            InputHash = HashChainLedger.HashText(context.Text),
-            OutputHash = HashChainLedger.HashText(finalText),
-            Input = captureContent ? context.Text : null,
-            Output = captureContent ? finalText : null,
-            Timestamp = DateTimeOffset.UtcNow
-        };
-
-        _ledger.Append(decision);
+            LogLedgerError(_logger, ex);
+        }
     }
 
     private static async ValueTask<GuardrailResult> EvaluateRuleWithTelemetry(
@@ -367,6 +353,9 @@ public sealed partial class GuardrailPipeline
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Re-ask exhausted all {MaxAttempts} attempts, returning blocked result")]
     private static partial void LogReaskExhausted(ILogger logger, int maxAttempts);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to record guardrail decision to the ledger; continuing (audit side-channel)")]
+    private static partial void LogLedgerError(ILogger logger, Exception exception);
 }
 
 public sealed record GuardrailPipelineResult

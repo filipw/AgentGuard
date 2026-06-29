@@ -80,6 +80,23 @@ public class HashChainLedgerTests
     }
 
     [Fact]
+    public void ShouldDetectTamper_WhenRawCapturedInputMutated()
+    {
+        var ledger = new HashChainLedger();
+        ledger.Append(Decision() with { Input = "original", Output = "original" });
+
+        // raw captured content is bound into the chain, so mutating it alone is detected
+        var field = typeof(HashChainLedger).GetField("_entries",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+        var list = (System.Collections.IList)field.GetValue(ledger)!;
+        var original = (GuardrailLedgerEntry)list[0]!;
+        list[0] = original with { Decision = original.Decision with { Input = "tampered" } };
+
+        ledger.Verify(out var brokenAtSeq).Should().BeFalse();
+        brokenAtSeq.Should().Be(0);
+    }
+
+    [Fact]
     public void ShouldProduceVerifiableChain_WhenAppendedConcurrently()
     {
         var ledger = new HashChainLedger();
@@ -115,6 +132,168 @@ public class HashChainLedgerTests
 
             var lines = File.ReadAllLines(path);
             lines.Should().HaveCount(2);
+        }
+        finally
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void ShouldCreateDirectory_WhenMissing()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"agentguard-ledger-{Guid.NewGuid():N}");
+        var path = Path.Combine(dir, "ledger.jsonl");
+        try
+        {
+            Directory.Exists(dir).Should().BeFalse();
+
+            var ledger = new HashChainLedger(path);
+            Directory.Exists(dir).Should().BeTrue();
+
+            ledger.Append(Decision());
+            File.ReadAllLines(path).Should().HaveCount(1);
+        }
+        finally
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ShouldLoadAndVerify_PersistedChain()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"agentguard-ledger-{Guid.NewGuid():N}.jsonl");
+        try
+        {
+            var ledger = new HashChainLedger(path);
+            ledger.Append(Decision("passed", "a"));
+            ledger.Append(Decision("blocked", "b"));
+            ledger.Append(Decision("modified", "c"));
+
+            var loaded = HashChainLedger.Load(path);
+
+            loaded.Count.Should().Be(3);
+            loaded.Verify().Should().BeTrue();
+            loaded.Entries.Select(e => e.Seq).Should().ContainInOrder(0L, 1L, 2L);
+            loaded.Entries[1].Decision.Outcome.Should().Be("blocked");
+        }
+        finally
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void ShouldDetectTamper_OnLoadedChain_WhenPersistedLineMutated()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"agentguard-ledger-{Guid.NewGuid():N}.jsonl");
+        try
+        {
+            var ledger = new HashChainLedger(path);
+            ledger.Append(Decision("passed"));
+            ledger.Append(Decision("passed"));
+            ledger.Append(Decision("passed"));
+
+            // tamper a persisted line on disk
+            var lines = File.ReadAllLines(path);
+            lines[1] = lines[1].Replace("\"outcome\":\"passed\"", "\"outcome\":\"blocked\"");
+            File.WriteAllLines(path, lines);
+
+            var loaded = HashChainLedger.Load(path);
+            loaded.Verify(out var brokenAtSeq).Should().BeFalse();
+            brokenAtSeq.Should().Be(1);
+        }
+        finally
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void ShouldDetectTamper_WhenFieldsRebalancedAcrossDelimiter()
+    {
+        // a naive "|"-joined serialization lets two different decisions collide
+        // (agent "x" + outcome "y|z" vs agent "x|y" + outcome "z"); the length-prefixed
+        // canonical form must keep them distinct so the tamper is detected
+        var ledger = new HashChainLedger();
+        ledger.Append(Decision("y|z") with { AgentName = "x" });
+
+        var field = typeof(HashChainLedger).GetField("_entries",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+        var list = (System.Collections.IList)field.GetValue(ledger)!;
+        var original = (GuardrailLedgerEntry)list[0]!;
+        list[0] = original with { Decision = original.Decision with { AgentName = "x|y", Outcome = "z" } };
+
+        ledger.Verify(out var brokenAtSeq).Should().BeFalse();
+        brokenAtSeq.Should().Be(0);
+    }
+
+    [Fact]
+    public void ShouldPersistInChainOrder_WhenAppendedConcurrentlyToFile()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"agentguard-ledger-{Guid.NewGuid():N}.jsonl");
+        try
+        {
+            var ledger = new HashChainLedger(path);
+
+            Parallel.For(0, 200, _ => ledger.Append(Decision()));
+
+            // the persisted JSONL order must match the chain order, so a reload verifies
+            var loaded = HashChainLedger.Load(path);
+            loaded.Count.Should().Be(200);
+            loaded.Verify().Should().BeTrue();
+            loaded.Entries.Select(e => e.Seq).Should().BeInAscendingOrder().And.OnlyHaveUniqueItems();
+        }
+        finally
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void ShouldResumeWriting_WhenLoadedWithResumeWriting()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"agentguard-ledger-{Guid.NewGuid():N}.jsonl");
+        try
+        {
+            var ledger = new HashChainLedger(path);
+            ledger.Append(Decision("passed", "a"));
+            ledger.Append(Decision("passed", "b"));
+
+            var resumed = HashChainLedger.Load(path, resumeWriting: true);
+            resumed.Append(Decision("blocked", "c"));
+
+            resumed.Count.Should().Be(3);
+            resumed.Verify().Should().BeTrue();
+            File.ReadAllLines(path).Should().HaveCount(3);
+
+            // reload the extended chain from disk and re-verify
+            var reloaded = HashChainLedger.Load(path);
+            reloaded.Count.Should().Be(3);
+            reloaded.Verify().Should().BeTrue();
+            reloaded.Entries[2].Decision.Outcome.Should().Be("blocked");
+        }
+        finally
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void ShouldNotWriteBack_WhenLoadedWithoutResume()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"agentguard-ledger-{Guid.NewGuid():N}.jsonl");
+        try
+        {
+            var ledger = new HashChainLedger(path);
+            ledger.Append(Decision());
+
+            var loaded = HashChainLedger.Load(path);
+            loaded.Append(Decision());
+
+            loaded.Count.Should().Be(2);
+            File.ReadAllLines(path).Should().HaveCount(1);
         }
         finally
         {
@@ -234,6 +413,23 @@ public class LedgerPipelineTests
     {
         var rule = new TestRule("ok", GuardrailPhase.Input, _ => GuardrailResult.Passed());
         var p = new GuardrailPipeline(new GuardrailPolicy("t", [rule]), NullLogger<GuardrailPipeline>.Instance);
+
+        var act = async () => await p.RunAsync(Ctx("hello"));
+        await act.Should().NotThrowAsync();
+    }
+
+    private sealed class ThrowingLedger : IGuardrailLedger
+    {
+        public void Append(GuardrailDecision decision) =>
+            throw new InvalidOperationException("disk full");
+    }
+
+    [Fact]
+    public async Task ShouldNotThrow_WhenLedgerAppendFails()
+    {
+        var rule = new TestRule("ok", GuardrailPhase.Input, _ => GuardrailResult.Passed());
+        var p = new GuardrailPipeline(
+            new GuardrailPolicy("t", [rule]), NullLogger<GuardrailPipeline>.Instance, new ThrowingLedger());
 
         var act = async () => await p.RunAsync(Ctx("hello"));
         await act.Should().NotThrowAsync();

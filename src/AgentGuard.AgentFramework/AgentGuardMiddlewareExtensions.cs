@@ -601,7 +601,7 @@ public static class AgentGuardMiddlewareExtensions
         AIAgent innerAgent,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
     {
-        var streamingPipeline = new StreamingGuardrailPipeline(policy, policy.ProgressiveStreaming);
+        var streamingPipeline = new StreamingGuardrailPipeline(policy, policy.ProgressiveStreaming, ledger: pipeline.Ledger);
 
         var outputContext = new GuardrailContext
         {
