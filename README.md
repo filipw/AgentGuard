@@ -188,6 +188,34 @@ AgentGuardTelemetry.EnableSensitiveData = true;
 
 See the [Observability docs](docs/observability.md) for the full span and metric reference.
 
+### Tamper-evident decision ledger
+
+For compliance and forensics, AgentGuard can keep a **tamper-evident audit trail** of pipeline decisions. Each decision (what policy was active, what was requested, and why it was allowed/blocked/modified) is stamped into a SHA-256 **hash chain** - every entry hashes its own fields plus the previous entry's hash, so any retroactive edit breaks the chain and is caught by `Verify()`. The ledger types live in `AgentGuard.Core.Ledger` and are dependency-free (`System.Security.Cryptography` + `System.Text.Json`); one entry is emitted per pipeline evaluation, so every re-ask attempt is independently auditable.
+
+```csharp
+// Standalone
+using AgentGuard.Core.Ledger;
+
+var ledger = new HashChainLedger();
+var pipeline = new GuardrailPipeline(policy, logger, ledger);
+
+// ... run the pipeline ...
+bool intact = ledger.Verify();      // false if any recorded decision was tampered with
+string auditJson = ledger.Export(); // full chain as JSON
+```
+
+```csharp
+// With AgentGuard.Hosting - registered as a singleton, flows into every pipeline
+builder.Services.AddAgentGuard(options =>
+{
+    options.DefaultPolicy(p => p.BlockPromptInjection().RedactPii());
+    options.UseDecisionLedger();                          // in-memory hash chain
+    // options.UseDecisionLedger("audit/decisions.jsonl"); // also mirror to an append-only JSONL file
+});
+```
+
+The ledger is **hash-only by default** (records `InputHash`/`OutputHash`, not raw content); raw `Input`/`Output` are captured only when content capture is enabled via the same `AgentGuardTelemetry.EnableSensitiveData` flag (env `AGENTGUARD_CAPTURE_CONTENT=true`). See the [Observability docs](docs/observability.md#tamper-evident-decision-ledger) for details.
+
 ## Packages
 
 | Package | Description | NuGet |
@@ -513,6 +541,7 @@ Rules execute in order of their `Order` property (lower = first). Built-in rules
 - [Tool Call Guardrails](samples/ToolCallGuardrails/) - blocking SQL injection, path traversal, SSRF in agent tool calls
 - [Tool Result Guardrails](samples/ToolResultGuardrails/) - detecting indirect prompt injection in tool results (poisoned emails, documents); standalone rule + MAF function-invocation interception
 - [Dynamic Guardrails](samples/DynamicGuardrails/) - per-request rule enabling with `.When()` / `.Unless()` (e.g. disabling the English-centric Defender classifier for non-English users)
+- [Decision Ledger](samples/DecisionLedger/) - tamper-evident, hash-chained audit trail of pipeline decisions: recording, chain verification, tamper detection, and JSON export
 
 ## Documentation
 

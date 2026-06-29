@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using AgentGuard.Core.Abstractions;
+using AgentGuard.Core.Ledger;
 using AgentGuard.Core.Telemetry;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -10,11 +11,13 @@ public sealed partial class GuardrailPipeline
 {
     private readonly IGuardrailPolicy _policy;
     private readonly ILogger<GuardrailPipeline> _logger;
+    private readonly IGuardrailLedger? _ledger;
 
-    public GuardrailPipeline(IGuardrailPolicy policy, ILogger<GuardrailPipeline> logger)
+    public GuardrailPipeline(IGuardrailPolicy policy, ILogger<GuardrailPipeline> logger, IGuardrailLedger? ledger = null)
     {
         _policy = policy;
         _logger = logger;
+        _ledger = ledger;
     }
 
     public async ValueTask<GuardrailPipelineResult> RunAsync(
@@ -91,6 +94,7 @@ public sealed partial class GuardrailPipeline
 
                 RecordPipelineCompletion(pipelineActivity, stopwatch, context.Phase, AgentGuardTelemetry.Outcomes.Blocked);
                 pipelineActivity?.SetStatus(ActivityStatusCode.Error, result.Reason);
+                EmitDecision(context, currentText, results, AgentGuardTelemetry.Outcomes.Blocked, taggedResult, wasModified: false);
                 return pipelineResult;
             }
 
@@ -123,6 +127,8 @@ public sealed partial class GuardrailPipeline
                 ["text"] = currentText
             }));
 
+        EmitDecision(context, currentText, results, outcome, blockingResult: null, wasModified);
+
         return new GuardrailPipelineResult
         {
             IsBlocked = false,
@@ -130,6 +136,50 @@ public sealed partial class GuardrailPipeline
             FinalText = currentText,
             WasModified = wasModified
         };
+    }
+
+    private void EmitDecision(
+        GuardrailContext context,
+        string finalText,
+        List<GuardrailResult> results,
+        string outcome,
+        GuardrailResult? blockingResult,
+        bool wasModified)
+    {
+        if (_ledger is null)
+            return;
+
+        var captureContent = AgentGuardTelemetry.EnableSensitiveData;
+
+        var ruleOutcomes = new List<RuleOutcome>(results.Count);
+        foreach (var r in results)
+        {
+            var ruleOutcome = r.IsBlocked ? AgentGuardTelemetry.Outcomes.Blocked
+                : r.IsModified ? AgentGuardTelemetry.Outcomes.Modified
+                : r.IsError ? AgentGuardTelemetry.Outcomes.Error
+                : AgentGuardTelemetry.Outcomes.Passed;
+            ruleOutcomes.Add(new RuleOutcome(r.RuleName, ruleOutcome));
+        }
+
+        var decision = new GuardrailDecision
+        {
+            PolicyName = _policy.Name,
+            Phase = context.Phase,
+            AgentName = context.AgentName,
+            Outcome = outcome,
+            BlockingRuleName = blockingResult?.RuleName,
+            Severity = blockingResult?.Severity ?? GuardrailSeverity.None,
+            BlockReason = blockingResult?.Reason,
+            RuleOutcomes = ruleOutcomes,
+            WasModified = wasModified,
+            InputHash = HashChainLedger.HashText(context.Text),
+            OutputHash = HashChainLedger.HashText(finalText),
+            Input = captureContent ? context.Text : null,
+            Output = captureContent ? finalText : null,
+            Timestamp = DateTimeOffset.UtcNow
+        };
+
+        _ledger.Append(decision);
     }
 
     private static async ValueTask<GuardrailResult> EvaluateRuleWithTelemetry(
