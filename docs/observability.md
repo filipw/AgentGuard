@@ -158,3 +158,50 @@ builder.Services.AddOpenTelemetry()
 ```
 
 You'll see guardrail pipeline runs as nested spans in the trace view, with per-rule durations and outcomes visible at a glance. The metrics view shows evaluation counts, block rates, and duration distributions.
+
+## Tamper-evident decision ledger
+
+Beyond traces and metrics, AgentGuard can keep a **tamper-evident audit trail** of pipeline decisions for compliance and forensics. Each decision (what policy was active, what was requested, and why it was allowed/blocked/modified) is stamped into a SHA-256 hash chain: every entry hashes its own fields together with the previous entry's hash, so any retroactive edit breaks the chain and is detected by `Verify()`.
+
+The ledger types live in `AgentGuard.Core.Ledger` and are dependency-free (`System.Security.Cryptography` + `System.Text.Json`):
+
+- `IGuardrailLedger` - append-only sink (`Append(GuardrailDecision)`).
+- `GuardrailDecision` - the immutable decision facts (policy, phase, outcome, blocking rule/severity/reason, per-rule outcomes, input/output hashes, timestamp).
+- `GuardrailLedgerEntry` - a chain record: the decision plus `Seq`, `PreviousHash`, and `Hash`.
+- `HashChainLedger` - the concrete tamper-evident store: thread-safe append, optional append-only JSONL file mirror, `Verify()` (recompute and compare the whole chain), and `Export()` (JSON of the chain).
+
+A decision is emitted once per pipeline evaluation, so every re-ask attempt is independently auditable.
+
+### Enabling via Hosting
+
+```csharp
+using AgentGuard.Hosting;
+
+builder.Services.AddAgentGuard(options =>
+{
+    options.DefaultPolicy(p => p.BlockPromptInjection());
+    options.UseDecisionLedger();                       // in-memory hash chain
+    // options.UseDecisionLedger("audit/decisions.jsonl"); // also mirror to JSONL
+});
+```
+
+The ledger is registered as a singleton and flows into every pipeline resolved from DI (including the MAF, Workflows, and `IChatClient` adapters). Resolve `IGuardrailLedger` (cast to `HashChainLedger`) anywhere to verify or export it.
+
+### Standalone
+
+```csharp
+using AgentGuard.Core.Ledger;
+using AgentGuard.Core.Guardrails;
+
+var ledger = new HashChainLedger();
+var pipeline = new GuardrailPipeline(policy, logger, ledger);
+
+// ... run the pipeline ...
+
+bool intact = ledger.Verify();          // false if any entry was tampered with
+string auditJson = ledger.Export();     // full chain as JSON
+```
+
+### Privacy
+
+The ledger is **hash-only by default**: it records `InputHash` / `OutputHash` (SHA-256 of the text) but not the raw content. Raw `Input` / `Output` are captured only when content capture is enabled - the same `AgentGuardTelemetry.EnableSensitiveData` flag (env `AGENTGUARD_CAPTURE_CONTENT=true`) that gates span content. There is no separate toggle.
