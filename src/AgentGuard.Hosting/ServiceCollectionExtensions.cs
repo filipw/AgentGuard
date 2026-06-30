@@ -1,6 +1,7 @@
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Builders;
 using AgentGuard.Core.Guardrails;
+using AgentGuard.Core.Ledger;
 using AgentGuard.Hosting.Configuration;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -12,9 +13,25 @@ public sealed class AgentGuardOptions
 {
     internal Action<GuardrailPolicyBuilder>? DefaultPolicyConfigurator { get; private set; }
     internal Dictionary<string, Action<GuardrailPolicyBuilder>> NamedPolicies { get; } = [];
+    internal IGuardrailLedger? Ledger { get; private set; }
 
     public AgentGuardOptions DefaultPolicy(Action<GuardrailPolicyBuilder> configure) { DefaultPolicyConfigurator = configure; return this; }
     public AgentGuardOptions AddPolicy(string name, Action<GuardrailPolicyBuilder> configure) { NamedPolicies[name] = configure; return this; }
+
+    /// <summary>
+    /// Enables the tamper-evident decision ledger, recording one hash-chained entry per
+    /// guardrail pipeline decision. The ledger is registered as a singleton and flows into
+    /// every pipeline (including the MAF / Workflows / IChatClient adapters resolved from DI).
+    /// </summary>
+    /// <param name="ledger">The ledger to use.</param>
+    public AgentGuardOptions UseDecisionLedger(IGuardrailLedger ledger) { Ledger = ledger; return this; }
+
+    /// <summary>
+    /// Enables a <see cref="HashChainLedger"/> decision ledger, optionally mirroring entries
+    /// to an append-only JSONL file.
+    /// </summary>
+    /// <param name="jsonlFilePath">When set, each entry is also written to this JSONL file.</param>
+    public AgentGuardOptions UseDecisionLedger(string? jsonlFilePath = null) { Ledger = new HashChainLedger(jsonlFilePath); return this; }
 }
 
 internal sealed class AgentGuardFactory : IAgentGuardFactory
@@ -76,8 +93,13 @@ public static class ServiceCollectionExtensions
         configure(options);
         services.AddSingleton(options);
         services.AddSingleton<IAgentGuardFactory, AgentGuardFactory>();
+        if (options.Ledger is not null)
+            services.AddSingleton(options.Ledger);
         services.AddSingleton(sp =>
-            new GuardrailPipeline(sp.GetRequiredService<IAgentGuardFactory>().GetDefaultPolicy(), sp.GetRequiredService<ILogger<GuardrailPipeline>>()));
+            new GuardrailPipeline(
+                sp.GetRequiredService<IAgentGuardFactory>().GetDefaultPolicy(),
+                sp.GetRequiredService<ILogger<GuardrailPipeline>>(),
+                sp.GetService<IGuardrailLedger>()));
         return services;
     }
 
@@ -90,7 +112,10 @@ public static class ServiceCollectionExtensions
         var config = configuration.Get<AgentGuardConfiguration>() ?? new AgentGuardConfiguration();
         services.AddSingleton<IAgentGuardFactory>(sp => new AgentGuardFactory(config, sp));
         services.AddSingleton(sp =>
-            new GuardrailPipeline(sp.GetRequiredService<IAgentGuardFactory>().GetDefaultPolicy(), sp.GetRequiredService<ILogger<GuardrailPipeline>>()));
+            new GuardrailPipeline(
+                sp.GetRequiredService<IAgentGuardFactory>().GetDefaultPolicy(),
+                sp.GetRequiredService<ILogger<GuardrailPipeline>>(),
+                sp.GetService<IGuardrailLedger>()));
         return services;
     }
 }

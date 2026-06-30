@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Guardrails;
+using AgentGuard.Core.Ledger;
 using AgentGuard.Core.Rules.LLM;
 using AgentGuard.Core.Telemetry;
 using Microsoft.Extensions.Logging;
@@ -25,6 +26,7 @@ public sealed partial class StreamingGuardrailPipeline
     private readonly IGuardrailPolicy _policy;
     private readonly ProgressiveStreamingOptions _options;
     private readonly ILogger _logger;
+    private readonly IGuardrailLedger? _ledger;
 
     /// <summary>
     /// Creates a new streaming guardrail pipeline.
@@ -32,14 +34,17 @@ public sealed partial class StreamingGuardrailPipeline
     /// <param name="policy">The guardrail policy containing output rules to evaluate.</param>
     /// <param name="options">Configuration for progressive evaluation intervals.</param>
     /// <param name="logger">Logger instance.</param>
+    /// <param name="ledger">Optional decision ledger to record the streaming outcome to.</param>
     public StreamingGuardrailPipeline(
         IGuardrailPolicy policy,
         ProgressiveStreamingOptions? options = null,
-        ILogger<StreamingGuardrailPipeline>? logger = null)
+        ILogger<StreamingGuardrailPipeline>? logger = null,
+        IGuardrailLedger? ledger = null)
     {
         _policy = policy ?? throw new ArgumentNullException(nameof(policy));
         _options = options ?? new ProgressiveStreamingOptions();
         _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<StreamingGuardrailPipeline>.Instance;
+        _ledger = ledger;
     }
 
     /// <summary>
@@ -69,6 +74,9 @@ public sealed partial class StreamingGuardrailPipeline
         var adaptiveRuleLastCheckChars = new Dictionary<string, int>();
         var firstCheckDone = false;
         var totalYieldedChars = 0;
+
+        // the most recent set of rule results, recorded on the end-of-stream pass entry
+        IReadOnlyList<GuardrailResult> lastEvaluatedResults = [];
 
         // classify rules into progressive and final-only
         var (progressiveRules, finalOnlyRules, adaptiveRules) = ClassifyOutputRules();
@@ -102,6 +110,7 @@ public sealed partial class StreamingGuardrailPipeline
                 if (rulesToRun.Count > 0)
                 {
                     var result = await EvaluateRules(rulesToRun, currentText, baseContext, cancellationToken);
+                    lastEvaluatedResults = result.AllResults;
 
                     if (result.IsBlocked)
                     {
@@ -120,6 +129,8 @@ public sealed partial class StreamingGuardrailPipeline
                             StreamingGuardrailEvent.Retract(result.BlockingResult!, totalYieldedChars));
                         yield return StreamingPipelineOutput.Event(
                             StreamingGuardrailEvent.Replace(replacementText, result.BlockingResult!, totalYieldedChars));
+                        EmitDecision(baseContext, replacementText, result.AllResults,
+                            AgentGuardTelemetry.Outcomes.Blocked, result.BlockingResult!, wasModified: false);
                         yield return StreamingPipelineOutput.Complete(
                             StreamingFinalResult.Blocked(replacementText, result.BlockingResult!));
                         yield break;
@@ -144,6 +155,8 @@ public sealed partial class StreamingGuardrailPipeline
                             StreamingGuardrailEvent.Retract(modifyingResult, totalYieldedChars));
                         yield return StreamingPipelineOutput.Event(
                             StreamingGuardrailEvent.Replace(result.FinalText, modifyingResult, totalYieldedChars));
+                        EmitDecision(baseContext, result.FinalText, result.AllResults,
+                            AgentGuardTelemetry.Outcomes.Modified, blockingResult: null, wasModified: true);
                         yield return StreamingPipelineOutput.Complete(
                             StreamingFinalResult.Modified(result.FinalText));
                         yield break;
@@ -166,6 +179,7 @@ public sealed partial class StreamingGuardrailPipeline
                 .ToList();
 
             var finalResult = await EvaluateRules(allOutputRules, fullText, baseContext, cancellationToken);
+            lastEvaluatedResults = finalResult.AllResults;
 
             if (finalResult.IsBlocked)
             {
@@ -184,6 +198,8 @@ public sealed partial class StreamingGuardrailPipeline
                     StreamingGuardrailEvent.Retract(finalResult.BlockingResult!, totalYieldedChars));
                 yield return StreamingPipelineOutput.Event(
                     StreamingGuardrailEvent.Replace(replacementText, finalResult.BlockingResult!, totalYieldedChars));
+                EmitDecision(baseContext, replacementText, finalResult.AllResults,
+                    AgentGuardTelemetry.Outcomes.Blocked, finalResult.BlockingResult!, wasModified: false);
                 yield return StreamingPipelineOutput.Complete(
                     StreamingFinalResult.Blocked(replacementText, finalResult.BlockingResult!));
                 yield break;
@@ -209,6 +225,8 @@ public sealed partial class StreamingGuardrailPipeline
                         finalResult.FinalText,
                         finalResult.AllResults.FirstOrDefault(r => r.IsModified) ?? GuardrailResult.Passed(),
                         totalYieldedChars));
+                EmitDecision(baseContext, finalResult.FinalText, finalResult.AllResults,
+                    AgentGuardTelemetry.Outcomes.Modified, blockingResult: null, wasModified: true);
                 yield return StreamingPipelineOutput.Complete(
                     StreamingFinalResult.Modified(finalResult.FinalText));
                 yield break;
@@ -216,6 +234,8 @@ public sealed partial class StreamingGuardrailPipeline
         }
 
         streamingActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Passed);
+        EmitDecision(baseContext, accumulatedText.ToString(), lastEvaluatedResults,
+            AgentGuardTelemetry.Outcomes.Passed, blockingResult: null, wasModified: false);
         yield return StreamingPipelineOutput.Complete(StreamingFinalResult.Pass());
     }
 
@@ -396,6 +416,30 @@ public sealed partial class StreamingGuardrailPipeline
         };
     }
 
+    private void EmitDecision(
+        GuardrailContext baseContext,
+        string outputText,
+        IReadOnlyList<GuardrailResult> results,
+        string outcome,
+        GuardrailResult? blockingResult,
+        bool wasModified)
+    {
+        if (_ledger is null)
+            return;
+
+        // the ledger is an audit side-channel: recording must never break streaming
+        try
+        {
+            var decision = GuardrailDecisionFactory.Create(
+                _policy.Name, baseContext, outputText, results, outcome, blockingResult, wasModified);
+            _ledger.Append(decision);
+        }
+        catch (Exception ex)
+        {
+            LogLedgerError(_logger, ex);
+        }
+    }
+
     [LoggerMessage(Level = LogLevel.Debug, Message = "Progressive streaming started: {ProgressiveCount} progressive rules, {FinalOnlyCount} final-only rules, {AdaptiveCount} adaptive rules")]
     private static partial void LogProgressiveStart(ILogger logger, int progressiveCount, int finalOnlyCount, int adaptiveCount);
 
@@ -419,4 +463,7 @@ public sealed partial class StreamingGuardrailPipeline
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Streaming guardrail rule '{RuleName}' encountered an error: {ErrorDetail} (blocked={IsBlocked})")]
     private static partial void LogRuleError(ILogger logger, string ruleName, string? errorDetail, bool isBlocked);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to record streaming guardrail decision to the ledger; continuing (audit side-channel)")]
+    private static partial void LogLedgerError(ILogger logger, Exception exception);
 }

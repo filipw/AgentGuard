@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using AgentGuard.Core.Abstractions;
+using AgentGuard.Core.Ledger;
 using AgentGuard.Core.Telemetry;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -10,12 +11,19 @@ public sealed partial class GuardrailPipeline
 {
     private readonly IGuardrailPolicy _policy;
     private readonly ILogger<GuardrailPipeline> _logger;
+    private readonly IGuardrailLedger? _ledger;
 
-    public GuardrailPipeline(IGuardrailPolicy policy, ILogger<GuardrailPipeline> logger)
+    public GuardrailPipeline(IGuardrailPolicy policy, ILogger<GuardrailPipeline> logger, IGuardrailLedger? ledger = null)
     {
         _policy = policy;
         _logger = logger;
+        _ledger = ledger;
     }
+
+    /// <summary>
+    /// The decision ledger this pipeline records to, or <c>null</c> when no ledger is configured.
+    /// </summary>
+    public IGuardrailLedger? Ledger => _ledger;
 
     public async ValueTask<GuardrailPipelineResult> RunAsync(
         GuardrailContext context, CancellationToken cancellationToken = default)
@@ -91,6 +99,7 @@ public sealed partial class GuardrailPipeline
 
                 RecordPipelineCompletion(pipelineActivity, stopwatch, context.Phase, AgentGuardTelemetry.Outcomes.Blocked);
                 pipelineActivity?.SetStatus(ActivityStatusCode.Error, result.Reason);
+                EmitDecision(context, currentText, results, AgentGuardTelemetry.Outcomes.Blocked, taggedResult, wasModified: false);
                 return pipelineResult;
             }
 
@@ -123,6 +132,8 @@ public sealed partial class GuardrailPipeline
                 ["text"] = currentText
             }));
 
+        EmitDecision(context, currentText, results, outcome, blockingResult: null, wasModified);
+
         return new GuardrailPipelineResult
         {
             IsBlocked = false,
@@ -130,6 +141,31 @@ public sealed partial class GuardrailPipeline
             FinalText = currentText,
             WasModified = wasModified
         };
+    }
+
+    private void EmitDecision(
+        GuardrailContext context,
+        string finalText,
+        List<GuardrailResult> results,
+        string outcome,
+        GuardrailResult? blockingResult,
+        bool wasModified)
+    {
+        if (_ledger is null)
+            return;
+
+        // the ledger is an audit side-channel: a failure to record (e.g. a JSONL write
+        // error) must never break guardrail evaluation, so emission is fail-open.
+        try
+        {
+            var decision = GuardrailDecisionFactory.Create(
+                _policy.Name, context, finalText, results, outcome, blockingResult, wasModified);
+            _ledger.Append(decision);
+        }
+        catch (Exception ex)
+        {
+            LogLedgerError(_logger, ex);
+        }
     }
 
     private static async ValueTask<GuardrailResult> EvaluateRuleWithTelemetry(
@@ -317,6 +353,9 @@ public sealed partial class GuardrailPipeline
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Re-ask exhausted all {MaxAttempts} attempts, returning blocked result")]
     private static partial void LogReaskExhausted(ILogger logger, int maxAttempts);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to record guardrail decision to the ledger; continuing (audit side-channel)")]
+    private static partial void LogLedgerError(ILogger logger, Exception exception);
 }
 
 public sealed record GuardrailPipelineResult
