@@ -183,6 +183,10 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
         <h3>Observability (OpenTelemetry)</h3>
         <p>Built-in spans and metrics for every pipeline run, rule evaluation, re-ask attempt, and streaming retraction. Uses <code>System.Diagnostics</code> - no SDK dependency. Works with Aspire Dashboard, Jaeger, Zipkin, and any OTel collector.</p>
       </div>
+      <div class="feature-card">
+        <h3>Tamper-evident Decision Ledger</h3>
+        <p>An optional SHA-256 hash-chained audit trail of every pipeline decision - policy, request, and allow/block/modify outcome. Any retroactive edit breaks the chain and is caught by <code>Verify()</code>. Hash-only by default, dependency-free, with optional JSONL export.</p>
+      </div>
     </div>
   </div>
 </section>
@@ -663,6 +667,36 @@ builder.Services.AddOpenTelemetry()
 //   agentguard.rule.blocks           (counter)
 //   agentguard.pipeline.duration     (histogram, ms)
 //   agentguard.rule.duration         (histogram, ms)</code></pre>
+  </div>
+</section>
+
+<!-- ── Decision ledger ───────────────────────────── -->
+<section>
+  <div class="section-inner">
+    <p class="section-label">Audit &amp; Compliance</p>
+    <h2 class="section-title">A tamper-evident decision trail.</h2>
+    <p class="section-subtitle">
+      Every pipeline decision - what policy was active, what was requested, and why it was allowed, blocked, or modified - is stamped into a SHA-256 hash chain. Edit any recorded entry and the chain breaks. Hash-only by default; dependency-free.
+    </p>
+<pre><code>using AgentGuard.Core.Ledger;
+
+// Attach a ledger - one hash-chained entry per pipeline decision
+var ledger = new HashChainLedger();
+var pipeline = new GuardrailPipeline(policy, logger, ledger);
+
+await pipeline.RunAsync(context);
+
+// Verify the chain - false if any recorded decision was tampered with
+bool intact = ledger.Verify();           // true
+string auditTrail = ledger.Export();     // full chain as JSON
+
+// Each entry links to the previous one:
+//   { seq: 0, previousHash: "",          hash: "bd41…", decision: { outcome: "passed",   … } }
+//   { seq: 1, previousHash: "bd41…",     hash: "fb51…", decision: { outcome: "blocked",  … } }
+//   { seq: 2, previousHash: "fb51…",     hash: "8296…", decision: { outcome: "modified", … } }
+//
+// Hash-only by default (InputHash / OutputHash, not raw content).
+// With AgentGuard.Hosting:  options.UseDecisionLedger("audit/decisions.jsonl");</code></pre>
   </div>
 </section>
 
