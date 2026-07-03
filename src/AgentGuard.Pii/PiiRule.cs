@@ -43,25 +43,28 @@ public sealed class PiiRule : IGuardrailRule
     public int Order => 20;
 
     /// <inheritdoc />
-    public ValueTask<GuardrailResult> EvaluateAsync(GuardrailContext context, CancellationToken cancellationToken = default)
+    public async ValueTask<GuardrailResult> EvaluateAsync(GuardrailContext context, CancellationToken cancellationToken = default)
     {
         var text = context.Text;
         if (string.IsNullOrWhiteSpace(text))
         {
-            return ValueTask.FromResult(GuardrailResult.Passed());
+            return GuardrailResult.Passed();
         }
 
-        var results = _analyzer.Analyze(
+        // AnalyzeAsync resolves synchronously when the registry has no async recognizer (the default,
+        // fully-offline configuration), so this is a zero-cost await in that case.
+        var results = await _analyzer.AnalyzeAsync(
             text,
             language: _options.Language,
             entities: _options.Entities,
             scoreThreshold: _options.ScoreThreshold,
             allowList: _options.AllowList,
-            allowListMatch: _options.AllowListMatch);
+            allowListMatch: _options.AllowListMatch,
+            ct: cancellationToken).ConfigureAwait(false);
 
         if (results.Count == 0)
         {
-            return ValueTask.FromResult(GuardrailResult.Passed());
+            return GuardrailResult.Passed();
         }
 
         var anonymized = _anonymizer.Anonymize(
@@ -73,7 +76,7 @@ public sealed class PiiRule : IGuardrailRule
         var detectedTypes = results.Select(r => r.EntityType).Distinct().OrderBy(t => t, StringComparer.Ordinal).ToList();
         var reason = $"PII detected and de-identified: {string.Join(", ", detectedTypes)}";
 
-        var result = GuardrailResult.Modified(anonymized.Text, reason) with
+        return GuardrailResult.Modified(anonymized.Text, reason) with
         {
             RuleName = Name,
             Metadata = new Dictionary<string, object>
@@ -82,7 +85,5 @@ public sealed class PiiRule : IGuardrailRule
                 ["entityCount"] = results.Count,
             },
         };
-
-        return ValueTask.FromResult(result);
     }
 }

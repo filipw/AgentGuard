@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>AgentGuard guardrail adapter for out-of-process PII detection over a generic HTTP contract (TasmanianDevil.Remote). Lets model-grade entities (e.g. PERSON, ADDRESS) that need a heavy model be detected out-of-process - e.g. a sidecar wrapping TasmanianDevil + GLiNER - while anonymization stays local. See https://github.com/filipw/AgentGuard for details.</Description>
+    <PackageId>AgentGuard.RemotePii</PackageId>
+    <RootNamespace>AgentGuard.RemotePii</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="AgentGuard.RemotePii.Tests" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../AgentGuard.Core/AgentGuard.Core.csproj" />
+    <ProjectReference Include="../AgentGuard.Pii/AgentGuard.Pii.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="TasmanianDevil.Remote" />
+  </ItemGroup>
+</Project>
