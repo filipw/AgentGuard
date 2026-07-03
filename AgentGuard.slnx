@@ -9,6 +9,7 @@
     <Project Path="src/AgentGuard.Onnx/AgentGuard.Onnx.csproj" />
     <Project Path="src/AgentGuard.RemoteClassifier/AgentGuard.RemoteClassifier.csproj" />
     <Project Path="src/AgentGuard.Pii/AgentGuard.Pii.csproj" />
+    <Project Path="src/AgentGuard.RemotePii/AgentGuard.RemotePii.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/AgentGuard.Core.Tests/AgentGuard.Core.Tests.csproj" />
@@ -20,6 +21,7 @@
     <Project Path="tests/AgentGuard.Onnx.Tests/AgentGuard.Onnx.Tests.csproj" />
     <Project Path="tests/AgentGuard.RemoteClassifier.Tests/AgentGuard.RemoteClassifier.Tests.csproj" />
     <Project Path="tests/AgentGuard.Pii.Tests/AgentGuard.Pii.Tests.csproj" />
+    <Project Path="tests/AgentGuard.RemotePii.Tests/AgentGuard.RemotePii.Tests.csproj" />
   </Folder>
   <Folder Name="/samples/">
     <Project Path="samples/BasicGuardrails/BasicGuardrails.csproj" />
@@ -36,5 +38,6 @@
     <Project Path="samples/OpirMultilingualGuardrails/OpirMultilingualGuardrails.csproj" />
     <Project Path="samples/AgentFrameworkPii/AgentFrameworkPii.csproj" />
     <Project Path="samples/DecisionLedger/DecisionLedger.csproj" />
+    <Project Path="samples/RemotePii/RemotePii.csproj" />
   </Folder>
 </Solution>

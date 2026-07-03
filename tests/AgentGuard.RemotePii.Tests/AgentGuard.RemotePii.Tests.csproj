@@ -1,13 +1,13 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><IsPackable>false</IsPackable><IsTestProject>true</IsTestProject></PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="../../src/AgentGuard.Azure/AgentGuard.Azure.csproj" />
-    <ProjectReference Include="../../src/AgentGuard.Core/AgentGuard.Core.csproj" />
+    <ProjectReference Include="../../src/AgentGuard.RemotePii/AgentGuard.RemotePii.csproj" />
     <ProjectReference Include="../../src/AgentGuard.Pii/AgentGuard.Pii.csproj" />
+    <ProjectReference Include="../../src/AgentGuard.Core/AgentGuard.Core.csproj" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="TasmanianDevil" />
-    <PackageReference Include="TasmanianDevil.Azure" />
+    <PackageReference Include="TasmanianDevil.Remote" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
