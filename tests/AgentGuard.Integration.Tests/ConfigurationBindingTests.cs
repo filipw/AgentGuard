@@ -326,6 +326,145 @@ public class ConfigurationBindingTests
     }
 
     [Fact]
+    public void ShouldResolveRemotePiiFromConfig()
+    {
+        var config = BuildConfig(new Dictionary<string, string?>
+        {
+            ["DefaultPolicy:Rules:0:Type"] = "RemotePii",
+            ["DefaultPolicy:Rules:0:Endpoint"] = "https://detector.example.com/detect",
+            ["DefaultPolicy:Rules:0:Entities:0"] = "PERSON",
+            ["DefaultPolicy:Rules:0:AuthHeaderName"] = "X-Api-Key",
+            ["DefaultPolicy:Rules:0:AuthHeaderValue"] = "secret",
+            ["DefaultPolicy:Rules:0:TimeoutSeconds"] = "5",
+            ["DefaultPolicy:Rules:0:FailOpen"] = "false",
+        });
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddAgentGuard(config);
+
+        var provider = services.BuildServiceProvider();
+        var policy = provider.GetRequiredService<IAgentGuardFactory>().GetDefaultPolicy();
+        policy.Rules.Should().ContainSingle().Which.Name.Should().Be("pii");
+    }
+
+    [Fact]
+    public void ShouldThrowForRemotePii_WhenMissingEndpoint()
+    {
+        var config = BuildConfig(new Dictionary<string, string?>
+        {
+            ["DefaultPolicy:Rules:0:Type"] = "RemotePii",
+            ["DefaultPolicy:Rules:0:Entities:0"] = "PERSON",
+        });
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddAgentGuard(config);
+
+        var provider = services.BuildServiceProvider();
+        var act = () => provider.GetRequiredService<IAgentGuardFactory>();
+        act.Should().Throw<InvalidOperationException>().Which.ToString().Should().Contain("Endpoint");
+    }
+
+    [Fact]
+    public void ShouldThrowForRemotePii_WhenMissingEntities()
+    {
+        var config = BuildConfig(new Dictionary<string, string?>
+        {
+            ["DefaultPolicy:Rules:0:Type"] = "RemotePii",
+            ["DefaultPolicy:Rules:0:Endpoint"] = "https://detector.example.com/detect",
+        });
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddAgentGuard(config);
+
+        var provider = services.BuildServiceProvider();
+        var act = () => provider.GetRequiredService<IAgentGuardFactory>();
+        act.Should().Throw<InvalidOperationException>().Which.ToString().Should().Contain("Entities");
+    }
+
+    [Fact]
+    public void ShouldResolveAzurePiiFromConfig_WithSubscriptionKey()
+    {
+        var config = BuildConfig(new Dictionary<string, string?>
+        {
+            ["DefaultPolicy:Rules:0:Type"] = "AzurePii",
+            ["DefaultPolicy:Rules:0:Endpoint"] = "https://my-resource.cognitiveservices.azure.com",
+            ["DefaultPolicy:Rules:0:SubscriptionKey"] = "key",
+            ["DefaultPolicy:Rules:0:Entities:0"] = "PERSON",
+            ["DefaultPolicy:Rules:0:Entities:1"] = "ADDRESS",
+            ["DefaultPolicy:Rules:0:Domain"] = "Phi",
+        });
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddAgentGuard(config);
+
+        var provider = services.BuildServiceProvider();
+        var policy = provider.GetRequiredService<IAgentGuardFactory>().GetDefaultPolicy();
+        policy.Rules.Should().ContainSingle().Which.Name.Should().Be("pii");
+    }
+
+    [Fact]
+    public void ShouldResolveAzurePiiFromConfig_WithManagedIdentity()
+    {
+        var config = BuildConfig(new Dictionary<string, string?>
+        {
+            ["DefaultPolicy:Rules:0:Type"] = "AzurePii",
+            ["DefaultPolicy:Rules:0:Endpoint"] = "https://my-resource.cognitiveservices.azure.com",
+            ["DefaultPolicy:Rules:0:UseManagedIdentity"] = "true",
+            ["DefaultPolicy:Rules:0:Entities:0"] = "PERSON",
+        });
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddAgentGuard(config);
+
+        var provider = services.BuildServiceProvider();
+        var policy = provider.GetRequiredService<IAgentGuardFactory>().GetDefaultPolicy();
+        policy.Rules.Should().ContainSingle().Which.Name.Should().Be("pii");
+    }
+
+    [Fact]
+    public void ShouldThrowForAzurePii_WhenMissingAuth()
+    {
+        var config = BuildConfig(new Dictionary<string, string?>
+        {
+            ["DefaultPolicy:Rules:0:Type"] = "AzurePii",
+            ["DefaultPolicy:Rules:0:Endpoint"] = "https://my-resource.cognitiveservices.azure.com",
+            ["DefaultPolicy:Rules:0:Entities:0"] = "PERSON",
+        });
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddAgentGuard(config);
+
+        var provider = services.BuildServiceProvider();
+        var act = () => provider.GetRequiredService<IAgentGuardFactory>();
+        act.Should().Throw<InvalidOperationException>().Which.ToString().Should().Contain("SubscriptionKey");
+    }
+
+    [Fact]
+    public void ShouldThrowForAzurePii_WhenMissingEndpoint()
+    {
+        var config = BuildConfig(new Dictionary<string, string?>
+        {
+            ["DefaultPolicy:Rules:0:Type"] = "AzurePii",
+            ["DefaultPolicy:Rules:0:SubscriptionKey"] = "key",
+            ["DefaultPolicy:Rules:0:Entities:0"] = "PERSON",
+        });
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddAgentGuard(config);
+
+        var provider = services.BuildServiceProvider();
+        var act = () => provider.GetRequiredService<IAgentGuardFactory>();
+        act.Should().Throw<InvalidOperationException>().Which.ToString().Should().Contain("Endpoint");
+    }
+
+    [Fact]
     public void ShouldThrowForLlmOutputPolicy_WhenMissingPolicyDescription()
     {
         var config = BuildConfig(new Dictionary<string, string?>

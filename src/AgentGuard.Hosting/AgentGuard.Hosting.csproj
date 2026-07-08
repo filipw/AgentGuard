@@ -1,17 +1,20 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <Description>DI registration, health checks, and configuration binding for AgentGuard.</Description>
+    <Description>DI registration, health checks, and configuration binding for AgentGuard, including RemotePii/AzurePii detector wiring.</Description>
     <PackageId>AgentGuard.Hosting</PackageId>
     <RootNamespace>AgentGuard.Hosting</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../AgentGuard/AgentGuard.csproj" />
+    <ProjectReference Include="../AgentGuard.RemotePii/AgentGuard.RemotePii.csproj" />
+    <ProjectReference Include="../AgentGuard.Azure/AgentGuard.Azure.csproj" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
     <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" />
     <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+    <PackageReference Include="Azure.Identity" />
     <PackageReference Include="OpenTelemetry.Api" />
   </ItemGroup>
 </Project>
