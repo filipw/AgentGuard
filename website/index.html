@@ -270,6 +270,10 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
       <h3>Broad, validated coverage</h3>
       <p>~50 entity types - email, phone, cards (Luhn), IBAN (mod-97), crypto, plus an always-on US pack and opt-in UK/DE/IN/IT/ES packs - with an optional multilingual NER add-on. The full engine, breadth, and operators live in <a href="https://github.com/filipw/tasmaniandevil" target="_blank">TasmanianDevil</a>.</p>
     </div>
+    <div class="feature-card">
+      <h3>Optional out-of-process detection</h3>
+      <p>When even the ONNX NER model is too heavy for the container, <code>.RedactPiiWithRemote()</code> (a generic HTTP contract) and <code>.RedactPiiWithAzure()</code> (native Person/Address) move name/address detection off-box - a detector, not a redactor: spans still merge into the same local anonymizer. Sends raw text off-box; see <code>docs/remote-pii.md</code>.</p>
+    </div>
   </div>
 </section>
 
@@ -547,7 +551,7 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
   <p class="section-label">Packages</p>
   <h2 class="section-title">Pick what you need.</h2>
   <p class="section-subtitle">
-    Eight packages, layered. The main <code>AgentGuard</code> package is all you need to start. Add framework adapters, cloud integrations, or remote classifiers as needed.
+    Ten packages, layered. The main <code>AgentGuard</code> package is all you need to start. Add framework adapters, cloud integrations, or remote classifiers as needed.
   </p>
 
   <div class="package-grid">
@@ -569,7 +573,11 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
     </div>
     <div class="package-card">
       <div class="package-name">AgentGuard.Azure</div>
-      <div class="package-desc">Azure AI Content Safety integration. Prompt Shields (injection detection), protected material detection (text &amp; code with license citations), category analysis, severity thresholds, and server-side blocklists.</div>
+      <div class="package-desc">Azure AI Content Safety integration - Prompt Shields (injection detection), protected material detection (text &amp; code with license citations), category analysis, severity thresholds, server-side blocklists - plus Azure AI Language PII detection (native Person/Address) via <code>.RedactPiiWithAzure()</code>.</div>
+    </div>
+    <div class="package-card">
+      <div class="package-name">AgentGuard.RemotePii</div>
+      <div class="package-desc">Out-of-process PII detection over a generic HTTP contract - point at a sidecar for entities too heavy to detect in-process (e.g. names/addresses in a constrained container). A detector, not a redactor: spans merge into the same local anonymizer as every other recognizer.</div>
     </div>
     <div class="package-card">
       <div class="package-name">AgentGuard.Hosting</div>

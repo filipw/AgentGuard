@@ -1,3 +1,4 @@
+using AgentGuard.Azure.Pii;
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Builders;
 using AgentGuard.Core.Rules.ContentSafety;
@@ -7,7 +8,12 @@ using AgentGuard.Core.Rules.PromptInjection;
 using AgentGuard.Core.Rules.TokenLimits;
 using AgentGuard.Onnx;
 using AgentGuard.Pii;
+using AgentGuard.RemotePii;
+using Azure.Core;
+using Azure.Identity;
 using TasmanianDevil;
+using TasmanianDevil.Azure;
+using TasmanianDevil.Remote;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -63,6 +69,49 @@ internal static class ConfigurationMapper
                     Countries = rule.Countries is { Count: > 0 } ? rule.Countries : null,
                 });
                 break;
+
+            case "remotepii":
+            {
+                var endpoint = rule.Endpoint ?? throw new InvalidOperationException("RemotePii requires Endpoint.");
+                var entities = rule.Entities is { Count: > 0 }
+                    ? rule.Entities
+                    : throw new InvalidOperationException("RemotePii requires Entities (the entity types the remote endpoint detects).");
+
+                builder.RedactPiiWithRemote(new RemotePiiOptions
+                {
+                    Endpoint = endpoint,
+                    SupportedEntities = entities,
+                    AuthHeaderName = rule.AuthHeaderName,
+                    AuthHeaderValue = rule.AuthHeaderValue,
+                    Timeout = TimeSpan.FromSeconds(rule.TimeoutSeconds ?? 10),
+                    FailOpen = rule.FailOpen ?? true,
+                });
+                break;
+            }
+
+            case "azurepii":
+            {
+                var endpoint = rule.Endpoint ?? throw new InvalidOperationException("AzurePii requires Endpoint.");
+                var entities = rule.Entities is { Count: > 0 }
+                    ? rule.Entities
+                    : throw new InvalidOperationException("AzurePii requires Entities (the entity types to detect).");
+                var useManagedIdentity = rule.UseManagedIdentity ?? false;
+
+                if (!useManagedIdentity && string.IsNullOrEmpty(rule.SubscriptionKey))
+                    throw new InvalidOperationException("AzurePii requires SubscriptionKey, or UseManagedIdentity: true.");
+
+                builder.RedactPiiWithAzure(new AzurePiiOptions
+                {
+                    Endpoint = endpoint,
+                    SupportedEntities = entities,
+                    Domain = ParseEnum<AzurePiiDomain>(rule.Domain, AzurePiiDomain.None),
+                    Timeout = TimeSpan.FromSeconds(rule.TimeoutSeconds ?? 10),
+                    FailOpen = rule.FailOpen ?? true,
+                    SubscriptionKey = useManagedIdentity ? null : rule.SubscriptionKey,
+                    TokenProvider = useManagedIdentity ? CreateManagedIdentityTokenProvider() : null,
+                });
+                break;
+            }
 
             case "tokenlimit":
                 var maxTokens = rule.MaxTokens ?? 4000;
@@ -169,9 +218,20 @@ internal static class ConfigurationMapper
                 throw new InvalidOperationException(
                     $"Unknown guardrail rule type: '{rule.Type}'. " +
                     "Valid types: InputNormalization, PromptInjection, OnnxPromptInjection, PiiRedaction, " +
-                    "TokenLimit, ContentSafety, LlmPromptInjection, " +
+                    "RemotePii, AzurePii, TokenLimit, ContentSafety, LlmPromptInjection, " +
                     "LlmPiiDetection, LlmTopicBoundary, LlmOutputPolicy, LlmGroundedness, LlmCopyright.");
         }
+    }
+
+    private static Func<CancellationToken, ValueTask<string>> CreateManagedIdentityTokenProvider()
+    {
+        var credential = new DefaultAzureCredential();
+        var scope = new TokenRequestContext(["https://cognitiveservices.azure.com/.default"]);
+        return async ct =>
+        {
+            var token = await credential.GetTokenAsync(scope, ct).ConfigureAwait(false);
+            return token.Token;
+        };
     }
 
     private static T ResolveService<T>(IServiceProvider? serviceProvider, string ruleType) where T : class

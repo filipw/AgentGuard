@@ -39,7 +39,7 @@ public sealed class PolicyConfiguration
 public sealed class RuleConfiguration
 {
     /// <summary>
-    /// Rule type. One of: InputNormalization, PromptInjection, PiiRedaction,
+    /// Rule type. One of: InputNormalization, PromptInjection, PiiRedaction, RemotePii, AzurePii,
     /// TopicBoundary, OutputTopicBoundary, TokenLimit, ContentSafety, LlmPromptInjection, LlmPiiDetection,
     /// LlmTopicBoundary, LlmOutputPolicy, LlmGroundedness, LlmCopyright.
     /// </summary>
@@ -49,10 +49,12 @@ public sealed class RuleConfiguration
     /// <summary>Sensitivity level: Low, Medium, or High. Default: Medium.</summary>
     public string? Sensitivity { get; set; }
 
-    // --- PiiRedaction ---
+    // --- PiiRedaction / RemotePii / AzurePii ---
     /// <summary>
     /// PII entity types to detect (e.g. EMAIL_ADDRESS, PHONE_NUMBER, US_SSN, CREDIT_CARD, IBAN_CODE,
-    /// CRYPTO, IP_ADDRESS, URL, MAC_ADDRESS, US_ITIN). When empty, all supported entities are detected.
+    /// CRYPTO, IP_ADDRESS, URL, MAC_ADDRESS, US_ITIN). When empty, all supported entities are detected
+    /// (PiiRedaction only). For RemotePii / AzurePii this is the set the remote detector supports
+    /// (e.g. PERSON, ADDRESS) and is required - there is no "detect everything" default for a remote call.
     /// </summary>
     public List<string>? Entities { get; set; }
     /// <summary>Replacement text for redacted PII. Default: [REDACTED].</summary>
@@ -132,4 +134,38 @@ public sealed class RuleConfiguration
     // --- LlmCopyright ---
     /// <summary>Copyright action: Block or Warn. Default: Block.</summary>
     public string? CopyrightAction { get; set; }
+
+    // --- RemotePii / AzurePii (shared) ---
+    /// <summary>
+    /// Base URL of the remote detector (RemotePii), or the Azure AI Language resource endpoint
+    /// (AzurePii). Required for both.
+    /// </summary>
+    public string? Endpoint { get; set; }
+    /// <summary>Per-request timeout in seconds (RemotePii / AzurePii). Default: 10.</summary>
+    public int? TimeoutSeconds { get; set; }
+    /// <summary>
+    /// When true (default), a remote/Azure failure is swallowed and local-only recognizers still
+    /// redact what they can (RemotePii / AzurePii). When false, the failure propagates.
+    /// </summary>
+    public bool? FailOpen { get; set; }
+
+    // --- RemotePii ---
+    /// <summary>Optional HTTP header name used to authenticate against the remote endpoint (RemotePii).</summary>
+    public string? AuthHeaderName { get; set; }
+    /// <summary>The value sent for <see cref="AuthHeaderName"/> (RemotePii).</summary>
+    public string? AuthHeaderValue { get; set; }
+
+    // --- AzurePii ---
+    /// <summary>
+    /// API key for the Azure AI Language resource (AzurePii), sent as <c>Ocp-Apim-Subscription-Key</c>.
+    /// Required unless <see cref="UseManagedIdentity"/> is true.
+    /// </summary>
+    public string? SubscriptionKey { get; set; }
+    /// <summary>
+    /// Authenticate to Azure AI Language via <c>DefaultAzureCredential</c> instead of a subscription
+    /// key (AzurePii). Default: false.
+    /// </summary>
+    public bool? UseManagedIdentity { get; set; }
+    /// <summary>Azure AI Language processing domain: None or Phi (AzurePii). Default: None.</summary>
+    public string? Domain { get; set; }
 }
