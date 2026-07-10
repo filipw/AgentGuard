@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <Description>Azure AI Content Safety integration for AgentGuard.</Description>
+    <Description>Azure AI Content Safety and Azure AI Language integration for AgentGuard, including PII entity recognition (native Person/Address categories) via TasmanianDevil.Azure.</Description>
     <PackageId>AgentGuard.Azure</PackageId>
     <RootNamespace>AgentGuard.Azure</RootNamespace>
   </PropertyGroup>
@@ -9,10 +9,12 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../AgentGuard.Core/AgentGuard.Core.csproj" />
+    <ProjectReference Include="../AgentGuard.Pii/AgentGuard.Pii.csproj" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Azure.AI.ContentSafety" />
     <PackageReference Include="Azure.Identity" />
+    <PackageReference Include="TasmanianDevil.Azure" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
   </ItemGroup>
 </Project>
