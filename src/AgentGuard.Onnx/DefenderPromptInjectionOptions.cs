@@ -13,7 +13,7 @@ namespace AgentGuard.Onnx;
 /// <para>
 /// The default calibration values (<see cref="TemperatureT"/>, <see cref="MainThreshold"/>,
 /// <see cref="AuxThreshold"/>) come from the bundled model's
-/// <c>classifier_config.json</c> (see <c>eng/models/minilm-prompt-injection/</c>).
+/// <c>classifier_config.json</c> (shipped inside the Kyoto package).
 /// </para>
 /// </remarks>
 public sealed class DefenderPromptInjectionOptions

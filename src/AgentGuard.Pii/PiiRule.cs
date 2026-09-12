@@ -92,6 +92,23 @@ public sealed class PiiRule : IGuardrailRule, IDisposable
             mergeEntitiesWithSpaces: _ruleOptions.MergeEntitiesWithSpaces);
 
         var detectedTypes = results.Select(r => r.EntityType).Distinct().OrderBy(t => t, StringComparer.Ordinal).ToList();
+
+        // detection alone is not a modification: a keep operator, or a conflict resolution that
+        // drops every span, leaves the text untouched. Reporting Modified there disagreed with the
+        // pipeline's own comparison and emitted a "modified" outcome for identical text.
+        if (string.Equals(anonymized.Text, text, StringComparison.Ordinal))
+        {
+            return GuardrailResult.Passed() with
+            {
+                RuleName = Name,
+                Metadata = new Dictionary<string, object>
+                {
+                    ["entityTypes"] = detectedTypes,
+                    ["entityCount"] = results.Count,
+                },
+            };
+        }
+
         var reason = $"PII detected and de-identified: {string.Join(", ", detectedTypes)}";
 
         return GuardrailResult.Modified(anonymized.Text, reason) with

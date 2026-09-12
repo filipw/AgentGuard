@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <Description>Declarative guardrails and safety controls. Framework-agnostic core: abstractions, rules engine, fluent builder, and 14 built-in rules. No agent framework dependency.</Description>
+    <Description>Declarative guardrails and safety controls. Framework-agnostic core: abstractions, rules engine, fluent builder, and the built-in rule set. No agent framework dependency.</Description>
     <PackageId>AgentGuard.Core</PackageId>
     <RootNamespace>AgentGuard.Core</RootNamespace>
   </PropertyGroup>
@@ -11,7 +11,6 @@
     <PackageReference Include="Microsoft.Extensions.AI.Abstractions" />
     <PackageReference Include="Microsoft.Extensions.AI" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
-    <PackageReference Include="Microsoft.Extensions.Options" />
     <PackageReference Include="Microsoft.ML.Tokenizers" />
   </ItemGroup>
 </Project>

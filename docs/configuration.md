@@ -74,7 +74,7 @@ builder.Services.AddAgentGuard(builder.Configuration.GetSection("AgentGuard"));
 |------|-----------|-------|
 | `InputNormalization` | `DecodeBase64`, `DecodeHex`, `DetectReversedText`, `NormalizeUnicode` (all bool, default true) | Decodes evasion encodings |
 | `PromptInjection` | `Sensitivity` (Low/Medium/High, default Medium) | Regex-based detection |
-| `OnnxPromptInjection` | `ModelPath` (string, required), `TokenizerPath` (string, required), `Threshold` (float, default 0.5) | Requires `AgentGuard.Onnx` package. Download model via `eng/download-onnx-model.sh` |
+| `OnnxPromptInjection` | `ModelPath` (string, required), `TokenizerPath` (string, required), `Threshold` (float, default 0.5) | Requires `AgentGuard.Onnx` package. Fetch the model via the Kyoto bootstrap (see `eng/MODELS.md`) |
 | `PiiRedaction` | `Entities` (string[], e.g. EMAIL_ADDRESS/US_SSN/CREDIT_CARD; empty = all), `Replacement` (default [REDACTED]), `Countries` (string[] of ISO codes, e.g. uk/de/in/it/es; empty = generic + US only) | Offline PII redaction (`AgentGuard.Pii`); regex + checksum recognizers |
 | `TokenLimit` | `MaxTokens` (int), `Phase` (Input/Output), `OverflowStrategy` (Reject/Truncate/Warn) | Token counting via ML.Tokenizers |
 | `ToolCallGuardrail` | `Categories` (Default/All/SqlInjection,...) | Inspects tool call arguments for injection |

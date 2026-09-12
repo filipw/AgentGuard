@@ -71,62 +71,58 @@ public sealed partial class InputNormalizationRule : IGuardrailRule
         if (string.IsNullOrWhiteSpace(context.Text))
             return ValueTask.FromResult(GuardrailResult.Passed());
 
-        var decodedSegments = new List<string>();
         var text = context.Text;
 
+        // Normalization passes rewrite the working text in place. They run before the decoders
+        // because an attacker interleaves invisible characters *into* a payload: stripping them
+        // afterwards, as this rule used to, left the base64 decoder looking at text it could never
+        // decode.
         if (_options.NormalizeUnicode)
         {
-            var normalized = NormalizeUnicode(text);
-            if (normalized != text)
-            {
-                text = normalized;
-                decodedSegments.Add(normalized);
-            }
-        }
-
-        if (_options.DecodeBase64)
-        {
-            var decoded = DecodeBase64Segments(text);
-            if (decoded is not null)
-                decodedSegments.Add(decoded);
-        }
-
-        if (_options.DecodeHex)
-        {
-            var decoded = DecodeHexSequences(text);
-            if (decoded is not null)
-                decodedSegments.Add(decoded);
-        }
-
-        if (_options.DetectReversedText)
-        {
-            var reversed = DetectAndReverseText(text);
-            if (reversed is not null)
-                decodedSegments.Add(reversed);
+            text = NormalizeUnicode(text);
         }
 
         if (_options.StripInvisibleUnicode)
         {
-            var stripped = StripInvisibleCharacters(text);
-            if (stripped is not null)
-            {
-                text = stripped;
-                decodedSegments.Add(stripped);
-            }
+            text = StripInvisibleCharacters(text) ?? text;
         }
+
+        // Decoding passes produce extra views of the text rather than replacing it, so downstream
+        // rules can match the plaintext without the decoders' false positives rewriting the input.
+        // Only distinct views are kept: emitting the whole normalized string once per pass used to
+        // triple the text and eat the budget of the 256-token classifier downstream.
+        var decodedSegments = new List<string>();
+
+        void AddView(string? view)
+        {
+            if (view is null || string.Equals(view, text, StringComparison.Ordinal))
+                return;
+            if (!decodedSegments.Contains(view, StringComparer.Ordinal))
+                decodedSegments.Add(view);
+        }
+
+        if (_options.DecodeBase64)
+            AddView(DecodeBase64Segments(text));
+
+        if (_options.DecodeHex)
+            AddView(DecodeHexSequences(text));
+
+        if (_options.DetectReversedText)
+            AddView(DetectAndReverseText(text));
 
         if (_options.DecodeLeetspeak)
-        {
-            var decoded = DecodeLeetspeak(text);
-            if (decoded is not null)
-                decodedSegments.Add(decoded);
-        }
+            AddView(DecodeLeetspeak(text));
 
-        if (decodedSegments.Count == 0)
+        var normalizationChanged = !string.Equals(text, context.Text, StringComparison.Ordinal);
+
+        if (decodedSegments.Count == 0 && !normalizationChanged)
             return ValueTask.FromResult(GuardrailResult.Passed());
 
         // Append decoded content so downstream rules can evaluate both original and decoded forms
-        var combined = text + "\n[DECODED]\n" + string.Join("\n", decodedSegments);
+        var combined = decodedSegments.Count == 0
+            ? text
+            : text + "\n[DECODED]\n" + string.Join("\n", decodedSegments);
+
         return ValueTask.FromResult(
             GuardrailResult.Modified(combined, "Input contained encoded content that was decoded for analysis."));
     }

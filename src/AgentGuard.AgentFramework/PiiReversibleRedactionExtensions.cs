@@ -44,11 +44,41 @@ public static class PiiReversibleRedactionExtensions
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentException.ThrowIfNullOrEmpty(key);
 
+        // the engine built here lives as long as the agent, and AIAgentBuilder offers no disposal
+        // hook to release it. That is fine for the default fully-offline configuration, which owns
+        // nothing but managed state - but an engine carrying a remote detector or an ONNX
+        // recognizer needs a lifetime the caller controls, which is what the overload below is for.
+        var engine = new PiiEngine(BuildEncryptOptions(options, key));
+
+        return builder.UsePiiReversibleRedaction(engine, key);
+    }
+
+    /// <summary>
+    /// Wraps the agent using a <see cref="PiiEngine"/> the caller constructed and continues to own.
+    /// </summary>
+    /// <remarks>
+    /// Use this when the engine holds resources - a remote detector's <see cref="System.Net.Http.HttpClient"/>,
+    /// an ONNX NER session - or when one engine should be shared across several agents. The engine
+    /// is never disposed here; its lifetime stays with whoever built it. It must be configured with
+    /// the reversible <c>encrypt</c> operator, which
+    /// <see cref="UsePiiReversibleRedaction(AIAgentBuilder, string, PiiOptions?)"/> does for you.
+    /// </remarks>
+    /// <param name="builder">The MAF agent builder.</param>
+    /// <param name="engine">A caller-owned engine configured with the <c>encrypt</c> operator.</param>
+    /// <param name="key">The same AES key the engine encrypts with, used to decrypt on the way back.</param>
+    /// <exception cref="ArgumentException">Thrown when <paramref name="key"/> is not a valid AES key length.</exception>
+    public static AIAgentBuilder UsePiiReversibleRedaction(
+        this AIAgentBuilder builder,
+        PiiEngine engine,
+        string key)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(engine);
+        ArgumentException.ThrowIfNullOrEmpty(key);
+
         var keyBytes = Encoding.UTF8.GetBytes(key);
         if (!AesCipher.IsValidKeySize(keyBytes))
             throw new ArgumentException("key must be 16, 24, or 32 bytes (128/192/256-bit) when UTF-8 encoded.", nameof(key));
-
-        var engine = new PiiEngine(BuildEncryptOptions(options, key));
 
         return builder.Use(
             runFunc: async (messages, session, runOptions, innerAgent, ct) =>

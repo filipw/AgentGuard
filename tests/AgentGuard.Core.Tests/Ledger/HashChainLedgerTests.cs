@@ -1,3 +1,4 @@
+using System.Globalization;
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Guardrails;
 using AgentGuard.Core.Ledger;
@@ -447,5 +448,95 @@ public class LedgerPipelineTests
 
         ledger.Count.Should().Be(5);
         ledger.Verify().Should().BeTrue();
+    }
+
+    // AG-32: the in-memory chain had no cap and the JSONL mirror opened, wrote and closed the file
+    // once per entry, on the guarded request's own thread.
+
+    private static GuardrailDecision Decision(string tag) => new()
+    {
+        PolicyName = "p",
+        Phase = GuardrailPhase.Input,
+        Outcome = "passed",
+        InputHash = HashChainLedger.HashText($"in-{tag}"),
+        OutputHash = HashChainLedger.HashText($"out-{tag}"),
+        Timestamp = DateTimeOffset.UtcNow
+    };
+
+    [Fact]
+    public void ShouldEvictOldestEntries_WhenAnInMemoryCapIsSet()
+    {
+        using var ledger = new HashChainLedger(maxInMemoryEntries: 3);
+
+        for (var i = 0; i < 10; i++)
+            ledger.Append(Decision(i.ToString(CultureInfo.InvariantCulture)));
+
+        ledger.Count.Should().Be(3);
+        ledger.Entries[^1].Seq.Should().Be(9, "sequence numbers keep counting the whole chain");
+        ledger.Entries[0].Seq.Should().Be(7);
+    }
+
+    [Fact]
+    public void ShouldVerifyTheRetainedWindow_WhenTrimmed()
+    {
+        using var ledger = new HashChainLedger(maxInMemoryEntries: 3);
+
+        for (var i = 0; i < 10; i++)
+            ledger.Append(Decision(i.ToString(CultureInfo.InvariantCulture)));
+
+        ledger.Verify(out var broken).Should().BeTrue();
+        broken.Should().Be(-1);
+    }
+
+    [Fact]
+    public void ShouldRejectANonPositiveCap()
+    {
+        var act = () => new HashChainLedger(maxInMemoryEntries: 0);
+
+        act.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
+    [Fact]
+    public void ShouldStillPersistEveryEntry_WhenTheInMemoryChainIsCapped()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"ledger-{Guid.NewGuid():N}.jsonl");
+        try
+        {
+            using (var ledger = new HashChainLedger(path, maxInMemoryEntries: 2))
+            {
+                for (var i = 0; i < 6; i++)
+                    ledger.Append(Decision(i.ToString(CultureInfo.InvariantCulture)));
+
+                ledger.Count.Should().Be(2);
+            }
+
+            var reloaded = HashChainLedger.Load(path);
+            reloaded.Count.Should().Be(6, "the file mirror keeps the whole chain");
+            reloaded.Verify().Should().BeTrue();
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void ShouldAllowReadingTheFileWhileItIsBeingWritten()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"ledger-{Guid.NewGuid():N}.jsonl");
+        try
+        {
+            using var ledger = new HashChainLedger(path);
+            ledger.Append(Decision("a"));
+
+            // FileShare.Read: an auditor can tail the file without the writer having to close it
+            var act = () => File.ReadAllLines(path);
+
+            act.Should().NotThrow();
+        }
+        finally
+        {
+            File.Delete(path);
+        }
     }
 }

@@ -73,6 +73,11 @@ public sealed class AzureProtectedMaterialRule : IGuardrailRule
     public async ValueTask<GuardrailResult> EvaluateAsync(
         GuardrailContext context, CancellationToken cancellationToken = default)
     {
+        // every other rule short-circuits here; without it an empty turn costs a billable call and
+        // usually comes back 400.
+        if (string.IsNullOrWhiteSpace(context.Text))
+            return GuardrailResult.Passed();
+
         // Always check text
         var textResult = await _client.AnalyzeTextAsync(context.Text, cancellationToken);
         if (textResult.IsError)

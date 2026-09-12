@@ -193,8 +193,15 @@ public sealed class ToolCallGuardrailRule : IGuardrailRule
                 nextArg:;
             }
 
-            // Also check raw content if available
-            if (call.RawContent is { Length: > 0 } rawContent)
+            // Also check raw content if available - but only when nothing on this call was
+            // allow-listed. RawContent is the serialized form of the same arguments, so scanning it
+            // re-flags exactly the values the allowlist just excluded, which made
+            // AllowedArguments and PerToolAllowedArguments unreachable for any caller that
+            // populates it.
+            var hasAllowedArguments = call.Arguments.Keys.Any(
+                a => _options.AllowedArguments.Contains(a) || perToolAllowed?.Contains(a) == true);
+
+            if (!hasAllowedArguments && call.RawContent is { Length: > 0 } rawContent)
             {
                 foreach (var (category, patterns) in _patterns)
                 {

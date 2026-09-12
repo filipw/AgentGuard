@@ -10,7 +10,7 @@ public sealed class PIGuardPromptInjectionOptions
 {
     /// <summary>
     /// Path to the PIGuard ONNX model file. The official <c>leolee99/PIGuard</c> repo ships only
-    /// PyTorch weights, so this is an ONNX export (see <c>eng/download-piguard-model.sh</c>).
+    /// PyTorch weights, so this is an ONNX export (see <c>eng/MODELS.md</c>).
     /// </summary>
     public required string ModelPath { get; init; }
 
@@ -25,7 +25,7 @@ public sealed class PIGuardPromptInjectionOptions
     /// Confidence threshold (0.0-1.0) above which input is classified as prompt injection.
     /// Default: <c>0.9</c>. PIGuard's argmax (0.5) over-blocks benign text; 0.9 is the measured
     /// operating point where benign false positives drop below the bundled Defender model while
-    /// retaining its strong indirect/code-injection recall (see <c>eng/piguard-eval/RESULTS.md</c>).
+    /// retaining its strong indirect/code-injection recall (see the PIGuard evaluation in the Kyoto repo).
     /// </summary>
     public float Threshold { get; init; } = 0.9f;
 

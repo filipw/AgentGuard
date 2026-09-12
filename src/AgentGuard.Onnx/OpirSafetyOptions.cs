@@ -7,14 +7,14 @@ namespace AgentGuard.Onnx;
 /// language. It is an offline, multilingual content-safety guard - the gap the English-only
 /// Defender classifier and cloud-only content-safety APIs leave open.
 /// Requires a pre-downloaded ONNX model, the mDeBERTa-v3 SentencePiece tokenizer, and the
-/// label-prefix file - see <c>eng/download-opir-model.sh</c>.
+/// label-prefix file - see <c>eng/MODELS.md</c>.
 /// </summary>
 public sealed class OpirSafetyOptions
 {
     /// <summary>
     /// Path to the Opir-multilang ONNX model file. The official
     /// <c>knowledgator/opir-multitask-multilang-v1.0</c> repo ships only PyTorch weights, so this is
-    /// a frozen-taxonomy ONNX export (see <c>eng/download-opir-model.sh</c>). The download script
+    /// a frozen-taxonomy ONNX export (see <c>eng/MODELS.md</c>). The download script
     /// defaults to the fp16 build.
     /// </summary>
     public required string ModelPath { get; init; }

@@ -300,7 +300,10 @@ public static class AgentGuardMiddlewareExtensions
         inputActivity?.SetTag(AgentGuardTelemetry.Tags.AgentName, agentName);
         inputActivity?.SetTag(AgentGuardTelemetry.Tags.Phase, "input");
 
-        var lastMessage = messages.Count > 0 ? messages[^1] : null;
+        // the last *user* message, not simply the last one. Taking whatever came last meant a
+        // trailing assistant message was evaluated as untrusted user input, and it disagreed with
+        // GuardrailChatClient, which has always used the last user message.
+        var lastMessage = messages.LastOrDefault(m => m.Role == ChatRole.User);
         var inputText = lastMessage?.Text ?? "";
 
         if (string.IsNullOrEmpty(inputText))
@@ -331,7 +334,7 @@ public static class AgentGuardMiddlewareExtensions
         {
             inputActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Modified);
             var modified = messages.ToList();
-            modified[^1] = new ChatMessage(lastMessage.Role, inputResult.FinalText);
+            modified[modified.LastIndexOf(lastMessage)] = new ChatMessage(lastMessage.Role, inputResult.FinalText);
             return (null, modified);
         }
 

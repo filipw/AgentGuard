@@ -220,6 +220,21 @@ The loaded ledger is verification-only by default. Pass `resumeWriting: true` to
 
 The ledger is an audit **side-channel**: if recording a decision fails (for example a JSONL write error), the failure is logged and swallowed so it never breaks guardrail evaluation. The in-memory chain and the request both continue.
 
+### What tamper-evidence covers
+
+Editing an entry, or removing one from the middle of the chain, breaks the linkage and is reported
+by `Verify()`. Removing entries from the **end** is not detectable: a hash chain carries no record of
+how long it should be, so a truncated chain is indistinguishable from one that simply stopped there.
+Detecting that needs an external anchor - the last sequence number recorded somewhere the chain's
+holder cannot reach, or periodic publication of the head hash.
+
+The in-memory chain is unbounded by default. For a long-lived service, pass a cap and mirror to a
+file so the full chain is still on disk:
+
+```csharp
+options.UseDecisionLedger("audit/decisions.jsonl", maxInMemoryEntries: 10_000);
+```
+
 ### Privacy
 
 The ledger is **hash-only by default**: it records `InputHash` / `OutputHash` (SHA-256 of the text) but not the raw content. Raw `Input` / `Output` are captured only when content capture is enabled - the same `AgentGuardTelemetry.EnableSensitiveData` flag (env `AGENTGUARD_CAPTURE_CONTENT=true`) that gates span content. There is no separate toggle. When raw content is captured it is also bound into the hash chain, so tampering with the stored `Input` / `Output` (not just their hashes) is detected by `Verify()`.

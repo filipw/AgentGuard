@@ -52,6 +52,11 @@ public sealed class AzurePromptShieldRule : IGuardrailRule
     public async ValueTask<GuardrailResult> EvaluateAsync(
         GuardrailContext context, CancellationToken cancellationToken = default)
     {
+        // every other rule short-circuits here; without it an empty turn costs a billable call and
+        // usually comes back 400.
+        if (string.IsNullOrWhiteSpace(context.Text))
+            return GuardrailResult.Passed();
+
         IReadOnlyList<string>? documents = null;
         if (_options.AnalyzeDocuments &&
             context.Properties.TryGetValue("Documents", out var docs) &&

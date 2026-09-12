@@ -41,8 +41,17 @@ public sealed class PromptInjectionOptions
     /// </summary>
     public ErrorBehavior OnError { get; init; } = ErrorBehavior.FailOpen;
 
-    /// <summary>Per-pattern match timeout. Default: 100 ms.</summary>
-    public TimeSpan MatchTimeout { get; init; } = TimeSpan.FromMilliseconds(100);
+    /// <summary>
+    /// Per-pattern match timeout. Default: 250 ms.
+    /// </summary>
+    /// <remarks>
+    /// This bounds a single pattern, and the rule returns on the first timeout, so it is also the
+    /// whole-rule ceiling. A warm evaluation of every pattern takes roughly 0.01 ms, so the budget
+    /// exists purely to cap pathological backtracking; it is set well above the steady-state cost
+    /// because the first match on a compiled pattern also pays IL generation, and a tighter budget
+    /// turned a cold start into a skipped check.
+    /// </remarks>
+    public TimeSpan MatchTimeout { get; init; } = TimeSpan.FromMilliseconds(250);
 }
 
 /// <summary>The kind of attack a built-in pattern detects, used to honour the per-category options.</summary>
@@ -79,7 +88,7 @@ public sealed class PromptInjectionRule : IGuardrailRule
 
     // the compile-time timeout only bounds the shared static instances; a rule configured with a
     // different MatchTimeout recompiles its own set (see BuildPatterns).
-    private static readonly TimeSpan DefaultTimeout = TimeSpan.FromMilliseconds(100);
+    private static readonly TimeSpan DefaultTimeout = TimeSpan.FromMilliseconds(250);
 
     /// <summary>Core patterns: direct instruction override, role hijacking, end sequences, variable expansion, security bypass, forged turns.</summary>
     private static readonly (string Pattern, InjectionPatternCategory Category)[] CoreSources =
@@ -273,8 +282,37 @@ public sealed class PromptInjectionRule : IGuardrailRule
         return ValueTask.FromResult(GuardrailResult.Passed());
     }
 
-    private static Regex[] Compile((string Pattern, InjectionPatternCategory Category)[] sources, TimeSpan timeout) =>
-        [.. sources.Select(s => new Regex(s.Pattern, Opts, timeout))];
+    private static Regex[] Compile((string Pattern, InjectionPatternCategory Category)[] sources, TimeSpan timeout)
+    {
+        var compiled = sources.Select(s => new Regex(s.Pattern, Opts, timeout)).ToArray();
+        Warm(compiled);
+        return compiled;
+    }
+
+    /// <summary>
+    /// Runs each pattern once against a throwaway input.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="RegexOptions.Compiled"/> generates IL on the first match, not at construction, and
+    /// that work happens inside the match timeout: measured at 0.4 to 4 ms per pattern against
+    /// 0.0001 ms once warm. Paying it here, while the rule is being constructed, keeps it out of the
+    /// first request - where on a cold, loaded machine it could exhaust the budget and leave the
+    /// check skipped under the default fail-open behaviour.
+    /// </remarks>
+    private static void Warm(Regex[] compiled)
+    {
+        foreach (var regex in compiled)
+        {
+            try
+            {
+                regex.IsMatch("warmup");
+            }
+            catch (RegexMatchTimeoutException)
+            {
+                // warming is best-effort; a timeout here just means the first real match pays it
+            }
+        }
+    }
 
     private static (Regex, GuardrailSeverity)[] BuildPatterns(PromptInjectionOptions options)
     {
