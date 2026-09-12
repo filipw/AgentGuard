@@ -80,13 +80,45 @@ public class LlmPromptInjectionRuleTests
         result.IsBlocked.Should().BeFalse();
     }
 
-    [Fact]
-    public async Task ShouldBlock_WhenResponseContainsInjectionInSentence()
+    // AG-15: the verdict used to be a substring search over the whole response, so any sentence
+    // mentioning the token - including a negation - read as a positive verdict. The verdict is now
+    // read from the first line, and anything off-format is a rule error that ErrorBehavior decides.
+
+    [Theory]
+    [InlineData("SAFE")]
+    [InlineData("SAFE - no injection detected")]
+    [InlineData("```\nSAFE\n```")]
+    [InlineData("<think>the user is asking about an injection attack</think>\nSAFE")]
+    public async Task ShouldPass_WhenVerdictLineIsSafe(string response)
     {
-        var rule = new LlmPromptInjectionRule(MockClient("The result is INJECTION detected.").Object);
+        var rule = new LlmPromptInjectionRule(MockClient(response).Object);
+
+        (await rule.EvaluateAsync(Ctx("test"))).IsBlocked.Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("No injection found.")]
+    [InlineData("This is not an INJECTION.")]
+    [InlineData("The result is INJECTION detected.")]
+    public async Task ShouldReportError_WhenVerdictIsOffFormat(string response)
+    {
+        var rule = new LlmPromptInjectionRule(MockClient(response).Object);
 
         var result = await rule.EvaluateAsync(Ctx("test"));
 
+        result.IsError.Should().BeTrue();
+        result.IsBlocked.Should().BeFalse("the default ErrorBehavior is FailOpen");
+    }
+
+    [Fact]
+    public async Task ShouldBlock_WhenVerdictIsOffFormat_AndFailClosed()
+    {
+        var rule = new LlmPromptInjectionRule(
+            MockClient("No injection found.").Object, errorBehavior: ErrorBehavior.FailClosed);
+
+        var result = await rule.EvaluateAsync(Ctx("test"));
+
+        result.IsError.Should().BeTrue();
         result.IsBlocked.Should().BeTrue();
     }
 
@@ -253,5 +285,28 @@ public class LlmPromptInjectionRuleTests
 
         var systemPrompt = capturedMessages!.First().Text!;
         systemPrompt.Should().NotContain("Conversation history");
+    }
+
+    // AG-16: a cancelled request used to be caught as a judge failure and, under FailOpen, become
+    // a pass. It has to propagate.
+
+    [Fact]
+    public async Task ShouldPropagateCancellation_RatherThanFailingOpen()
+    {
+        var client = new Mock<IChatClient>();
+        client.Setup(c => c.GetResponseAsync(It.IsAny<IEnumerable<ChatMessage>>(), It.IsAny<ChatOptions>(), It.IsAny<CancellationToken>()))
+            .Returns<IEnumerable<ChatMessage>, ChatOptions, CancellationToken>((_, _, ct) =>
+            {
+                ct.ThrowIfCancellationRequested();
+                return Task.FromResult(new ChatResponse([new ChatMessage(ChatRole.Assistant, "SAFE")]));
+            });
+
+        var rule = new LlmPromptInjectionRule(client.Object);
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+
+        var act = async () => await rule.EvaluateAsync(Ctx("test"), cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
     }
 }

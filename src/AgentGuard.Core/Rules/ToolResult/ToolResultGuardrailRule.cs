@@ -362,6 +362,8 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
             ["get_time"] = ToolRiskLevel.Low,
         };
 
+    /// <summary>Initializes a new instance of the <see cref="ToolResultGuardrailRule"/> class.</summary>
+    /// <param name="options">Action, risk profiles and detection toggles. Defaults when null.</param>
     public ToolResultGuardrailRule(ToolResultGuardrailOptions? options = null)
     {
         _options = options ?? new();
@@ -387,95 +389,81 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
         }
 
         var violations = new List<ToolResultViolation>();
-        var sanitizedResults = _options.Action == ToolResultAction.Sanitize
-            ? new List<ToolResultEntry>()
-            : null;
+
+        // cleaned results are produced whenever there is anything to hand back - a sanitized
+        // violation, or an entry that only needed its hidden characters removed - so a caller that
+        // substitutes SanitizedResultsKey never feeds the raw payload to the model.
+        var cleanedResults = new List<ToolResultEntry>(toolResults.Count);
+        var anyCleaned = false;
 
         foreach (var result in toolResults)
         {
-            if (_options.SkippedTools.Contains(result.ToolName))
+            if (_options.SkippedTools.Contains(result.ToolName) || string.IsNullOrWhiteSpace(result.Content))
             {
-                sanitizedResults?.Add(result);
-                continue;
-            }
-
-            if (string.IsNullOrWhiteSpace(result.Content))
-            {
-                sanitizedResults?.Add(result);
+                cleanedResults.Add(result);
                 continue;
             }
 
             var riskLevel = GetRiskLevel(result);
-            var content = result.Content;
+            var raw = result.Content;
 
-            // Pre-process: strip Unicode control characters if enabled
-            if (_options.StripUnicodeControl)
-            {
-                content = StripControlCharacters(content);
-            }
+            // Stripping invisible characters is what lets a keyword broken up by zero-width joiners
+            // match. It must not be the only text the patterns see, though: the hidden-character
+            // patterns below are looking for exactly the characters it removes, so both forms are
+            // scanned and each pattern reports at most once.
+            var stripped = _options.StripUnicodeControl ? StripControlCharacters(raw) : raw;
+            var wasStripped = !string.Equals(raw, stripped, StringComparison.Ordinal);
+            var secondary = wasStripped ? stripped : null;
 
             var resultViolations = new List<ToolResultViolation>();
 
             // Always check core patterns
-            CheckPatterns(result.ToolName, content, CorePatterns, resultViolations);
+            CheckPatterns(result.ToolName, raw, secondary, CorePatterns, resultViolations);
 
             // Check medium-risk patterns for medium and high risk tools
             if (riskLevel >= ToolRiskLevel.Medium)
             {
-                CheckPatterns(result.ToolName, content, MediumRiskPatterns, resultViolations);
+                CheckPatterns(result.ToolName, raw, secondary, MediumRiskPatterns, resultViolations);
             }
 
             // Check high-risk patterns for high risk tools
             if (riskLevel >= ToolRiskLevel.High)
             {
-                CheckPatterns(result.ToolName, content, HighRiskPatterns, resultViolations);
+                CheckPatterns(result.ToolName, raw, secondary, HighRiskPatterns, resultViolations);
             }
 
             // Check custom patterns
-            foreach (var (category, description, pattern) in _options.CustomPatterns)
-            {
-                var match = pattern.Match(content);
-                if (match.Success)
-                {
-                    resultViolations.Add(new ToolResultViolation
-                    {
-                        ToolName = result.ToolName,
-                        Category = category,
-                        Description = description,
-                        MatchedText = TruncateMatch(match.Value)
-                    });
-                }
-            }
+            CheckPatterns(result.ToolName, raw, secondary, _options.CustomPatterns, resultViolations);
 
             violations.AddRange(resultViolations);
 
-            if (sanitizedResults != null)
+            // Sanitize mode rewrites violating content; either mode still hands back the
+            // hidden-character-free text, which is the whole point of StripUnicodeControl.
+            var shouldSanitize = _options.Action == ToolResultAction.Sanitize && resultViolations.Count > 0;
+            if (!shouldSanitize && !wasStripped)
             {
-                if (resultViolations.Count > 0)
-                {
-                    var sanitized = SanitizeContent(content, riskLevel);
-                    sanitizedResults.Add(new ToolResultEntry
-                    {
-                        ToolName = result.ToolName,
-                        Content = sanitized,
-                        RiskLevel = result.RiskLevel,
-                        Metadata = result.Metadata
-                    });
-                }
-                else
-                {
-                    sanitizedResults.Add(result);
-                }
+                cleanedResults.Add(result);
+                continue;
             }
+
+            var cleaned = shouldSanitize ? SanitizeContent(stripped, riskLevel) : stripped;
+            anyCleaned = true;
+            cleanedResults.Add(new ToolResultEntry
+            {
+                ToolName = result.ToolName,
+                Content = cleaned,
+                RiskLevel = result.RiskLevel,
+                Metadata = result.Metadata
+            });
         }
 
         if (violations.Count > 0)
         {
             context.Properties[ViolationsKey] = violations;
 
-            if (_options.Action == ToolResultAction.Sanitize && sanitizedResults != null)
+            if (_options.Action == ToolResultAction.Sanitize)
             {
-                context.Properties[SanitizedResultsKey] = sanitizedResults;
+                context.Properties[SanitizedResultsKey] = cleanedResults;
 
                 return ValueTask.FromResult(new GuardrailResult
                 {
@@ -493,6 +481,20 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
                 Reason = $"Indirect injection detected in tool result from '{first.ToolName}': {first.Description}",
                 Severity = GuardrailSeverity.Critical,
                 Metadata = BuildMetadata(violations)
+            });
+        }
+
+        // no violation, but hidden characters were removed: hand the cleaned results back so they,
+        // not the originals, are what reaches the model.
+        if (anyCleaned)
+        {
+            context.Properties[SanitizedResultsKey] = cleanedResults;
+
+            return ValueTask.FromResult(new GuardrailResult
+            {
+                IsModified = true,
+                Reason = "Invisible Unicode characters stripped from tool result(s)",
+                ModifiedText = context.Text
             });
         }
 
@@ -528,32 +530,50 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
         return ToolRiskLevel.Medium;
     }
 
+    /// <summary>
+    /// Runs each pattern against <paramref name="primary"/> and, when supplied,
+    /// <paramref name="secondary"/> (the same text with invisible characters removed), recording at
+    /// most one violation per pattern.
+    /// </summary>
     private static void CheckPatterns(
         string toolName,
-        string content,
-        (string Category, string Description, Regex Pattern)[] patterns,
+        string primary,
+        string? secondary,
+        IReadOnlyList<(string Category, string Description, Regex Pattern)> patterns,
         List<ToolResultViolation> violations)
     {
         foreach (var (category, description, pattern) in patterns)
         {
-            try
+            var match = TryMatch(pattern, primary);
+            if (match is null && secondary is not null)
             {
-                var match = pattern.Match(content);
-                if (match.Success)
+                match = TryMatch(pattern, secondary);
+            }
+
+            if (match is not null)
+            {
+                violations.Add(new ToolResultViolation
                 {
-                    violations.Add(new ToolResultViolation
-                    {
-                        ToolName = toolName,
-                        Category = category,
-                        Description = description,
-                        MatchedText = TruncateMatch(match.Value)
-                    });
-                }
+                    ToolName = toolName,
+                    Category = category,
+                    Description = description,
+                    MatchedText = TruncateMatch(match.Value)
+                });
             }
-            catch (RegexMatchTimeoutException)
-            {
-                // Pattern timed out - skip it rather than blocking legitimate content
-            }
+        }
+    }
+
+    private static Match? TryMatch(Regex pattern, string text)
+    {
+        try
+        {
+            var match = pattern.Match(text);
+            return match.Success ? match : null;
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            // Pattern timed out - skip it rather than blocking legitimate content
+            return null;
         }
     }
 

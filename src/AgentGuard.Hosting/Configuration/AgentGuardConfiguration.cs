@@ -39,9 +39,11 @@ public sealed class PolicyConfiguration
 public sealed class RuleConfiguration
 {
     /// <summary>
-    /// Rule type. One of: InputNormalization, PromptInjection, PiiRedaction, RemotePii, AzurePii,
-    /// TopicBoundary, OutputTopicBoundary, TokenLimit, ContentSafety, LlmPromptInjection, LlmPiiDetection,
-    /// LlmTopicBoundary, LlmOutputPolicy, LlmGroundedness, LlmCopyright.
+    /// Rule type. One of: InputNormalization, PromptInjection, DefenderPromptInjection,
+    /// DebertaPromptInjection, PiiRedaction, RemotePii, AzurePii, Secrets, Retrieval,
+    /// ToolCallGuardrail, ToolResultGuardrail, TokenLimit, ContentSafety, LlmPromptInjection,
+    /// LlmPiiDetection, LlmTopicBoundary, LlmOutputPolicy, LlmGroundedness, LlmCopyright.
+    /// Unrecognized values throw at startup.
     /// </summary>
     public string Type { get; set; } = "";
 
@@ -65,11 +67,9 @@ public sealed class RuleConfiguration
     /// </summary>
     public List<string>? Countries { get; set; }
 
-    // --- TopicBoundary / LlmTopicBoundary ---
-    /// <summary>List of allowed topic names.</summary>
+    // --- LlmTopicBoundary ---
+    /// <summary>List of allowed topic names. Required for LlmTopicBoundary.</summary>
     public List<string>? AllowedTopics { get; set; }
-    /// <summary>Similarity threshold for topic matching (0.0–1.0). Default: 0.3.</summary>
-    public float? SimilarityThreshold { get; set; }
 
     // --- TokenLimit ---
     /// <summary>Maximum token count.</summary>
@@ -105,21 +105,47 @@ public sealed class RuleConfiguration
     /// <summary>Custom system prompt for LLM rules. Optional.</summary>
     public string? SystemPrompt { get; set; }
 
-    // --- OnnxPromptInjection ---
-    /// <summary>Path to the ONNX model file (required for OnnxPromptInjection).</summary>
+    // --- ONNX prompt injection ---
+    /// <summary>
+    /// Path to the ONNX model file. Required for DebertaPromptInjection. For OnnxPromptInjection it
+    /// selects the bring-your-own-model rule; leave it unset to use the bundled Defender model.
+    /// </summary>
     public string? ModelPath { get; set; }
-    /// <summary>Path to the HuggingFace tokenizer.json file (required for OnnxPromptInjection).</summary>
+    /// <summary>Path to the SentencePiece tokenizer file. Required alongside <see cref="ModelPath"/>.</summary>
     public string? TokenizerPath { get; set; }
-    /// <summary>Confidence threshold (0.0–1.0) for ONNX prompt injection. Default: 0.5.</summary>
+    /// <summary>
+    /// Confidence threshold (0.0–1.0). Default: 0.75 for the bundled Defender model (its calibrated
+    /// main-head operating point), 0.5 for a bring-your-own DeBERTa model.
+    /// </summary>
     public float? Threshold { get; set; }
 
     // --- LlmPromptInjection ---
     /// <summary>Include structured threat classification. Default: true.</summary>
     public bool? IncludeClassification { get; set; }
 
-    // --- OutputTopicBoundary ---
-    /// <summary>Output topic action: Block or Warn. Default: Block.</summary>
-    public string? OutputTopicAction { get; set; }
+    // --- Secrets ---
+    /// <summary>Secret action: Block or Redact. Default: Block.</summary>
+    public string? SecretAction { get; set; }
+
+    // --- ToolCallGuardrail ---
+    /// <summary>Injection categories: Default, All, or a comma-separated list (SqlInjection, Ssrf, ...).</summary>
+    public string? Categories { get; set; }
+
+    // --- ToolResultGuardrail ---
+    /// <summary>Tool result action: Block or Sanitize. Default: Block.</summary>
+    public string? Action { get; set; }
+    /// <summary>Strip invisible Unicode characters from tool results. Default: true.</summary>
+    public bool? StripUnicodeControl { get; set; }
+
+    // --- Retrieval ---
+    /// <summary>Detect prompt injection in retrieved chunks. Default: true.</summary>
+    public bool? DetectPromptInjection { get; set; }
+    /// <summary>Detect secrets in retrieved chunks. Default: true.</summary>
+    public bool? DetectSecrets { get; set; }
+    /// <summary>Detect PII in retrieved chunks. Default: false.</summary>
+    public bool? DetectPii { get; set; }
+    /// <summary>Retrieval filter action: Remove or Sanitize. Default: Remove.</summary>
+    public string? RetrievalAction { get; set; }
 
     // --- LlmOutputPolicy ---
     /// <summary>Natural language description of the policy to enforce (required for LlmOutputPolicy).</summary>

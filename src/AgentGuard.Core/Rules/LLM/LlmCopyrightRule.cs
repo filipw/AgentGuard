@@ -40,6 +40,11 @@ public sealed class LlmCopyrightRule : LlmGuardrailRule
     private readonly LlmCopyrightOptions _options;
     private readonly string _systemPrompt;
 
+    /// <summary>Initializes a new instance of the <see cref="LlmCopyrightRule"/> class.</summary>
+    /// <param name="chatClient">The client used to call the judge model.</param>
+    /// <param name="options">Action and prompt override.</param>
+    /// <param name="chatOptions">Optional options for the judge call.</param>
+    /// <param name="errorBehavior">What to do when the judge fails or returns an off-format verdict.</param>
     public LlmCopyrightRule(IChatClient chatClient, LlmCopyrightOptions? options = null, ChatOptions? chatOptions = null, ErrorBehavior errorBehavior = ErrorBehavior.FailOpen)
         : base(chatClient, chatOptions, errorBehavior)
     {
@@ -47,8 +52,11 @@ public sealed class LlmCopyrightRule : LlmGuardrailRule
         _systemPrompt = _options.SystemPrompt ?? DefaultSystemPrompt;
     }
 
+    /// <inheritdoc />
     public override string Name => "llm-copyright";
+    /// <inheritdoc />
     public override GuardrailPhase Phase => GuardrailPhase.Output;
+    /// <inheritdoc />
     public override int Order => 75;
 
     internal const string DefaultSystemPrompt =
@@ -78,25 +86,25 @@ public sealed class LlmCopyrightRule : LlmGuardrailRule
         Do not explain your reasoning beyond the source and type fields. Respond with only the verdict line.
         """;
 
+    /// <inheritdoc />
     protected override IEnumerable<ChatMessage> BuildPrompt(GuardrailContext context) =>
     [
         new(ChatRole.System, _systemPrompt),
         new(ChatRole.User, context.Text)
     ];
 
+    /// <inheritdoc />
     protected override GuardrailResult ParseResponse(string responseText, GuardrailContext context)
     {
-        var trimmed = responseText.Trim();
-        var upper = trimmed.ToUpperInvariant();
+        var verdict = ClassifyVerdict(responseText, "COPYRIGHT", "CLEAN", out var verdictLine);
 
-        if (!upper.Contains("COPYRIGHT", StringComparison.Ordinal))
+        if (verdict == LlmVerdict.Negative)
             return GuardrailResult.Passed();
 
-        // Don't false-positive on "CLEAN" responses that happen to mention copyright in a weird way
-        if (upper.StartsWith("CLEAN", StringComparison.Ordinal))
-            return GuardrailResult.Passed();
+        if (verdict == LlmVerdict.Unparseable)
+            return UnparseableVerdict(responseText);
 
-        var (source, type) = ParseFields(trimmed);
+        var (source, type) = ParseFields(verdictLine);
 
         var metadata = new Dictionary<string, object>
         {

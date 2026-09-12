@@ -30,9 +30,10 @@ public sealed class GuardedExecutor<TInput> : Executor<TInput>
         Microsoft.Extensions.Logging.ILogger<GuardrailPipeline> logger = options?.Logger is not null
             ? new LoggerWrapper(options.Logger)
             : Microsoft.Extensions.Logging.Abstractions.NullLogger<GuardrailPipeline>.Instance;
-        _pipeline = new GuardrailPipeline(policy, logger);
+        _pipeline = new GuardrailPipeline(policy, logger, options?.Ledger);
     }
 
+    /// <inheritdoc />
     public override async ValueTask HandleAsync(TInput message, IWorkflowContext context, CancellationToken cancellationToken = default)
     {
         using var guardActivity = AgentGuardTelemetry.ActivitySource.StartActivity(
@@ -119,9 +120,10 @@ public sealed class GuardedExecutor<TInput, TOutput> : Executor<TInput, TOutput>
         Microsoft.Extensions.Logging.ILogger<GuardrailPipeline> logger = options?.Logger is not null
             ? new LoggerWrapper(options.Logger)
             : Microsoft.Extensions.Logging.Abstractions.NullLogger<GuardrailPipeline>.Instance;
-        _pipeline = new GuardrailPipeline(policy, logger);
+        _pipeline = new GuardrailPipeline(policy, logger, options?.Ledger);
     }
 
+    /// <inheritdoc />
     public override async ValueTask<TOutput> HandleAsync(TInput message, IWorkflowContext context, CancellationToken cancellationToken = default)
     {
         // --- input guardrails ---

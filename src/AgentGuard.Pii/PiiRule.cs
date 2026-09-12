@@ -11,21 +11,38 @@ namespace AgentGuard.Pii;
 /// anonymization operators, with confidence scoring and overlap resolution. Runs at order 20 on
 /// both input and output.
 /// </summary>
-public sealed class PiiRule : IGuardrailRule
+public sealed class PiiRule : IGuardrailRule, IDisposable
 {
     private readonly PiiOptions _options;
     private readonly AnalyzerEngine _analyzer;
     private readonly AnonymizerEngine _anonymizer;
+    private readonly IReadOnlyList<IDisposable> _ownedResources;
+    private readonly PiiRuleOptions _ruleOptions;
+    private bool _disposed;
 
     /// <summary>Initializes a new instance of the <see cref="PiiRule"/> class.</summary>
     /// <param name="options">Detection/anonymization configuration. Defaults to all entities, replace operator.</param>
     /// <param name="analyzer">Optional custom analyzer engine.</param>
     /// <param name="anonymizer">Optional custom anonymizer engine.</param>
+    /// <param name="ownedResources">
+    /// Resources whose lifetime this rule takes over - the ONNX NER bridge, or a remote detector
+    /// holding an <see cref="System.Net.Http.HttpClient"/>. They are released by
+    /// <see cref="Dispose"/>, which the policy calls when it is disposed. Recognizers reached only
+    /// through a caller-supplied <paramref name="analyzer"/> are left alone.
+    /// </param>
+    /// <param name="ruleOptions">
+    /// Guardrail-side settings (phase, span merging). Separate from <paramref name="options"/> on
+    /// purpose - see <see cref="PiiRuleOptions"/>.
+    /// </param>
     public PiiRule(
         PiiOptions? options = null,
         AnalyzerEngine? analyzer = null,
-        AnonymizerEngine? anonymizer = null)
+        AnonymizerEngine? anonymizer = null,
+        IReadOnlyList<IDisposable>? ownedResources = null,
+        PiiRuleOptions? ruleOptions = null)
     {
+        _ownedResources = ownedResources ?? [];
+        _ruleOptions = ruleOptions ?? new PiiRuleOptions();
         _options = options ?? new PiiOptions();
         _analyzer = analyzer ?? new AnalyzerEngine(
             PiiRecognizers.CreateRegistry(_options.Language, _options.Countries),
@@ -37,7 +54,7 @@ public sealed class PiiRule : IGuardrailRule
     public string Name => "pii";
 
     /// <inheritdoc />
-    public GuardrailPhase Phase => _options.RedactOutput ? GuardrailPhase.Both : GuardrailPhase.Input;
+    public GuardrailPhase Phase => _ruleOptions.RedactOutput ? GuardrailPhase.Both : GuardrailPhase.Input;
 
     /// <inheritdoc />
     public int Order => 20;
@@ -71,7 +88,8 @@ public sealed class PiiRule : IGuardrailRule
             text,
             results,
             operators: _options.BuildOperators(),
-            conflictResolution: _options.ConflictResolution);
+            conflictResolution: _options.ConflictResolution,
+            mergeEntitiesWithSpaces: _ruleOptions.MergeEntitiesWithSpaces);
 
         var detectedTypes = results.Select(r => r.EntityType).Distinct().OrderBy(t => t, StringComparer.Ordinal).ToList();
         var reason = $"PII detected and de-identified: {string.Join(", ", detectedTypes)}";
@@ -85,5 +103,18 @@ public sealed class PiiRule : IGuardrailRule
                 ["entityCount"] = results.Count,
             },
         };
+    }
+
+    /// <summary>Releases the recognizers handed to this rule via <c>ownedResources</c>.</summary>
+    public void Dispose()
+    {
+        if (_disposed)
+            return;
+        _disposed = true;
+
+        foreach (var resource in _ownedResources)
+        {
+            resource.Dispose();
+        }
     }
 }

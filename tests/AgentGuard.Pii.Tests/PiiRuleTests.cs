@@ -23,11 +23,31 @@ public class PiiRuleTests
         rule.Phase.Should().Be(GuardrailPhase.Both);
     }
 
+    // AG-43: the phase is a guardrail concern, so it moved off the engine's PiiOptions (which
+    // drops RedactOutput in its next release) onto AgentGuard's own PiiRuleOptions.
     [Fact]
     public void ShouldBeInputOnly_WhenRedactOutputDisabled()
     {
-        var rule = new PiiRule(new PiiOptions { RedactOutput = false });
+        var rule = new PiiRule(ruleOptions: new PiiRuleOptions { RedactOutput = false });
         rule.Phase.Should().Be(GuardrailPhase.Input);
+    }
+
+    // AG-44: the engine has always taken this as an Anonymize argument, but nothing on the
+    // guardrail side could reach it, so two adjacent emails always collapsed into one tag.
+    [Fact]
+    public async Task ShouldAnonymizeAdjacentEntitiesSeparately_WhenMergingDisabled()
+    {
+        const string text = "write to alice@example.com bob@example.com";
+
+        var merged = await new PiiRule().EvaluateAsync(Context(text));
+        var separate = await new PiiRule(ruleOptions: new PiiRuleOptions { MergeEntitiesWithSpaces = false })
+            .EvaluateAsync(Context(text));
+
+        CountTags(merged.ModifiedText!).Should().Be(1);
+        CountTags(separate.ModifiedText!).Should().Be(2);
+
+        static int CountTags(string s) =>
+            s.Split("<EMAIL_ADDRESS>", StringSplitOptions.None).Length - 1;
     }
 
     [Fact]

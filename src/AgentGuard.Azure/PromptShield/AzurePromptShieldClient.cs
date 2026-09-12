@@ -119,6 +119,7 @@ public sealed partial class AzurePromptShieldClient : IDisposable
         }
     }
 
+    /// <summary>Disposes the <see cref="HttpClient"/> when this instance created it.</summary>
     public void Dispose()
     {
         if (_ownsHttpClient)

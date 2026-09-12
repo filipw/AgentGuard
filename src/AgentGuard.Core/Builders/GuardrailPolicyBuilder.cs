@@ -15,6 +15,7 @@ using Microsoft.Extensions.AI;
 
 namespace AgentGuard.Core.Builders;
 
+/// <summary>Fluent builder for a <see cref="GuardrailPolicy"/>.</summary>
 public sealed class GuardrailPolicyBuilder
 {
     private readonly string _name;
@@ -24,6 +25,8 @@ public sealed class GuardrailPolicyBuilder
     private ReaskOptions? _reaskOptions;
     private IChatClient? _reaskChatClient;
 
+    /// <summary>Initializes a new instance of the <see cref="GuardrailPolicyBuilder"/> class.</summary>
+    /// <param name="name">The policy name, reported in telemetry.</param>
     public GuardrailPolicyBuilder(string name = "default") => _name = name;
 
     /// <summary>
@@ -36,30 +39,49 @@ public sealed class GuardrailPolicyBuilder
         return this;
     }
 
+    /// <summary>Adds regex-based prompt injection detection (order 10).</summary>
+    /// <param name="sensitivity">Which pattern tiers to run. Default: <see cref="Sensitivity.Medium"/>.</param>
+    /// <returns>The builder for chaining.</returns>
     public GuardrailPolicyBuilder BlockPromptInjection(Sensitivity sensitivity = Sensitivity.Medium)
     {
         _rules.Add(new PromptInjectionRule(new PromptInjectionOptions { Sensitivity = sensitivity }));
         return this;
     }
 
+    /// <summary>Adds an input token budget (order 40).</summary>
+    /// <param name="maxTokens">The limit.</param>
+    /// <param name="strategy">What to do on overflow. Default: reject.</param>
+    /// <returns>The builder for chaining.</returns>
     public GuardrailPolicyBuilder LimitInputTokens(int maxTokens, TokenOverflowStrategy strategy = TokenOverflowStrategy.Reject)
     {
         _rules.Add(new TokenLimitRule(new TokenLimitOptions { MaxTokens = maxTokens, Phase = GuardrailPhase.Input, OverflowStrategy = strategy }));
         return this;
     }
 
+    /// <summary>Adds an output token budget (order 40).</summary>
+    /// <param name="maxTokens">The limit.</param>
+    /// <param name="strategy">What to do on overflow. Default: truncate.</param>
+    /// <returns>The builder for chaining.</returns>
     public GuardrailPolicyBuilder LimitOutputTokens(int maxTokens, TokenOverflowStrategy strategy = TokenOverflowStrategy.Truncate)
     {
         _rules.Add(new TokenLimitRule(new TokenLimitOptions { MaxTokens = maxTokens, Phase = GuardrailPhase.Output, OverflowStrategy = strategy }));
         return this;
     }
 
+    /// <summary>Adds a custom output check.</summary>
+    /// <param name="predicate">Returns true when the text is acceptable.</param>
+    /// <param name="rejectionMessage">Shown when the predicate returns false.</param>
+    /// <returns>The builder for chaining.</returns>
     public GuardrailPolicyBuilder ValidateOutput(Func<string, bool> predicate, string? rejectionMessage = null)
     {
         _rules.Add(new PredicateRule("output-validation", GuardrailPhase.Output, predicate, rejectionMessage ?? "Output failed validation."));
         return this;
     }
 
+    /// <summary>Adds a custom input check.</summary>
+    /// <param name="predicate">Returns true when the text is acceptable.</param>
+    /// <param name="rejectionMessage">Shown when the predicate returns false.</param>
+    /// <returns>The builder for chaining.</returns>
     public GuardrailPolicyBuilder ValidateInput(Func<string, bool> predicate, string? rejectionMessage = null)
     {
         _rules.Add(new PredicateRule("input-validation", GuardrailPhase.Input, predicate, rejectionMessage ?? "Input failed validation."));
@@ -164,8 +186,14 @@ public sealed class GuardrailPolicyBuilder
         => CheckCopyright(chatClient, options, chatOptions);
 
     /// <summary>
-    /// Adds content safety filtering. Requires an <see cref="IContentSafetyClassifier"/> to be injected
-    /// via DI or passed directly via <see cref="BlockHarmfulContent(IContentSafetyClassifier, ContentSafetyOptions?)"/>.
+    /// Adds content safety filtering with no classifier attached.
+    /// <para>
+    /// A <see cref="ContentSafetyRule"/> without an <see cref="IContentSafetyClassifier"/> cannot
+    /// reach a verdict: every evaluation reports a rule error, which the default
+    /// <see cref="ErrorBehavior.FailOpen"/> lets through. Prefer
+    /// <see cref="BlockHarmfulContent(IContentSafetyClassifier, ContentSafetyOptions?)"/>, which takes
+    /// the classifier directly - nothing resolves one from DI on your behalf.
+    /// </para>
     /// </summary>
     public GuardrailPolicyBuilder BlockHarmfulContent(ContentSafetySeverity maxAllowedSeverity = ContentSafetySeverity.Low)
     {
@@ -174,7 +202,9 @@ public sealed class GuardrailPolicyBuilder
     }
 
     /// <summary>
-    /// Adds content safety filtering with full options (category filtering, blocklists).
+    /// Adds content safety filtering with full options (category filtering, blocklists) but no
+    /// classifier. See <see cref="BlockHarmfulContent(ContentSafetySeverity)"/> for why the rule is
+    /// inert without one.
     /// </summary>
     public GuardrailPolicyBuilder BlockHarmfulContent(ContentSafetyOptions options)
     {
@@ -298,6 +328,9 @@ public sealed class GuardrailPolicyBuilder
         return this;
     }
 
+    /// <summary>Adds a rule instance.</summary>
+    /// <param name="rule">The rule to add.</param>
+    /// <returns>The builder for chaining.</returns>
     public GuardrailPolicyBuilder AddRule(IGuardrailRule rule) { _rules.Add(rule); return this; }
 
     /// <summary>
@@ -354,6 +387,12 @@ public sealed class GuardrailPolicyBuilder
         _rules[^1] = wrap(_rules[^1]);
     }
 
+    /// <summary>Adds a rule from a delegate, without declaring a type.</summary>
+    /// <param name="name">Rule name, used in logs and telemetry.</param>
+    /// <param name="phase">Which phases it runs in.</param>
+    /// <param name="evaluate">The evaluation body.</param>
+    /// <param name="order">Execution order. Default: 100, i.e. after the built-in rules.</param>
+    /// <returns>The builder for chaining.</returns>
     public GuardrailPolicyBuilder AddRule(string name, GuardrailPhase phase,
         Func<GuardrailContext, CancellationToken, ValueTask<GuardrailResult>> evaluate, int order = 100)
     {
@@ -361,6 +400,9 @@ public sealed class GuardrailPolicyBuilder
         return this;
     }
 
+    /// <summary>Configures what the caller sees when a rule blocks.</summary>
+    /// <param name="configure">Configures the handler.</param>
+    /// <returns>The builder for chaining.</returns>
     public GuardrailPolicyBuilder OnViolation(Action<ViolationHandlerBuilder> configure)
     {
         var builder = new ViolationHandlerBuilder();
@@ -369,15 +411,28 @@ public sealed class GuardrailPolicyBuilder
         return this;
     }
 
+    /// <summary>
+    /// Builds the policy. The concrete type is <see cref="GuardrailPolicy"/>, which is
+    /// <see cref="IDisposable"/>: dispose it to release rules that hold an ONNX session or an
+    /// <see cref="System.Net.Http.HttpClient"/>.
+    /// </summary>
+    /// <returns>The configured policy.</returns>
     public IGuardrailPolicy Build() => new Guardrails.GuardrailPolicy(_name, _rules, _violationHandler, _progressiveStreaming, _reaskOptions, _reaskChatClient);
 }
 
+/// <summary>Configures the policy's <see cref="IViolationHandler"/>.</summary>
 public sealed class ViolationHandlerBuilder
 {
     private IViolationHandler? _handler;
 
+    /// <summary>Always show the same message on a block.</summary>
+    /// <param name="message">The message.</param>
+    /// <returns>The builder for chaining.</returns>
     public ViolationHandlerBuilder RejectWithMessage(string message) { _handler = new Guardrails.MessageViolationHandler(message); return this; }
 
+    /// <summary>Build the message from the blocking result and context.</summary>
+    /// <param name="handler">Produces the message.</param>
+    /// <returns>The builder for chaining.</returns>
     public ViolationHandlerBuilder RejectWithHandler(
         Func<GuardrailResult, GuardrailContext, CancellationToken, ValueTask<string>> handler)
     { _handler = new Guardrails.DelegateViolationHandler(handler); return this; }

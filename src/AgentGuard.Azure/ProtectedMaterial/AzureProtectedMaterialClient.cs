@@ -195,6 +195,7 @@ public sealed partial class AzureProtectedMaterialClient : IDisposable
         throw new InvalidOperationException();
     }
 
+    /// <summary>Disposes the <see cref="HttpClient"/> when this instance created it.</summary>
     public void Dispose()
     {
         if (_ownsHttpClient)

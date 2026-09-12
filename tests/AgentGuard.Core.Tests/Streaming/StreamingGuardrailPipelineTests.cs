@@ -1,4 +1,6 @@
+using System.Text;
 using AgentGuard.Core.Abstractions;
+using AgentGuard.Core.Builders;
 using AgentGuard.Core.Guardrails;
 using AgentGuard.Core.Ledger;
 using AgentGuard.Core.Streaming;
@@ -577,5 +579,110 @@ public class StreamingGuardrailPipelineTests
 
         public ValueTask<GuardrailResult> EvaluateAsync(GuardrailContext context, CancellationToken cancellationToken = default)
             => ValueTask.FromResult(evaluate(context));
+    }
+
+    // AG-08: a mid-stream modification used to end the stream, discarding everything the model had
+    // not yet produced. It must now rewrite the buffer and keep going.
+
+    [Fact]
+    public async Task ShouldKeepStreaming_AfterAMidStreamModification()
+    {
+        var policy = new GuardrailPolicyBuilder("p")
+            .AddRule(new RedactWordRule("SECRET", "[X]"))
+            .Build();
+        var pipeline = new StreamingGuardrailPipeline(policy, new ProgressiveStreamingOptions
+        {
+            MinCharsBeforeFirstCheck = 10,
+            EvaluationIntervalChars = 10,
+            RunFinalCheck = true
+        });
+
+        var chunks = Chunks("the SECRET is here. ", "more text follows. ", "and the tail survives.");
+        var shown = new StringBuilder();
+        string? finalText = null;
+        var wasModified = false;
+
+        await foreach (var output in pipeline.ProcessStreamAsync(chunks, OutputContext()))
+        {
+            switch (output.Type)
+            {
+                case StreamingOutputType.TextChunk:
+                    shown.Append(output.Text);
+                    break;
+                case StreamingOutputType.GuardrailEvent when output.GuardrailEvent!.Type == StreamingGuardrailEventType.Retraction:
+                    shown.Clear();
+                    break;
+                case StreamingOutputType.GuardrailEvent:
+                    shown.Append(output.GuardrailEvent!.ReplacementText);
+                    break;
+                case StreamingOutputType.Completed:
+                    wasModified = output.FinalResult!.WasModified;
+                    finalText = output.FinalResult.ReplacementText;
+                    break;
+            }
+        }
+
+        wasModified.Should().BeTrue();
+        finalText.Should().Be("the [X] is here. more text follows. and the tail survives.");
+        finalText.Should().Contain("and the tail survives.", "the rest of the response must not be discarded");
+        shown.ToString().Should().Be(finalText, "replaying the event stream must reproduce the final text");
+    }
+
+    [Fact]
+    public async Task ShouldStillEndTheStream_WhenAMidStreamRuleBlocks()
+    {
+        var policy = new GuardrailPolicyBuilder("p")
+            .AddRule(new BlockWordRule("FORBIDDEN"))
+            .Build();
+        var pipeline = new StreamingGuardrailPipeline(policy, new ProgressiveStreamingOptions
+        {
+            MinCharsBeforeFirstCheck = 10,
+            EvaluationIntervalChars = 10
+        });
+
+        var chunks = Chunks("this is FORBIDDEN. ", "never reached.");
+        var isBlocked = false;
+
+        await foreach (var output in pipeline.ProcessStreamAsync(chunks, OutputContext()))
+        {
+            if (output.Type == StreamingOutputType.Completed)
+                isBlocked = output.FinalResult!.IsBlocked;
+        }
+
+        isBlocked.Should().BeTrue();
+    }
+
+    private static GuardrailContext OutputContext() =>
+        new() { Text = "", Phase = GuardrailPhase.Output };
+
+    private static async IAsyncEnumerable<string> Chunks(params string[] parts)
+    {
+        foreach (var part in parts)
+            yield return part;
+        await Task.CompletedTask;
+    }
+
+    private sealed class RedactWordRule(string word, string replacement) : IGuardrailRule
+    {
+        public string Name => "redact-word";
+        public GuardrailPhase Phase => GuardrailPhase.Output;
+        public int Order => 20;
+
+        public ValueTask<GuardrailResult> EvaluateAsync(GuardrailContext context, CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(context.Text.Contains(word, StringComparison.Ordinal)
+                ? GuardrailResult.Modified(context.Text.Replace(word, replacement, StringComparison.Ordinal), "redacted")
+                : GuardrailResult.Passed());
+    }
+
+    private sealed class BlockWordRule(string word) : IGuardrailRule
+    {
+        public string Name => "block-word";
+        public GuardrailPhase Phase => GuardrailPhase.Output;
+        public int Order => 20;
+
+        public ValueTask<GuardrailResult> EvaluateAsync(GuardrailContext context, CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(context.Text.Contains(word, StringComparison.Ordinal)
+                ? GuardrailResult.Blocked("forbidden word")
+                : GuardrailResult.Passed());
     }
 }

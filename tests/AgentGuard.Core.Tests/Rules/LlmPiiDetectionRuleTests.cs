@@ -85,10 +85,26 @@ public class LlmPiiDetectionRuleTests
         result.IsBlocked.Should().BeFalse();
     }
 
+    // AG-15: a rule configured to Redact used to turn into a Block whenever the fallback substring
+    // search saw "PII" or "REDACTED" in an off-format reply. Redact now only ever redacts or errors.
+
     [Fact]
-    public async Task ShouldBlock_WhenUnparsableResponseContainsPii()
+    public async Task ShouldReportError_WhenRedactRuleGetsOffFormatResponse()
     {
         var rule = new LlmPiiDetectionRule(MockClient("This message contains PII elements").Object);
+
+        var result = await rule.EvaluateAsync(Ctx("test"));
+
+        result.IsError.Should().BeTrue();
+        result.IsBlocked.Should().BeFalse("a Redact rule must not silently become a Block");
+        result.IsModified.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ShouldBlock_WhenBlockRuleGetsPiiVerdict()
+    {
+        var rule = new LlmPiiDetectionRule(
+            MockClient("PII").Object, new LlmPiiDetectionOptions { Action = PiiAction.Block });
 
         var result = await rule.EvaluateAsync(Ctx("test"));
 

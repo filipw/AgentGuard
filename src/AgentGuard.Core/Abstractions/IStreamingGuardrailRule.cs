@@ -17,9 +17,9 @@ public enum StreamingEvaluationMode
     FinalOnly,
 
     /// <summary>
-    /// Evaluate progressively but with a minimum token interval between invocations.
+    /// Evaluate progressively but with a minimum character interval between invocations.
     /// Balances early detection against cost. The interval is configured via
-    /// <see cref="ProgressiveStreamingOptions.AdaptiveRuleMinTokenInterval"/>.
+    /// <see cref="Streaming.ProgressiveStreamingOptions.AdaptiveRuleMinCharInterval"/>.
     /// </summary>
     Adaptive
 }

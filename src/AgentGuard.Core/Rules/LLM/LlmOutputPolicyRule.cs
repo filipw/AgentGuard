@@ -1,4 +1,3 @@
-using System.Text;
 using AgentGuard.Core.Abstractions;
 using Microsoft.Extensions.AI;
 
@@ -47,6 +46,11 @@ public sealed class LlmOutputPolicyRule : LlmGuardrailRule
     private readonly LlmOutputPolicyOptions _options;
     private readonly string _systemPrompt;
 
+    /// <summary>Initializes a new instance of the <see cref="LlmOutputPolicyRule"/> class.</summary>
+    /// <param name="chatClient">The client used to call the judge model.</param>
+    /// <param name="options">Policy description, action and prompt override.</param>
+    /// <param name="chatOptions">Optional options for the judge call.</param>
+    /// <param name="errorBehavior">What to do when the judge fails or returns an off-format verdict.</param>
     public LlmOutputPolicyRule(IChatClient chatClient, LlmOutputPolicyOptions options, ChatOptions? chatOptions = null, ErrorBehavior errorBehavior = ErrorBehavior.FailOpen)
         : base(chatClient, chatOptions, errorBehavior)
     {
@@ -55,8 +59,11 @@ public sealed class LlmOutputPolicyRule : LlmGuardrailRule
             ?? GetDefaultPrompt(_options.PolicyDescription);
     }
 
+    /// <inheritdoc />
     public override string Name => "llm-output-policy";
+    /// <inheritdoc />
     public override GuardrailPhase Phase => GuardrailPhase.Output;
+    /// <inheritdoc />
     public override int Order => 55;
 
     internal static string GetDefaultPrompt(string policyDescription) =>
@@ -77,6 +84,7 @@ public sealed class LlmOutputPolicyRule : LlmGuardrailRule
         Do not explain your reasoning beyond the reason field. Respond with only the verdict line.
         """;
 
+    /// <inheritdoc />
     protected override IEnumerable<ChatMessage> BuildPrompt(GuardrailContext context)
     {
         var history = FormatConversationHistory(context.Messages);
@@ -88,33 +96,19 @@ public sealed class LlmOutputPolicyRule : LlmGuardrailRule
         ];
     }
 
-    private static string FormatConversationHistory(IReadOnlyList<ChatMessage>? messages)
-    {
-        if (messages is null || messages.Count == 0)
-            return "";
 
-        var sb = new StringBuilder();
-        sb.AppendLine("## Conversation history");
-        foreach (var message in messages)
-        {
-            var role = message.Role == ChatRole.User ? "User"
-                : message.Role == ChatRole.Assistant ? "Assistant"
-                : message.Role.Value;
-            sb.Append(role).Append(": ").AppendLine(message.Text);
-        }
-
-        return sb.ToString().TrimEnd();
-    }
-
+    /// <inheritdoc />
     protected override GuardrailResult ParseResponse(string responseText, GuardrailContext context)
     {
-        var trimmed = responseText.Trim();
-        var upper = trimmed.ToUpperInvariant();
+        var verdict = ClassifyVerdict(responseText, "VIOLATION", "COMPLIANT", out var verdictLine);
 
-        if (!upper.Contains("VIOLATION", StringComparison.Ordinal))
+        if (verdict == LlmVerdict.Negative)
             return GuardrailResult.Passed();
 
-        var reason = ParseReason(trimmed);
+        if (verdict == LlmVerdict.Unparseable)
+            return UnparseableVerdict(responseText);
+
+        var reason = ParseReason(verdictLine);
 
         if (_options.Action == OutputPolicyAction.Warn)
         {

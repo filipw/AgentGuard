@@ -9,13 +9,22 @@ using Microsoft.Extensions.Logging;
 
 namespace AgentGuard.Hosting;
 
+/// <summary>Configures the policies and the optional decision ledger registered by <c>AddAgentGuard</c>.</summary>
 public sealed class AgentGuardOptions
 {
     internal Action<GuardrailPolicyBuilder>? DefaultPolicyConfigurator { get; private set; }
     internal Dictionary<string, Action<GuardrailPolicyBuilder>> NamedPolicies { get; } = [];
     internal IGuardrailLedger? Ledger { get; private set; }
 
+    /// <summary>Configures the policy used when no name is given.</summary>
+    /// <param name="configure">Builds the policy.</param>
+    /// <returns>These options, for chaining.</returns>
     public AgentGuardOptions DefaultPolicy(Action<GuardrailPolicyBuilder> configure) { DefaultPolicyConfigurator = configure; return this; }
+
+    /// <summary>Adds a named policy, resolvable through <see cref="IAgentGuardFactory.GetPolicy"/>.</summary>
+    /// <param name="name">The policy name.</param>
+    /// <param name="configure">Builds the policy.</param>
+    /// <returns>These options, for chaining.</returns>
     public AgentGuardOptions AddPolicy(string name, Action<GuardrailPolicyBuilder> configure) { NamedPolicies[name] = configure; return this; }
 
     /// <summary>
@@ -82,6 +91,7 @@ internal sealed class AgentGuardFactory : IAgentGuardFactory
     public IGuardrailPolicy GetDefaultPolicy() => _defaultPolicy;
 }
 
+/// <summary>Registers AgentGuard with the dependency injection container.</summary>
 public static class ServiceCollectionExtensions
 {
     /// <summary>

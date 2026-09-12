@@ -1,4 +1,3 @@
-using System.Text;
 using AgentGuard.Core.Abstractions;
 using Microsoft.Extensions.AI;
 
@@ -30,6 +29,11 @@ public sealed class LlmTopicGuardrailRule : LlmGuardrailRule
     private readonly LlmTopicGuardrailOptions _options;
     private readonly string _systemPrompt;
 
+    /// <summary>Initializes a new instance of the <see cref="LlmTopicGuardrailRule"/> class.</summary>
+    /// <param name="chatClient">The client used to call the judge model.</param>
+    /// <param name="options">Allowed topics and prompt override.</param>
+    /// <param name="chatOptions">Optional options for the judge call.</param>
+    /// <param name="errorBehavior">What to do when the judge fails or returns an off-format verdict.</param>
     public LlmTopicGuardrailRule(IChatClient chatClient, LlmTopicGuardrailOptions options, ChatOptions? chatOptions = null, ErrorBehavior errorBehavior = ErrorBehavior.FailOpen)
         : base(chatClient, chatOptions, errorBehavior)
     {
@@ -38,8 +42,11 @@ public sealed class LlmTopicGuardrailRule : LlmGuardrailRule
         _systemPrompt = _options.SystemPrompt?.Replace("{topics}", topicsList) ?? GetDefaultPrompt(topicsList);
     }
 
+    /// <inheritdoc />
     public override string Name => "llm-topic-boundary";
+    /// <inheritdoc />
     public override GuardrailPhase Phase => GuardrailPhase.Input;
+    /// <inheritdoc />
     public override int Order => 35;
 
     internal static string GetDefaultPrompt(string topicsList) =>
@@ -65,6 +72,7 @@ public sealed class LlmTopicGuardrailRule : LlmGuardrailRule
         Do not explain your reasoning. Respond with only ON_TOPIC or OFF_TOPIC.
         """;
 
+    /// <inheritdoc />
     protected override IEnumerable<ChatMessage> BuildPrompt(GuardrailContext context)
     {
         var history = FormatConversationHistory(context.Messages);
@@ -76,36 +84,19 @@ public sealed class LlmTopicGuardrailRule : LlmGuardrailRule
         ];
     }
 
-    private static string FormatConversationHistory(IReadOnlyList<ChatMessage>? messages)
-    {
-        if (messages is null || messages.Count == 0)
-            return "";
 
-        var sb = new StringBuilder();
-        sb.AppendLine("## Conversation history");
-        foreach (var message in messages)
-        {
-            var role = message.Role == ChatRole.User ? "User"
-                : message.Role == ChatRole.Assistant ? "Assistant"
-                : message.Role.Value;
-            sb.Append(role).Append(": ").AppendLine(message.Text);
-        }
-
-        return sb.ToString().TrimEnd();
-    }
-
+    /// <inheritdoc />
     protected override GuardrailResult ParseResponse(string responseText, GuardrailContext context)
     {
-        var trimmed = responseText.Trim().ToUpperInvariant();
+        var verdict = ClassifyVerdict(responseText, "OFF_TOPIC", "ON_TOPIC", out _);
 
-        if (trimmed.Contains("OFF_TOPIC"))
+        return verdict switch
         {
-            var topicsList = string.Join(", ", _options.AllowedTopics);
-            return GuardrailResult.Blocked(
-                $"Message is outside the allowed topics ({topicsList}).",
-                GuardrailSeverity.Medium);
-        }
-
-        return GuardrailResult.Passed();
+            LlmVerdict.Negative => GuardrailResult.Passed(),
+            LlmVerdict.Unparseable => UnparseableVerdict(responseText),
+            _ => GuardrailResult.Blocked(
+                $"Message is outside the allowed topics ({string.Join(", ", _options.AllowedTopics)}).",
+                GuardrailSeverity.Medium)
+        };
     }
 }

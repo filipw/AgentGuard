@@ -9,6 +9,7 @@ namespace AgentGuard.Core.Rules.ToolCall;
 [Flags]
 public enum ToolCallInjectionCategory
 {
+    /// <summary>No category.</summary>
     None = 0,
 
     /// <summary>SQL injection patterns (UNION SELECT, DROP TABLE, OR 1=1, etc.).</summary>
@@ -32,7 +33,10 @@ public enum ToolCallInjectionCategory
     /// <summary>XSS patterns in tool arguments.</summary>
     Xss = 64,
 
+    /// <summary>SQL, code, path, command and SSRF patterns.</summary>
     Default = SqlInjection | CodeInjection | PathTraversal | CommandInjection | Ssrf,
+
+    /// <summary>Every category, including template injection and XSS.</summary>
     All = SqlInjection | CodeInjection | PathTraversal | CommandInjection | Ssrf | TemplateInjection | Xss
 }
 
@@ -120,16 +124,22 @@ public sealed class ToolCallGuardrailRule : IGuardrailRule
 
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(200);
 
+    /// <summary>Initializes a new instance of the <see cref="ToolCallGuardrailRule"/> class.</summary>
+    /// <param name="options">Categories and allowlists. Defaults when null.</param>
     public ToolCallGuardrailRule(ToolCallGuardrailOptions? options = null)
     {
         _options = options ?? new();
         _patterns = BuildPatterns();
     }
 
+    /// <inheritdoc />
     public string Name => "tool-call-guardrail";
+    /// <inheritdoc />
     public GuardrailPhase Phase => GuardrailPhase.Output;
+    /// <inheritdoc />
     public int Order => 45;
 
+    /// <inheritdoc />
     public ValueTask<GuardrailResult> EvaluateAsync(GuardrailContext context, CancellationToken cancellationToken = default)
     {
         if (!context.Properties.TryGetValue(ToolCallsKey, out var callsObj) ||

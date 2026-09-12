@@ -14,13 +14,18 @@ public static class PiiGuardrailBuilderExtensions
     /// <c>&lt;ENTITY_TYPE&gt;</c> tag.
     /// </summary>
     /// <param name="builder">The policy builder.</param>
-    /// <param name="options">Optional configuration. When null, defaults are used.</param>
+    /// <param name="options">Optional detection/anonymization configuration. When null, defaults are used.</param>
+    /// <param name="ruleOptions">
+    /// Optional guardrail-side settings: which phase the rule runs in, and whether adjacent
+    /// same-type spans separated by spaces are merged.
+    /// </param>
     /// <returns>The builder for chaining.</returns>
     public static GuardrailPolicyBuilder RedactPii(
         this GuardrailPolicyBuilder builder,
-        PiiOptions? options = null)
+        PiiOptions? options = null,
+        PiiRuleOptions? ruleOptions = null)
     {
-        builder.AddRule(new PiiRule(options));
+        builder.AddRule(new PiiRule(options, ruleOptions: ruleOptions));
         return builder;
     }
 

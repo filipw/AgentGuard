@@ -1,6 +1,7 @@
 using AgentGuard.AgentFramework;
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Builders;
+using AgentGuard.Core.Ledger;
 using AgentGuard.Core.Rules.ToolCall;
 using AgentGuard.Pii;
 using FluentAssertions;
@@ -14,6 +15,84 @@ namespace AgentGuard.AgentFramework.Tests.Middleware;
 
 public class AgentGuardMiddlewareTests
 {
+    // --- AG-21 / AG-23 / AG-24: middleware plumbing regressions ---
+
+    [Fact]
+    public async Task RunAsync_ShouldRecordToTheLedger()
+    {
+        var ledger = new HashChainLedger();
+        var policy = new GuardrailPolicyBuilder("p").BlockPromptInjection().Build();
+        var inner = new TestAgent(
+            (_, _, _, _) => Task.FromResult(new AgentResponse([new ChatMessage(ChatRole.Assistant, "ok")])),
+            (_, _, _, _) => EmptyStream());
+        var agent = new AIAgentBuilder(inner).UseAgentGuard(policy, ledger: ledger).Build();
+
+        await agent.RunAsync("hello there", null, null, CancellationToken.None);
+
+        ledger.Count.Should().BeGreaterThan(0, "the MAF adapter builds its own pipeline and must pass the ledger to it");
+        ledger.Verify().Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task RunAsync_ShouldMaterializeMessagesOnce()
+    {
+        var inner = new TestAgent(
+            (_, _, _, _) => Task.FromResult(new AgentResponse([new ChatMessage(ChatRole.Assistant, "ok")])),
+            (_, _, _, _) => EmptyStream());
+
+        var baseline = new CountingEnumerable([new ChatMessage(ChatRole.User, "hello there")]);
+        await inner.RunAsync(baseline, null, null, CancellationToken.None);
+
+        var guarded = new AIAgentBuilder(inner).UseAgentGuard(b => b.BlockPromptInjection()).Build();
+        var counted = new CountingEnumerable([new ChatMessage(ChatRole.User, "hello there")]);
+        await guarded.RunAsync(counted, null, null, CancellationToken.None);
+
+        // the guardrail layer is allowed exactly one materialization on top of whatever the agent
+        // framework itself does; it used to enumerate the caller's sequence five times.
+        counted.Count.Should().BeLessThanOrEqualTo(baseline.Count + 1);
+    }
+
+    [Fact]
+    public async Task RunAsync_ShouldKeepToolCallsAndResponseMetadata_WhenOutputIsModified()
+    {
+        var inner = new TestAgent(
+            (_, _, _, _) => Task.FromResult(new AgentResponse(
+            [
+                new ChatMessage(ChatRole.Assistant, [new FunctionCallContent("c1", "lookup_rep", new Dictionary<string, object?> { ["id"] = "42" })]),
+                new ChatMessage(ChatRole.Assistant, "Your rep is at rep@contoso.com."),
+            ])
+            { ResponseId = "resp-123" }),
+            (_, _, _, _) => EmptyStream());
+
+        var agent = new AIAgentBuilder(inner).UseAgentGuard(b => b.RedactPii()).Build();
+
+        var response = await agent.RunAsync("who is my rep?", null, null, CancellationToken.None);
+
+        response.Text.Should().Contain("<EMAIL_ADDRESS>");
+        response.ResponseId.Should().Be("resp-123");
+        response.Messages.SelectMany(m => m.Contents).OfType<FunctionCallContent>()
+            .Should().ContainSingle("a redaction must not erase the tool call the agent loop needs");
+    }
+
+    private static async IAsyncEnumerable<AgentResponseUpdate> EmptyStream()
+    {
+        yield return new AgentResponseUpdate(ChatRole.Assistant, "");
+        await Task.CompletedTask;
+    }
+
+    private sealed class CountingEnumerable(IReadOnlyList<ChatMessage> items) : IEnumerable<ChatMessage>
+    {
+        public int Count { get; private set; }
+
+        public IEnumerator<ChatMessage> GetEnumerator()
+        {
+            Count++;
+            return items.GetEnumerator();
+        }
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    }
+
     // --- RunAsync (non-streaming) tests ---
 
     [Fact]

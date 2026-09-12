@@ -5,7 +5,11 @@ using AgentGuard.Core.Rules.ContentSafety;
 using AgentGuard.Core.Rules.LLM;
 using AgentGuard.Core.Rules.Normalization;
 using AgentGuard.Core.Rules.PromptInjection;
+using AgentGuard.Core.Rules.Retrieval;
+using AgentGuard.Core.Rules.Secrets;
 using AgentGuard.Core.Rules.TokenLimits;
+using AgentGuard.Core.Rules.ToolCall;
+using AgentGuard.Core.Rules.ToolResult;
 using AgentGuard.Onnx;
 using AgentGuard.Pii;
 using AgentGuard.RemotePii;
@@ -62,10 +66,12 @@ internal static class ConfigurationMapper
                 break;
 
             case "piiredaction":
+                // Replacement is left null unless configured: hard-coding "[REDACTED]" here made
+                // config-driven PII silently differ from the code-driven default (<ENTITY_TYPE> tags).
                 builder.RedactPii(new PiiOptions
                 {
                     Entities = rule.Entities is { Count: > 0 } ? rule.Entities : null,
-                    Replacement = rule.Replacement ?? "[REDACTED]",
+                    Replacement = rule.Replacement,
                     Countries = rule.Countries is { Count: > 0 } ? rule.Countries : null,
                 });
                 break;
@@ -136,6 +142,11 @@ internal static class ConfigurationMapper
                 });
                 break;
 
+            case "onnxpromptinjection" when rule.ModelPath is not null:
+                // ModelPath used to be accepted and then ignored, quietly loading the bundled
+                // Defender model instead of the one that was configured.
+                goto case "debertapromptinjection";
+
             case "onnxpromptinjection":
             case "defenderpromptinjection":
                 builder.BlockPromptInjectionWithDefender(new DefenderPromptInjectionOptions
@@ -154,6 +165,38 @@ internal static class ConfigurationMapper
                     TokenizerPath = rule.TokenizerPath
                         ?? throw new InvalidOperationException("DebertaPromptInjection requires TokenizerPath."),
                     Threshold = rule.Threshold ?? 0.5f
+                });
+                break;
+
+            case "secrets":
+                builder.DetectSecrets(new SecretsDetectionOptions
+                {
+                    Action = ParseEnum<SecretAction>(rule.SecretAction, SecretAction.Block),
+                });
+                break;
+
+            case "toolcallguardrail":
+                builder.GuardToolCalls(new ToolCallGuardrailOptions
+                {
+                    Categories = ParseEnum<ToolCallInjectionCategory>(rule.Categories, ToolCallInjectionCategory.Default),
+                });
+                break;
+
+            case "toolresultguardrail":
+                builder.GuardToolResults(new ToolResultGuardrailOptions
+                {
+                    Action = ParseEnum<ToolResultAction>(rule.Action, ToolResultAction.Block),
+                    StripUnicodeControl = rule.StripUnicodeControl ?? true,
+                });
+                break;
+
+            case "retrieval":
+                builder.GuardRetrieval(new RetrievalGuardrailOptions
+                {
+                    DetectPromptInjection = rule.DetectPromptInjection ?? true,
+                    DetectSecrets = rule.DetectSecrets ?? true,
+                    DetectPII = rule.DetectPii ?? false,
+                    Action = ParseEnum<RetrievalFilterAction>(rule.RetrievalAction, RetrievalFilterAction.Remove),
                 });
                 break;
 
@@ -180,7 +223,11 @@ internal static class ConfigurationMapper
                 var topicClient = ResolveService<IChatClient>(serviceProvider, "LlmTopicBoundary");
                 builder.EnforceTopicBoundaryWithLlm(topicClient, new LlmTopicGuardrailOptions
                 {
-                    AllowedTopics = rule.AllowedTopics ?? [],
+                    // an empty list is not "allow everything" - it is "allow nothing", which the
+                    // judge then applies to every request. Fail at startup instead.
+                    AllowedTopics = rule.AllowedTopics is { Count: > 0 }
+                        ? rule.AllowedTopics
+                        : throw new InvalidOperationException("LlmTopicBoundary requires a non-empty AllowedTopics list."),
                     SystemPrompt = rule.SystemPrompt
                 });
                 break;
@@ -217,9 +264,11 @@ internal static class ConfigurationMapper
             default:
                 throw new InvalidOperationException(
                     $"Unknown guardrail rule type: '{rule.Type}'. " +
-                    "Valid types: InputNormalization, PromptInjection, OnnxPromptInjection, PiiRedaction, " +
-                    "RemotePii, AzurePii, TokenLimit, ContentSafety, LlmPromptInjection, " +
-                    "LlmPiiDetection, LlmTopicBoundary, LlmOutputPolicy, LlmGroundedness, LlmCopyright.");
+                    "Valid types: InputNormalization, PromptInjection, OnnxPromptInjection, " +
+                    "DefenderPromptInjection, DebertaPromptInjection, PiiRedaction, RemotePii, AzurePii, " +
+                    "Secrets, Retrieval, ToolCallGuardrail, ToolResultGuardrail, TokenLimit, ContentSafety, " +
+                    "LlmPromptInjection, LlmPiiDetection, LlmTopicBoundary, LlmOutputPolicy, " +
+                    "LlmGroundedness, LlmCopyright.");
         }
     }
 
@@ -247,6 +296,15 @@ internal static class ConfigurationMapper
                 $"Register it before calling AddAgentGuard, e.g.: services.AddSingleton<{typeof(T).Name}>(...)");
     }
 
-    private static T ParseEnum<T>(string? value, T defaultValue) where T : struct, Enum =>
-        string.IsNullOrEmpty(value) ? defaultValue : Enum.Parse<T>(value, ignoreCase: true);
+    private static T ParseEnum<T>(string? value, T defaultValue) where T : struct, Enum
+    {
+        if (string.IsNullOrEmpty(value))
+            return defaultValue;
+
+        // Enum.Parse handles the comma-separated flags form too ("SqlInjection, Ssrf")
+        return Enum.TryParse<T>(value, ignoreCase: true, out var parsed)
+            ? parsed
+            : throw new InvalidOperationException(
+                $"'{value}' is not a valid {typeof(T).Name}. Valid values: {string.Join(", ", Enum.GetNames<T>())}.");
+    }
 }

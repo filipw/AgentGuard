@@ -1,6 +1,8 @@
 <Project>
   <PropertyGroup Condition="'$(IsTestProject)' == 'true'">
     <IsPackable>false</IsPackable>
-    <NoWarn>$(NoWarn);CA1707;CA1852;CA1822;CA1861</NoWarn>
+    <!-- CS1591: XML docs exist to ship inside the NuGet packages; test assemblies are never
+         published, so requiring a doc comment on every test member would be pure noise. -->
+    <NoWarn>$(NoWarn);CA1707;CA1852;CA1822;CA1861;CS1591</NoWarn>
   </PropertyGroup>
 </Project>

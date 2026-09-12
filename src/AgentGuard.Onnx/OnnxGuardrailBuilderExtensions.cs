@@ -187,18 +187,24 @@ public static class OnnxGuardrailBuilderExtensions
     /// <param name="builder">The policy builder.</param>
     /// <param name="nerOptions">NER model paths, threshold, span width, and label map.</param>
     /// <param name="piiOptions">Optional PII detection/anonymization configuration (entities, countries, operators).</param>
+    /// <param name="ruleOptions">Optional guardrail-side settings (phase, span merging).</param>
     /// <returns>The builder for chaining.</returns>
     public static GuardrailPolicyBuilder RedactPiiWithNer(
         this GuardrailPolicyBuilder builder,
         GlinerNerOptions nerOptions,
-        PiiOptions? piiOptions = null)
+        PiiOptions? piiOptions = null,
+        PiiRuleOptions? ruleOptions = null)
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(nerOptions);
 
         var language = piiOptions?.Language ?? "en";
         var registry = PiiRecognizers.CreateRegistry(language, piiOptions?.Countries);
-        registry.AddRecognizer(new GlinerNerRecognizer(nerOptions, supportedLanguage: language));
+
+        // the recognizer holds a ref-counted ONNX session; PiiRule takes over its lifetime so
+        // disposing the policy releases it.
+        var recognizer = new GlinerNerRecognizer(nerOptions, supportedLanguage: language);
+        registry.AddRecognizer(recognizer);
 
         // defaultScoreThreshold 0 here; PiiRule applies PiiOptions.ScoreThreshold per evaluation.
         var engine = new AnalyzerEngine(
@@ -206,7 +212,7 @@ public static class OnnxGuardrailBuilderExtensions
             new LemmaContextAwareEnhancer(contextMatchingMode: piiOptions?.ContextMatchingMode ?? ContextMatchingMode.Substring),
             defaultScoreThreshold: 0);
 
-        builder.AddRule(new PiiRule(piiOptions, analyzer: engine));
+        builder.AddRule(new PiiRule(piiOptions, analyzer: engine, ownedResources: [recognizer], ruleOptions: ruleOptions));
         return builder;
     }
 
@@ -221,6 +227,7 @@ public static class OnnxGuardrailBuilderExtensions
     /// <param name="configPath">Path to the model <c>config.json</c> (special-token ids + max span width).</param>
     /// <param name="threshold">Span emission threshold (0.0-1.0). Default: 0.5.</param>
     /// <param name="piiOptions">Optional PII detection/anonymization configuration.</param>
+    /// <param name="ruleOptions">Optional guardrail-side settings (phase, span merging).</param>
     /// <returns>The builder for chaining.</returns>
     public static GuardrailPolicyBuilder RedactPiiWithNer(
         this GuardrailPolicyBuilder builder,
@@ -228,7 +235,8 @@ public static class OnnxGuardrailBuilderExtensions
         string tokenizerPath,
         string configPath,
         float threshold = 0.5f,
-        PiiOptions? piiOptions = null)
+        PiiOptions? piiOptions = null,
+        PiiRuleOptions? ruleOptions = null)
     {
         return builder.RedactPiiWithNer(
             new GlinerNerOptions
@@ -238,7 +246,8 @@ public static class OnnxGuardrailBuilderExtensions
                 ConfigPath = configPath,
                 NerThreshold = threshold,
             },
-            piiOptions);
+            piiOptions,
+            ruleOptions);
     }
 
     /// <summary>

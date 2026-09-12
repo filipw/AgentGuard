@@ -1,4 +1,3 @@
-using System.Text;
 using AgentGuard.Core.Abstractions;
 using Microsoft.Extensions.AI;
 
@@ -35,6 +34,11 @@ public sealed class LlmPromptInjectionRule : LlmGuardrailRule
     private readonly string _systemPrompt;
     private readonly bool _includeClassification;
 
+    /// <summary>Initializes a new instance of the <see cref="LlmPromptInjectionRule"/> class.</summary>
+    /// <param name="chatClient">The client used to call the judge model.</param>
+    /// <param name="options">Detection prompt and classification options.</param>
+    /// <param name="chatOptions">Optional options for the judge call.</param>
+    /// <param name="errorBehavior">What to do when the judge fails or returns an off-format verdict.</param>
     public LlmPromptInjectionRule(IChatClient chatClient, LlmPromptInjectionOptions? options = null, ChatOptions? chatOptions = null, ErrorBehavior errorBehavior = ErrorBehavior.FailOpen)
         : base(chatClient, chatOptions, errorBehavior)
     {
@@ -43,8 +47,11 @@ public sealed class LlmPromptInjectionRule : LlmGuardrailRule
             ?? (_includeClassification ? ClassifiedSystemPrompt : SimpleSystemPrompt);
     }
 
+    /// <inheritdoc />
     public override string Name => "llm-prompt-injection";
+    /// <inheritdoc />
     public override GuardrailPhase Phase => GuardrailPhase.Input;
+    /// <inheritdoc />
     public override int Order => 15;
 
     // Prompt templates informed by the Arcanum Prompt Injection Taxonomy
@@ -151,6 +158,7 @@ public sealed class LlmPromptInjectionRule : LlmGuardrailRule
     // Keep the old constant name as an alias for backward compatibility in tests
     internal const string DefaultSystemPrompt = ClassifiedSystemPrompt;
 
+    /// <inheritdoc />
     protected override IEnumerable<ChatMessage> BuildPrompt(GuardrailContext context)
     {
         var history = FormatConversationHistory(context.Messages);
@@ -162,33 +170,21 @@ public sealed class LlmPromptInjectionRule : LlmGuardrailRule
         ];
     }
 
-    private static string FormatConversationHistory(IReadOnlyList<ChatMessage>? messages)
-    {
-        if (messages is null || messages.Count == 0)
-            return "";
-
-        var sb = new StringBuilder();
-        sb.AppendLine("## Conversation history");
-        foreach (var message in messages)
-        {
-            var role = message.Role == ChatRole.User ? "User"
-                : message.Role == ChatRole.Assistant ? "Assistant"
-                : message.Role.Value;
-            sb.Append(role).Append(": ").AppendLine(message.Text);
-        }
-
-        return sb.ToString().TrimEnd();
-    }
-
+    /// <inheritdoc />
     protected override GuardrailResult ParseResponse(string responseText, GuardrailContext context)
     {
-        var trimmed = responseText.Trim();
+        var verdict = ClassifyVerdict(responseText, "INJECTION", "SAFE", out var verdictLine);
 
-        if (!trimmed.Contains("INJECTION", StringComparison.OrdinalIgnoreCase))
+        if (verdict == LlmVerdict.Negative)
             return GuardrailResult.Passed();
 
-        // Try to parse structured classification: INJECTION|technique:...|intent:...|evasion:...|confidence:...
-        var metadata = ParseClassification(trimmed);
+        // "No injection found." and similar chatter used to read as a positive verdict because the
+        // whole response was searched for the token. An off-format response is an error now, so
+        // ErrorBehavior decides instead of a substring match.
+        if (verdict == LlmVerdict.Unparseable)
+            return UnparseableVerdict(responseText);
+
+        var metadata = ParseClassification(verdictLine);
 
         return new GuardrailResult
         {

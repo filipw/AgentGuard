@@ -52,12 +52,15 @@ public class RetrievalGuardrailContextProvider : MessageAIContextProvider
     private readonly RetrievalGuardrailContextProviderOptions _options;
     private readonly RetrievalGuardrailRule _rule;
 
+    /// <summary>Initializes a new instance of the <see cref="RetrievalGuardrailContextProvider"/> class.</summary>
+    /// <param name="options">The retrieval function, guardrail options and context formatting.</param>
     public RetrievalGuardrailContextProvider(RetrievalGuardrailContextProviderOptions options)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _rule = new RetrievalGuardrailRule(options.GuardrailOptions);
     }
 
+    /// <inheritdoc />
     protected override async ValueTask<IEnumerable<ChatMessage>> ProvideMessagesAsync(
         InvokingContext context,
         CancellationToken cancellationToken)

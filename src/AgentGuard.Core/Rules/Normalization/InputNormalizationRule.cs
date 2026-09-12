@@ -50,6 +50,8 @@ public sealed partial class InputNormalizationRule : IGuardrailRule
 {
     private readonly InputNormalizationOptions _options;
 
+    /// <summary>Initializes a new instance of the <see cref="InputNormalizationRule"/> class.</summary>
+    /// <param name="options">Which decodings to attempt. Defaults when null.</param>
     public InputNormalizationRule(InputNormalizationOptions? options = null)
         => _options = options ?? new();
 

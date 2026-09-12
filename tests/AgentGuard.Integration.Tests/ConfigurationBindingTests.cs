@@ -243,7 +243,73 @@ public class ConfigurationBindingTests
             Phase = GuardrailPhase.Input
         });
         piiResult.WasModified.Should().BeTrue();
-        piiResult.FinalText.Should().Contain("[REDACTED]");
+
+        // AG-26: with no Replacement configured, config-driven PII now uses the same default as
+        // the code-driven path (<ENTITY_TYPE> tags) instead of being forced to "[REDACTED]".
+        piiResult.FinalText.Should().Contain("<EMAIL_ADDRESS>");
+    }
+
+    [Fact]
+    public async Task ShouldHonourConfiguredPiiReplacement()
+    {
+        var config = BuildConfig(new Dictionary<string, string?>
+        {
+            ["DefaultPolicy:Rules:0:Type"] = "PiiRedaction",
+            ["DefaultPolicy:Rules:0:Replacement"] = "[REDACTED]"
+        });
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddAgentGuard(config);
+
+        var pipeline = services.BuildServiceProvider().GetRequiredService<GuardrailPipeline>();
+        var result = await pipeline.RunAsync(new GuardrailContext
+        {
+            Text = "Email me at test@example.com",
+            Phase = GuardrailPhase.Input
+        });
+
+        result.FinalText.Should().Contain("[REDACTED]");
+    }
+
+    [Theory]
+    [InlineData("Secrets")]
+    [InlineData("ToolCallGuardrail")]
+    [InlineData("ToolResultGuardrail")]
+    [InlineData("Retrieval")]
+    public void ShouldSupportRuleTypesThatWereDocumentedButUnmapped(string type)
+    {
+        var config = BuildConfig(new Dictionary<string, string?>
+        {
+            ["DefaultPolicy:Rules:0:Type"] = type
+        });
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddAgentGuard(config);
+
+        var act = () => services.BuildServiceProvider().GetRequiredService<GuardrailPipeline>();
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void ShouldThrowForLlmTopicBoundary_WhenAllowedTopicsIsEmpty()
+    {
+        var config = BuildConfig(new Dictionary<string, string?>
+        {
+            ["DefaultPolicy:Rules:0:Type"] = "LlmTopicBoundary"
+        });
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton(Mock.Of<IChatClient>());
+        services.AddAgentGuard(config);
+
+        var act = () => services.BuildServiceProvider().GetRequiredService<GuardrailPipeline>();
+
+        // an empty list means "allow nothing", which would block every request
+        act.Should().Throw<InvalidOperationException>().WithMessage("*AllowedTopics*");
     }
 
     [Fact]

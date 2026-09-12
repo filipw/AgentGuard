@@ -1,4 +1,3 @@
-using System.Text;
 using AgentGuard.Core.Abstractions;
 using Microsoft.Extensions.AI;
 
@@ -40,14 +39,22 @@ public sealed class LlmGroundednessRule : LlmGuardrailRule
 {
     private readonly LlmGroundednessOptions _options;
 
+    /// <summary>Initializes a new instance of the <see cref="LlmGroundednessRule"/> class.</summary>
+    /// <param name="chatClient">The client used to call the judge model.</param>
+    /// <param name="options">Action and prompt override.</param>
+    /// <param name="chatOptions">Optional options for the judge call.</param>
+    /// <param name="errorBehavior">What to do when the judge fails or returns an off-format verdict.</param>
     public LlmGroundednessRule(IChatClient chatClient, LlmGroundednessOptions? options = null, ChatOptions? chatOptions = null, ErrorBehavior errorBehavior = ErrorBehavior.FailOpen)
         : base(chatClient, chatOptions, errorBehavior)
     {
         _options = options ?? new();
     }
 
+    /// <inheritdoc />
     public override string Name => "llm-groundedness";
+    /// <inheritdoc />
     public override GuardrailPhase Phase => GuardrailPhase.Output;
+    /// <inheritdoc />
     public override int Order => 65;
 
     private const string DefaultSystemPromptTemplate =
@@ -73,9 +80,11 @@ public sealed class LlmGroundednessRule : LlmGuardrailRule
         Do not explain your reasoning beyond the claim field. Respond with only the verdict line.
         """;
 
+    /// <inheritdoc />
     protected override IEnumerable<ChatMessage> BuildPrompt(GuardrailContext context)
     {
-        var conversationHistory = FormatConversationHistory(context.Messages);
+        var conversationHistory = FormatConversationHistory(
+            context.Messages, heading: null, emptyPlaceholder: "(no conversation history available)");
         var systemPrompt = _options.SystemPrompt?.Replace("{context}", conversationHistory)
             ?? DefaultSystemPromptTemplate.Replace("{context}", conversationHistory);
 
@@ -86,15 +95,18 @@ public sealed class LlmGroundednessRule : LlmGuardrailRule
         ];
     }
 
+    /// <inheritdoc />
     protected override GuardrailResult ParseResponse(string responseText, GuardrailContext context)
     {
-        var trimmed = responseText.Trim();
-        var upper = trimmed.ToUpperInvariant();
+        var verdict = ClassifyVerdict(responseText, "UNGROUNDED", "GROUNDED", out var verdictLine);
 
-        if (!upper.Contains("UNGROUNDED", StringComparison.Ordinal))
+        if (verdict == LlmVerdict.Negative)
             return GuardrailResult.Passed();
 
-        var claim = ParseClaim(trimmed);
+        if (verdict == LlmVerdict.Unparseable)
+            return UnparseableVerdict(responseText);
+
+        var claim = ParseClaim(verdictLine);
 
         if (_options.Action == GroundednessAction.Warn)
         {
@@ -133,20 +145,4 @@ public sealed class LlmGroundednessRule : LlmGuardrailRule
         return "Ungrounded content detected.";
     }
 
-    internal static string FormatConversationHistory(IReadOnlyList<ChatMessage>? messages)
-    {
-        if (messages is null || messages.Count == 0)
-            return "(no conversation history available)";
-
-        var sb = new StringBuilder();
-        foreach (var message in messages)
-        {
-            var role = message.Role == ChatRole.User ? "User"
-                : message.Role == ChatRole.Assistant ? "Assistant"
-                : message.Role.Value;
-            sb.Append(role).Append(": ").AppendLine(message.Text);
-        }
-
-        return sb.ToString().TrimEnd();
-    }
 }

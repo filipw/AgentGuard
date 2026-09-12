@@ -163,9 +163,27 @@ public class LlmGroundednessRuleTests
             new(ChatRole.Assistant, "Hi there!")
         };
 
-        var formatted = LlmGroundednessRule.FormatConversationHistory(messages);
+        var formatted = HistoryProbe.Format(messages);
         formatted.Should().Contain("User: Hello");
         formatted.Should().Contain("Assistant: Hi there!");
+    }
+
+    /// <summary>
+    /// FormatConversationHistory moved onto <see cref="LlmGuardrailRule"/> as a protected helper
+    /// (it was copy-pasted into four rules); this reaches it the way a subclass would.
+    /// </summary>
+    private sealed class HistoryProbe : LlmGuardrailRule
+    {
+        private HistoryProbe() : base(Mock.Of<IChatClient>()) { }
+
+        public static string Format(IReadOnlyList<ChatMessage> messages) =>
+            FormatConversationHistory(messages, heading: null);
+
+        public override string Name => "probe";
+        public override GuardrailPhase Phase => GuardrailPhase.Output;
+        protected override IEnumerable<ChatMessage> BuildPrompt(GuardrailContext context) => [];
+        protected override GuardrailResult ParseResponse(string responseText, GuardrailContext context)
+            => GuardrailResult.Passed();
     }
 
     [Fact]
