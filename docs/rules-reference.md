@@ -234,7 +234,9 @@ anonymization operators. Inspired by the architecture of Microsoft Presidio (see
 false positives, so non-US packs are opt-in by ISO 3166-1 alpha-2 code:
 
 - `uk`: `UK_NINO`, `UK_NHS` (mod-11), `UK_POSTCODE`, `UK_PASSPORT`, `UK_DRIVING_LICENCE`, `UK_VEHICLE_REGISTRATION`
-- `de`: `DE_ID_CARD` (checksum), `DE_TAX_ID` (checksum), `DE_PASSPORT` (checksum), `DE_PLZ`,
+- `de`: `DE_ID_DOCUMENT` (ICAO checksum; the Personalausweis and Reisepass share one format and
+  cannot be told apart by the number alone, so they are a single entity type - it replaces the
+  former `DE_ID_CARD` and `DE_PASSPORT`), `DE_TAX_ID` (checksum), `DE_PLZ`,
   `DE_SOCIAL_SECURITY` (checksum), `DE_VAT_ID` (checksum), `DE_FUEHRERSCHEIN`, `DE_KFZ`,
   `DE_TAX_NUMBER`, `DE_HANDELSREGISTER`
 - `in`: `IN_AADHAAR` (Verhoeff), `IN_PAN`, `IN_GSTIN` (structure), `IN_PASSPORT`, `IN_VOTER`, `IN_VEHICLE_REGISTRATION`

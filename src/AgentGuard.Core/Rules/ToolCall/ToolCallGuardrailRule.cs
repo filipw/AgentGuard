@@ -130,6 +130,9 @@ public sealed class ToolCallGuardrailRule : IGuardrailRule
     {
         _options = options ?? new();
         _patterns = BuildPatterns();
+
+        // compiled patterns generate IL on first use; pay it here, not on the first request
+        RegexPatterns.Warm(_patterns.SelectMany(p => p.Value).Select(p => p.Pattern));
     }
 
     /// <inheritdoc />
@@ -177,7 +180,7 @@ public sealed class ToolCallGuardrailRule : IGuardrailRule
                 {
                     foreach (var (description, pattern) in patterns)
                     {
-                        if (pattern.IsMatch(argValue))
+                        if (pattern.IsMatchOrFalse(argValue))
                         {
                             violations.Add(new ToolCallViolation
                             {
@@ -207,7 +210,7 @@ public sealed class ToolCallGuardrailRule : IGuardrailRule
                 {
                     foreach (var (description, pattern) in patterns)
                     {
-                        if (pattern.IsMatch(rawContent))
+                        if (pattern.IsMatchOrFalse(rawContent))
                         {
                             violations.Add(new ToolCallViolation
                             {

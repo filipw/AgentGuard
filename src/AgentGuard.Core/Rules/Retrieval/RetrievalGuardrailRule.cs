@@ -133,6 +133,11 @@ public sealed class RetrievalGuardrailRule : IGuardrailRule
     {
         _options = options ?? new();
         _injectionPatterns = BuildInjectionPatterns();
+
+        // compiled patterns generate IL on first use; pay it here, not on the first request
+        RegexPatterns.Warm(_injectionPatterns);
+        RegexPatterns.Warm(SecretPatterns);
+        RegexPatterns.Warm(PiiPatterns);
     }
 
     /// <inheritdoc />
@@ -293,7 +298,7 @@ public sealed class RetrievalGuardrailRule : IGuardrailRule
         var triggered = new List<(string Reason, string Filter)>();
 
         // Check for prompt injection patterns
-        if (_options.DetectPromptInjection && _injectionPatterns.Exists(p => p.IsMatch(content)))
+        if (_options.DetectPromptInjection && _injectionPatterns.Exists(p => p.IsMatchOrFalse(content)))
         {
             triggered.Add(("Retrieved chunk contains prompt injection pattern", "prompt-injection"));
         }
@@ -336,7 +341,7 @@ public sealed class RetrievalGuardrailRule : IGuardrailRule
         var result = content;
         foreach (var pattern in _injectionPatterns)
         {
-            result = pattern.Replace(result, _options.SanitizationReplacement);
+            result = pattern.ReplaceOrOriginal(result, _options.SanitizationReplacement);
         }
         return result;
     }
@@ -354,7 +359,7 @@ public sealed class RetrievalGuardrailRule : IGuardrailRule
     {
         foreach (var pattern in SecretPatterns)
         {
-            if (pattern.IsMatch(text)) return true;
+            if (pattern.IsMatchOrFalse(text)) return true;
         }
         return false;
     }
@@ -364,7 +369,7 @@ public sealed class RetrievalGuardrailRule : IGuardrailRule
         var result = content;
         foreach (var pattern in SecretPatterns)
         {
-            result = pattern.Replace(result, _options.SanitizationReplacement);
+            result = pattern.ReplaceOrOriginal(result, _options.SanitizationReplacement);
         }
         return result;
     }
@@ -380,7 +385,7 @@ public sealed class RetrievalGuardrailRule : IGuardrailRule
     {
         foreach (var pattern in PiiPatterns)
         {
-            if (pattern.IsMatch(text)) return true;
+            if (pattern.IsMatchOrFalse(text)) return true;
         }
         return false;
     }
@@ -390,7 +395,7 @@ public sealed class RetrievalGuardrailRule : IGuardrailRule
         var result = content;
         foreach (var pattern in PiiPatterns)
         {
-            result = pattern.Replace(result, _options.SanitizationReplacement);
+            result = pattern.ReplaceOrOriginal(result, _options.SanitizationReplacement);
         }
         return result;
     }

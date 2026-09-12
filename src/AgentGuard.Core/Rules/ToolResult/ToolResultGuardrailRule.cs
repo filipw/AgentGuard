@@ -367,6 +367,12 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
     public ToolResultGuardrailRule(ToolResultGuardrailOptions? options = null)
     {
         _options = options ?? new();
+
+        // compiled patterns generate IL on first use; pay it here, not on the first request
+        RegexPatterns.Warm(CorePatterns.Select(p => p.Pattern));
+        RegexPatterns.Warm(MediumRiskPatterns.Select(p => p.Pattern));
+        RegexPatterns.Warm(HighRiskPatterns.Select(p => p.Pattern));
+        RegexPatterns.Warm(_options.CustomPatterns.Select(p => p.Pattern));
     }
 
     /// <inheritdoc />

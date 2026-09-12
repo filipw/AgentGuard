@@ -1,6 +1,8 @@
 using System.Text.RegularExpressions;
 using AgentGuard.Core.Abstractions;
 
+using AgentGuard.Core.Rules;
+
 namespace AgentGuard.Core.Rules.PromptInjection;
 
 /// <summary>How aggressively <see cref="PromptInjectionRule"/> matches. Higher tiers add lower-precision patterns.</summary>
@@ -285,33 +287,10 @@ public sealed class PromptInjectionRule : IGuardrailRule
     private static Regex[] Compile((string Pattern, InjectionPatternCategory Category)[] sources, TimeSpan timeout)
     {
         var compiled = sources.Select(s => new Regex(s.Pattern, Opts, timeout)).ToArray();
-        Warm(compiled);
-        return compiled;
-    }
 
-    /// <summary>
-    /// Runs each pattern once against a throwaway input.
-    /// </summary>
-    /// <remarks>
-    /// <see cref="RegexOptions.Compiled"/> generates IL on the first match, not at construction, and
-    /// that work happens inside the match timeout: measured at 0.4 to 4 ms per pattern against
-    /// 0.0001 ms once warm. Paying it here, while the rule is being constructed, keeps it out of the
-    /// first request - where on a cold, loaded machine it could exhaust the budget and leave the
-    /// check skipped under the default fail-open behaviour.
-    /// </remarks>
-    private static void Warm(Regex[] compiled)
-    {
-        foreach (var regex in compiled)
-        {
-            try
-            {
-                regex.IsMatch("warmup");
-            }
-            catch (RegexMatchTimeoutException)
-            {
-                // warming is best-effort; a timeout here just means the first real match pays it
-            }
-        }
+        // compiled patterns generate IL on first use, inside the match timeout; pay it here
+        RegexPatterns.Warm(compiled);
+        return compiled;
     }
 
     private static (Regex, GuardrailSeverity)[] BuildPatterns(PromptInjectionOptions options)

@@ -1,6 +1,6 @@
-using AgentGuard.Azure.Pii;
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Builders;
+using AgentGuard.Core.Configuration;
 using AgentGuard.Core.Rules.ContentSafety;
 using AgentGuard.Core.Rules.LLM;
 using AgentGuard.Core.Rules.Normalization;
@@ -12,12 +12,7 @@ using AgentGuard.Core.Rules.ToolCall;
 using AgentGuard.Core.Rules.ToolResult;
 using AgentGuard.Onnx;
 using AgentGuard.Pii;
-using AgentGuard.RemotePii;
-using Azure.Core;
-using Azure.Identity;
 using TasmanianDevil;
-using TasmanianDevil.Azure;
-using TasmanianDevil.Remote;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -75,49 +70,6 @@ internal static class ConfigurationMapper
                     Countries = rule.Countries is { Count: > 0 } ? rule.Countries : null,
                 });
                 break;
-
-            case "remotepii":
-            {
-                var endpoint = rule.Endpoint ?? throw new InvalidOperationException("RemotePii requires Endpoint.");
-                var entities = rule.Entities is { Count: > 0 }
-                    ? rule.Entities
-                    : throw new InvalidOperationException("RemotePii requires Entities (the entity types the remote endpoint detects).");
-
-                builder.RedactPiiWithRemote(new RemotePiiOptions
-                {
-                    Endpoint = endpoint,
-                    SupportedEntities = entities,
-                    AuthHeaderName = rule.AuthHeaderName,
-                    AuthHeaderValue = rule.AuthHeaderValue,
-                    Timeout = TimeSpan.FromSeconds(rule.TimeoutSeconds ?? 10),
-                    FailOpen = rule.FailOpen ?? true,
-                });
-                break;
-            }
-
-            case "azurepii":
-            {
-                var endpoint = rule.Endpoint ?? throw new InvalidOperationException("AzurePii requires Endpoint.");
-                var entities = rule.Entities is { Count: > 0 }
-                    ? rule.Entities
-                    : throw new InvalidOperationException("AzurePii requires Entities (the entity types to detect).");
-                var useManagedIdentity = rule.UseManagedIdentity ?? false;
-
-                if (!useManagedIdentity && string.IsNullOrEmpty(rule.SubscriptionKey))
-                    throw new InvalidOperationException("AzurePii requires SubscriptionKey, or UseManagedIdentity: true.");
-
-                builder.RedactPiiWithAzure(new AzurePiiOptions
-                {
-                    Endpoint = endpoint,
-                    SupportedEntities = entities,
-                    Domain = ParseEnum<AzurePiiDomain>(rule.Domain, AzurePiiDomain.None),
-                    Timeout = TimeSpan.FromSeconds(rule.TimeoutSeconds ?? 10),
-                    FailOpen = rule.FailOpen ?? true,
-                    SubscriptionKey = useManagedIdentity ? null : rule.SubscriptionKey,
-                    TokenProvider = useManagedIdentity ? CreateManagedIdentityTokenProvider() : null,
-                });
-                break;
-            }
 
             case "tokenlimit":
                 var maxTokens = rule.MaxTokens ?? 4000;
@@ -262,25 +214,42 @@ internal static class ConfigurationMapper
                 break;
 
             default:
+                // rules that live outside the core engine - the Azure and out-of-process PII
+                // adapters, and anything a consumer adds - arrive as registered factories, so this
+                // package does not have to reference the assemblies they live in.
+                if (TryApplyFactory(builder, rule, serviceProvider))
+                    break;
+
                 throw new InvalidOperationException(
                     $"Unknown guardrail rule type: '{rule.Type}'. " +
                     "Valid types: InputNormalization, PromptInjection, OnnxPromptInjection, " +
                     "DefenderPromptInjection, DebertaPromptInjection, PiiRedaction, RemotePii, AzurePii, " +
                     "Secrets, Retrieval, ToolCallGuardrail, ToolResultGuardrail, TokenLimit, ContentSafety, " +
                     "LlmPromptInjection, LlmPiiDetection, LlmTopicBoundary, LlmOutputPolicy, " +
-                    "LlmGroundedness, LlmCopyright.");
+                    "LlmGroundedness, LlmCopyright. " +
+                    "RemotePii and AzurePii ship as IGuardrailRuleFactory implementations in " +
+                    "AgentGuard.RemotePii and AgentGuard.Azure - register one with " +
+                    "services.AddSingleton<IGuardrailRuleFactory, AzurePiiRuleFactory>().");
         }
     }
 
-    private static Func<CancellationToken, ValueTask<string>> CreateManagedIdentityTokenProvider()
+    private static bool TryApplyFactory(
+        GuardrailPolicyBuilder builder, RuleConfiguration rule, IServiceProvider? serviceProvider)
     {
-        var credential = new DefaultAzureCredential();
-        var scope = new TokenRequestContext(["https://cognitiveservices.azure.com/.default"]);
-        return async ct =>
+        var factories = serviceProvider?.GetService<IEnumerable<IGuardrailRuleFactory>>();
+        if (factories is null)
+            return false;
+
+        foreach (var factory in factories)
         {
-            var token = await credential.GetTokenAsync(scope, ct).ConfigureAwait(false);
-            return token.Token;
-        };
+            if (string.Equals(factory.RuleType, rule.Type, StringComparison.OrdinalIgnoreCase))
+            {
+                factory.Configure(builder, rule);
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static T ResolveService<T>(IServiceProvider? serviceProvider, string ruleType) where T : class

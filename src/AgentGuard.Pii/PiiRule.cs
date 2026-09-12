@@ -89,7 +89,7 @@ public sealed class PiiRule : IGuardrailRule, IDisposable
             results,
             operators: _options.BuildOperators(),
             conflictResolution: _options.ConflictResolution,
-            mergeEntitiesWithSpaces: _ruleOptions.MergeEntitiesWithSpaces);
+            mergeEntitiesWithSpaces: _options.MergeEntitiesWithSpaces);
 
         var detectedTypes = results.Select(r => r.EntityType).Distinct().OrderBy(t => t, StringComparer.Ordinal).ToList();
 

@@ -7,10 +7,11 @@ namespace AgentGuard.Pii;
 /// inside a pipeline rather than how the detection engine behaves.
 /// </summary>
 /// <remarks>
-/// These deliberately do not live on the engine's <c>PiiOptions</c>. <c>RedactOutput</c> used to be
+/// This deliberately does not live on the engine's <c>PiiOptions</c>. <c>RedactOutput</c> used to be
 /// read from there, which made a guardrail concept (which <see cref="GuardrailPhase"/> the rule
 /// registers for) part of an engine that has no notion of phases at all; the engine dropped the
-/// property in its next release, which would have been a compile break here.
+/// property in 0.3.0. Settings that genuinely belong to detection or anonymization - including
+/// <c>MergeEntitiesWithSpaces</c> - stay on <c>PiiOptions</c> where the engine owns them.
 /// </remarks>
 public sealed class PiiRuleOptions
 {
@@ -20,11 +21,4 @@ public sealed class PiiRuleOptions
     /// </summary>
     public bool RedactOutput { get; init; } = true;
 
-    /// <summary>
-    /// When true (default), adjacent entities of the same type separated only by spaces are merged
-    /// into one span before anonymization. That is what keeps a multi-token name ("John Smith") a
-    /// single entity, but it also collapses genuinely separate values - two space-separated email
-    /// addresses become one <c>&lt;EMAIL_ADDRESS&gt;</c>. Set to false to anonymize each span on its own.
-    /// </summary>
-    public bool MergeEntitiesWithSpaces { get; init; } = true;
 }

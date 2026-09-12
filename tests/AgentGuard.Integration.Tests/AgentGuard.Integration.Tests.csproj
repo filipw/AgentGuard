@@ -4,6 +4,8 @@
     <ProjectReference Include="../../src/AgentGuard.Core/AgentGuard.Core.csproj" />
     <ProjectReference Include="../../src/AgentGuard.Hosting/AgentGuard.Hosting.csproj" />
     <ProjectReference Include="../../src/AgentGuard.Pii/AgentGuard.Pii.csproj" />
+    <ProjectReference Include="../../src/AgentGuard.RemotePii/AgentGuard.RemotePii.csproj" />
+    <ProjectReference Include="../../src/AgentGuard.Azure/AgentGuard.Azure.csproj" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" />

@@ -111,6 +111,11 @@ public sealed class SecretsDetectionRule : IGuardrailRule
         _highEntropyPattern = _options.Categories.HasFlag(SecretCategory.GenericHighEntropy)
             ? new Regex(@"[A-Za-z0-9_\-/+=]{" + _options.MinHighEntropyLength + @",}", RegexOptions.Compiled, RegexTimeout)
             : null;
+
+        // compiled patterns generate IL on first use; pay it here, not on the first request
+        RegexPatterns.Warm(_patterns.Select(p => p.Pattern));
+        if (_highEntropyPattern is not null)
+            RegexPatterns.Warm([_highEntropyPattern]);
     }
 
     /// <inheritdoc />
@@ -134,15 +139,12 @@ public sealed class SecretsDetectionRule : IGuardrailRule
             if (requiredContext is not null && !requiredContext.IsMatch(modified))
                 continue;
 
-            if (pattern.IsMatch(modified))
+            if (pattern.IsMatchOrFalse(modified))
             {
                 detected.Add(label);
                 if (_options.Action == SecretAction.Redact)
                 {
-                    // a MatchEvaluator, not the string overload: Regex.Replace treats "$" sequences
-                    // in the replacement as substitutions, so a replacement containing one would be
-                    // rewritten rather than inserted verbatim.
-                    modified = pattern.Replace(modified, _ => _options.Replacement);
+                    modified = pattern.ReplaceOrOriginal(modified, _options.Replacement);
                 }
             }
         }
