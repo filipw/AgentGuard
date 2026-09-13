@@ -2,10 +2,46 @@ using AgentGuard.Core.Abstractions;
 
 namespace AgentGuard.Core.Rules.ContentSafety;
 
-public enum ContentSafetySeverity { Safe = 0, Low = 2, Medium = 4, High = 6 }
+/// <summary>
+/// Harm severity on the four-level scale Azure AI Content Safety reports by default.
+/// </summary>
+public enum ContentSafetySeverity
+{
+    /// <summary>No harmful content detected.</summary>
+    Safe = 0,
 
+    /// <summary>Low severity.</summary>
+    Low = 2,
+
+    /// <summary>Medium severity.</summary>
+    Medium = 4,
+
+    /// <summary>High severity.</summary>
+    High = 6
+}
+
+/// <summary>Harm categories a content-safety classifier can report.</summary>
 [Flags]
-public enum ContentSafetyCategory { None = 0, Hate = 1, Violence = 2, SelfHarm = 4, Sexual = 8, All = Hate | Violence | SelfHarm | Sexual }
+public enum ContentSafetyCategory
+{
+    /// <summary>No category.</summary>
+    None = 0,
+
+    /// <summary>Hate and fairness.</summary>
+    Hate = 1,
+
+    /// <summary>Violence.</summary>
+    Violence = 2,
+
+    /// <summary>Self-harm.</summary>
+    SelfHarm = 4,
+
+    /// <summary>Sexual content.</summary>
+    Sexual = 8,
+
+    /// <summary>Every category.</summary>
+    All = Hate | Violence | SelfHarm | Sexual
+}
 
 /// <summary>
 /// Options for the content safety rule.
@@ -30,12 +66,23 @@ public sealed class ContentSafetyOptions
     /// Only applies when <see cref="BlocklistNames"/> is non-empty. Default: false.
     /// </summary>
     public bool HaltOnBlocklistHit { get; init; }
+
+    /// <summary>
+    /// What to do when the rule cannot reach a verdict - no <see cref="IContentSafetyClassifier"/>
+    /// was supplied, or the classifier reported a failure. Default:
+    /// <see cref="ErrorBehavior.FailOpen"/>. Set to <see cref="ErrorBehavior.FailClosed"/> when an
+    /// unavailable content-safety service should block rather than let content through unchecked.
+    /// </summary>
+    public ErrorBehavior OnError { get; init; } = ErrorBehavior.FailOpen;
 }
 
 /// <summary>Result of category-based content analysis.</summary>
 public sealed record ContentSafetyAnalysis
 {
+    /// <summary>The category that was scored.</summary>
     public ContentSafetyCategory Category { get; init; }
+
+    /// <summary>The severity the classifier assigned to it.</summary>
     public ContentSafetySeverity Severity { get; init; }
 }
 
@@ -57,6 +104,14 @@ public sealed record ContentSafetyResult
 
     /// <summary>Blocklist match results (empty if no blocklists configured or no matches).</summary>
     public IReadOnlyList<BlocklistMatchResult> BlocklistMatches { get; init; } = [];
+
+    /// <summary>
+    /// True when the analysis could not be performed (timeout, HTTP failure, service outage).
+    /// An empty result with <c>IsError</c> false means "analyzed and clean"; an empty result with
+    /// <c>IsError</c> true means "not analyzed" - <see cref="ContentSafetyRule"/> turns the latter
+    /// into a <see cref="GuardrailResult.Error"/> so <see cref="ContentSafetyOptions.OnError"/> decides.
+    /// </summary>
+    public bool IsError { get; init; }
 }
 
 /// <summary>
@@ -87,23 +142,51 @@ public interface IContentSafetyClassifier
     }
 }
 
+/// <summary>
+/// Blocks content a classifier scores above <see cref="ContentSafetyOptions.MaxAllowedSeverity"/>,
+/// or that matches a configured server-side blocklist. Order 50, both phases.
+/// </summary>
 public sealed class ContentSafetyRule : IGuardrailRule
 {
     private readonly ContentSafetyOptions _options;
     private readonly IContentSafetyClassifier? _classifier;
 
+    /// <summary>Initializes a new instance of the <see cref="ContentSafetyRule"/> class.</summary>
+    /// <param name="options">Severity threshold, categories and blocklists. Defaults when null.</param>
+    /// <param name="classifier">
+    /// The classifier to call. Without one the rule cannot reach a verdict and every evaluation
+    /// reports an error governed by <see cref="ContentSafetyOptions.OnError"/>.
+    /// </param>
     public ContentSafetyRule(ContentSafetyOptions? options = null, IContentSafetyClassifier? classifier = null)
     { _options = options ?? new(); _classifier = classifier; }
 
+    /// <inheritdoc />
     public string Name => "content-safety";
+    /// <inheritdoc />
     public GuardrailPhase Phase => GuardrailPhase.Both;
+    /// <inheritdoc />
     public int Order => 50;
 
+    /// <inheritdoc />
     public async ValueTask<GuardrailResult> EvaluateAsync(GuardrailContext context, CancellationToken cancellationToken = default)
     {
-        if (_classifier is null) return GuardrailResult.Passed();
+        // a rule with no classifier can never reach a verdict. Reporting that as an error rather
+        // than a pass keeps it out of the "checked and clean" bucket: it shows up in the rule
+        // telemetry and the pipeline log, and FailClosed can make it fatal.
+        if (_classifier is null)
+        {
+            return GuardrailResult.Error(Name, _options.OnError,
+                "no IContentSafetyClassifier was supplied - pass one to BlockHarmfulContent(classifier, options)");
+        }
+
+        if (string.IsNullOrWhiteSpace(context.Text)) return GuardrailResult.Passed();
 
         var result = await _classifier.AnalyzeWithOptionsAsync(context.Text, _options, cancellationToken);
+
+        if (result.IsError)
+        {
+            return GuardrailResult.Error(Name, _options.OnError, "the content safety classifier reported a failure");
+        }
 
         // Check blocklist matches first
         if (result.BlocklistMatches.Count > 0)

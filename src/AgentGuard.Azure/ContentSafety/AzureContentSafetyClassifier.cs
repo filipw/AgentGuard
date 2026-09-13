@@ -15,6 +15,9 @@ public sealed partial class AzureContentSafetyClassifier : IContentSafetyClassif
     private readonly ContentSafetyClient _client;
     private readonly ILogger<AzureContentSafetyClassifier> _logger;
 
+    /// <summary>Initializes a new instance of the <see cref="AzureContentSafetyClassifier"/> class.</summary>
+    /// <param name="client">The configured Azure AI Content Safety client.</param>
+    /// <param name="logger">Optional logger for analysis failures.</param>
     public AzureContentSafetyClassifier(ContentSafetyClient client, ILogger<AzureContentSafetyClassifier>? logger = null)
     {
         _client = client;
@@ -77,10 +80,18 @@ public sealed partial class AzureContentSafetyClassifier : IContentSafetyClassif
                 BlocklistMatches = blocklistMatches
             };
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // the caller gave up; that is not a classifier failure and must not be swallowed
+            throw;
+        }
         catch (Exception ex)
         {
             LogAnalysisFailed(_logger, ex);
-            return new ContentSafetyResult(); // fail-open
+
+            // IsError distinguishes "not analyzed" from "analyzed and clean"; ContentSafetyRule
+            // turns it into a rule error so ContentSafetyOptions.OnError decides what happens.
+            return new ContentSafetyResult { IsError = true };
         }
     }
 

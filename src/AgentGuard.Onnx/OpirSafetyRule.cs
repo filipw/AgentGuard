@@ -14,10 +14,10 @@ namespace AgentGuard.Onnx;
 /// threshold. Its niche is <b>non-English</b> content safety: the bundled Defender classifier is
 /// English-only (~0% recall off-English) and cloud content-safety APIs are per-call and PII-bound,
 /// so this fills an offline multilingual gap rather than replacing them. See
-/// <c>eng/opir-eval/RESULTS.md</c> for measured recall/FPR across de/es/ru/ar/zh/hi.
+/// the Opir evaluation in the Kyoto repo for measured recall/FPR across de/es/ru/ar/zh/hi.
 /// </para>
 /// <para>
-/// The model must be downloaded separately - see <c>eng/download-opir-model.sh</c>. The official
+/// The model must be downloaded separately - see <c>eng/MODELS.md</c>. The official
 /// repo ships only PyTorch weights, so AgentGuard distributes a frozen-taxonomy ONNX export.
 /// </para>
 /// </summary>

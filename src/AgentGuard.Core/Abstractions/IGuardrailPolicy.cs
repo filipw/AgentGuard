@@ -4,10 +4,18 @@ using Microsoft.Extensions.AI;
 
 namespace AgentGuard.Core.Abstractions;
 
+/// <summary>
+/// A named, ordered set of rules plus the handler that turns a violation into a user-facing message.
+/// </summary>
 public interface IGuardrailPolicy
 {
+    /// <summary>The policy name. Reported on spans, metrics and ledger entries.</summary>
     string Name { get; }
+
+    /// <summary>The rules, in ascending <see cref="IGuardrailRule.Order"/>.</summary>
     IReadOnlyList<IGuardrailRule> Rules { get; }
+
+    /// <summary>Produces the replacement text shown when a rule blocks.</summary>
     IViolationHandler ViolationHandler { get; }
 
     /// <summary>
@@ -28,16 +36,27 @@ public interface IGuardrailPolicy
     IChatClient? ReaskChatClient => null;
 }
 
+/// <summary>Turns a blocked result into the text the caller sees instead.</summary>
 public interface IViolationHandler
 {
+    /// <summary>Produces the replacement text for a blocked evaluation.</summary>
+    /// <param name="result">The blocking result.</param>
+    /// <param name="context">The context that was evaluated.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
     ValueTask<string> HandleViolationAsync(
         GuardrailResult result,
         GuardrailContext context,
         CancellationToken cancellationToken = default);
 }
 
+/// <summary>Resolves the policies registered with <c>AddAgentGuard</c>.</summary>
 public interface IAgentGuardFactory
 {
+    /// <summary>Gets a named policy.</summary>
+    /// <param name="name">The policy name.</param>
+    /// <exception cref="InvalidOperationException">No policy with that name is registered.</exception>
     IGuardrailPolicy GetPolicy(string name);
+
+    /// <summary>Gets the default policy, which is empty when none was configured.</summary>
     IGuardrailPolicy GetDefaultPolicy();
 }

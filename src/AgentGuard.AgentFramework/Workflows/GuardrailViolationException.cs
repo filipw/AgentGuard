@@ -23,6 +23,10 @@ public sealed class GuardrailViolationException : Exception
     /// </summary>
     public string ExecutorId { get; }
 
+    /// <summary>Initializes a new instance of the <see cref="GuardrailViolationException"/> class.</summary>
+    /// <param name="violationResult">The rule result that blocked.</param>
+    /// <param name="phase">Whether the block happened on input or output.</param>
+    /// <param name="executorId">The executor that was being guarded.</param>
     public GuardrailViolationException(GuardrailResult violationResult, GuardrailPhase phase, string executorId)
         : base($"Guardrail violation in executor '{executorId}' ({phase}): {violationResult.Reason}")
     {

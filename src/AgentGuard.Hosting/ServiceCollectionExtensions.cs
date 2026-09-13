@@ -9,13 +9,22 @@ using Microsoft.Extensions.Logging;
 
 namespace AgentGuard.Hosting;
 
+/// <summary>Configures the policies and the optional decision ledger registered by <c>AddAgentGuard</c>.</summary>
 public sealed class AgentGuardOptions
 {
     internal Action<GuardrailPolicyBuilder>? DefaultPolicyConfigurator { get; private set; }
     internal Dictionary<string, Action<GuardrailPolicyBuilder>> NamedPolicies { get; } = [];
     internal IGuardrailLedger? Ledger { get; private set; }
 
+    /// <summary>Configures the policy used when no name is given.</summary>
+    /// <param name="configure">Builds the policy.</param>
+    /// <returns>These options, for chaining.</returns>
     public AgentGuardOptions DefaultPolicy(Action<GuardrailPolicyBuilder> configure) { DefaultPolicyConfigurator = configure; return this; }
+
+    /// <summary>Adds a named policy, resolvable through <see cref="IAgentGuardFactory.GetPolicy"/>.</summary>
+    /// <param name="name">The policy name.</param>
+    /// <param name="configure">Builds the policy.</param>
+    /// <returns>These options, for chaining.</returns>
     public AgentGuardOptions AddPolicy(string name, Action<GuardrailPolicyBuilder> configure) { NamedPolicies[name] = configure; return this; }
 
     /// <summary>
@@ -31,7 +40,17 @@ public sealed class AgentGuardOptions
     /// to an append-only JSONL file.
     /// </summary>
     /// <param name="jsonlFilePath">When set, each entry is also written to this JSONL file.</param>
-    public AgentGuardOptions UseDecisionLedger(string? jsonlFilePath = null) { Ledger = new HashChainLedger(jsonlFilePath); return this; }
+    /// <param name="maxInMemoryEntries">
+    /// Caps the in-memory chain, evicting the oldest entries past the cap. Null (the default)
+    /// retains every decision for the life of the process, which only suits a bounded run; set a
+    /// cap for a long-lived service and mirror to <paramref name="jsonlFilePath"/> to keep the
+    /// full chain on disk.
+    /// </param>
+    public AgentGuardOptions UseDecisionLedger(string? jsonlFilePath = null, int? maxInMemoryEntries = null)
+    {
+        Ledger = new HashChainLedger(jsonlFilePath, maxInMemoryEntries);
+        return this;
+    }
 }
 
 internal sealed class AgentGuardFactory : IAgentGuardFactory
@@ -82,6 +101,7 @@ internal sealed class AgentGuardFactory : IAgentGuardFactory
     public IGuardrailPolicy GetDefaultPolicy() => _defaultPolicy;
 }
 
+/// <summary>Registers AgentGuard with the dependency injection container.</summary>
 public static class ServiceCollectionExtensions
 {
     /// <summary>
@@ -92,7 +112,13 @@ public static class ServiceCollectionExtensions
         var options = new AgentGuardOptions();
         configure(options);
         services.AddSingleton(options);
-        services.AddSingleton<IAgentGuardFactory, AgentGuardFactory>();
+
+        // an explicit factory, not AddSingleton<IAgentGuardFactory, AgentGuardFactory>(): that form
+        // relies on DI happening to pick the AgentGuardOptions constructor because
+        // AgentGuardConfiguration is not registered. Register one for any other reason and the
+        // code-based policies would silently vanish.
+        services.AddSingleton<IAgentGuardFactory>(sp =>
+            new AgentGuardFactory(sp.GetRequiredService<AgentGuardOptions>()));
         if (options.Ledger is not null)
             services.AddSingleton(options.Ledger);
         services.AddSingleton(sp =>

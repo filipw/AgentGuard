@@ -74,8 +74,8 @@ builder.Services.AddAgentGuard(builder.Configuration.GetSection("AgentGuard"));
 |------|-----------|-------|
 | `InputNormalization` | `DecodeBase64`, `DecodeHex`, `DetectReversedText`, `NormalizeUnicode` (all bool, default true) | Decodes evasion encodings |
 | `PromptInjection` | `Sensitivity` (Low/Medium/High, default Medium) | Regex-based detection |
-| `OnnxPromptInjection` | `ModelPath` (string, required), `TokenizerPath` (string, required), `Threshold` (float, default 0.5) | Requires `AgentGuard.Onnx` package. Download model via `eng/download-onnx-model.sh` |
-| `PiiRedaction` | `Entities` (string[], e.g. EMAIL_ADDRESS/US_SSN/CREDIT_CARD; empty = all), `Replacement` (default [REDACTED]), `Countries` (string[] of ISO codes, e.g. uk/de/in/it/es; empty = generic + US only) | Offline PII redaction (`AgentGuard.Pii`); regex + checksum recognizers |
+| `OnnxPromptInjection` | `ModelPath` (string, required), `TokenizerPath` (string, required), `Threshold` (float, default 0.5) | Requires `AgentGuard.Onnx` package. Fetch the model via the Kyoto bootstrap (see `eng/MODELS.md`) |
+| `PiiRedaction` | `Entities` (string[], e.g. EMAIL_ADDRESS/US_SSN/CREDIT_CARD; empty = all), `Replacement` (default [REDACTED]), `Countries` (string[] of ISO codes: uk/de/in/it/es/nl; `us` is always on, listing it is a harmless no-op; empty = generic + US only) | Offline PII redaction (`AgentGuard.Pii`); regex + checksum recognizers |
 | `TokenLimit` | `MaxTokens` (int), `Phase` (Input/Output), `OverflowStrategy` (Reject/Truncate/Warn) | Token counting via ML.Tokenizers |
 | `ToolCallGuardrail` | `Categories` (Default/All/SqlInjection,...) | Inspects tool call arguments for injection |
 | `ToolResultGuardrail` | `Action` (Block/Sanitize), `StripUnicodeControl` (bool, default true) | Detects indirect injection in tool results |
@@ -83,6 +83,40 @@ builder.Services.AddAgentGuard(builder.Configuration.GetSection("AgentGuard"));
 | `LlmPromptInjection` | `IncludeClassification` (bool), `SystemPrompt` (string) | Requires `IChatClient` in DI |
 | `LlmPiiDetection` | `PiiAction` (Block/Redact), `SystemPrompt` (string) | Requires `IChatClient` in DI |
 | `LlmTopicBoundary` | `AllowedTopics` (string[]), `SystemPrompt` (string) | Requires `IChatClient` in DI |
+
+### Rules from other packages
+
+`AgentGuard.Hosting` maps the rule types that live in the core engine itself. Anything else -
+the Azure and out-of-process PII adapters, or a rule of your own - plugs in through
+`IGuardrailRuleFactory`, resolved from DI. That is what keeps the Azure SDK, `Azure.Identity` and
+the remote-detector dependencies out of applications that only want DI registration.
+
+| Type | Factory | Package |
+|------|---------|---------|
+| `RemotePii` | `RemotePiiRuleFactory` | `AgentGuard.RemotePii` |
+| `AzurePii` | `AzurePiiRuleFactory` | `AgentGuard.Azure` |
+
+Register the ones you use before `AddAgentGuard`:
+
+```csharp
+builder.Services.AddSingleton<IGuardrailRuleFactory, AzurePiiRuleFactory>();
+builder.Services.AddSingleton<IGuardrailRuleFactory, RemotePiiRuleFactory>();
+builder.Services.AddAgentGuard(builder.Configuration.GetSection("AgentGuard"));
+```
+
+A configured type with no matching factory throws at startup, naming the factory to register.
+
+The same extension point takes your own rule types:
+
+```csharp
+public sealed class MyCompanyRuleFactory : IGuardrailRuleFactory
+{
+    public string RuleType => "MyCompanyRule";
+
+    public void Configure(GuardrailPolicyBuilder builder, RuleConfiguration configuration) =>
+        builder.AddRule(new MyCompanyRule(configuration.Endpoint));
+}
+```
 
 ### LLM and Cloud Rules
 

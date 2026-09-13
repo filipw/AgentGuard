@@ -74,11 +74,14 @@ public sealed partial class StreamingGuardrailPipeline
         var adaptiveRuleLastCheckChars = new Dictionary<string, int>();
         var firstCheckDone = false;
         var totalYieldedChars = 0;
+        var modifiedMidStream = false;
 
         // the most recent set of rule results, recorded on the end-of-stream pass entry
         IReadOnlyList<GuardrailResult> lastEvaluatedResults = [];
 
-        // classify rules into progressive and final-only
+        // classify rules into progressive and final-only. finalOnlyRules is not run here by
+        // design - the end-of-stream pass below re-derives the full output rule set - but the
+        // count is worth reporting so the chosen strategy is visible in traces.
         var (progressiveRules, finalOnlyRules, adaptiveRules) = ClassifyOutputRules();
 
         LogProgressiveStart(_logger, progressiveRules.Count, finalOnlyRules.Count, adaptiveRules.Count);
@@ -136,7 +139,11 @@ public sealed partial class StreamingGuardrailPipeline
                         yield break;
                     }
 
-                    // handle modifications mid-stream (retract and replace with modified text)
+                    // handle modifications mid-stream: retract what was shown, hand the consumer
+                    // the rewritten text, and carry on streaming. Ending the stream here would
+                    // throw away the rest of the model's response - with a redaction rule in the
+                    // policy (PiiRule is Phase.Both and part of UseDefaults) the first check that
+                    // redacted anything would truncate the answer.
                     if (result.WasModified)
                     {
                         var modifyingResult = result.AllResults.FirstOrDefault(r => r.IsModified)
@@ -155,11 +162,12 @@ public sealed partial class StreamingGuardrailPipeline
                             StreamingGuardrailEvent.Retract(modifyingResult, totalYieldedChars));
                         yield return StreamingPipelineOutput.Event(
                             StreamingGuardrailEvent.Replace(result.FinalText, modifyingResult, totalYieldedChars));
-                        EmitDecision(baseContext, result.FinalText, result.AllResults,
-                            AgentGuardTelemetry.Outcomes.Modified, blockingResult: null, wasModified: true);
-                        yield return StreamingPipelineOutput.Complete(
-                            StreamingFinalResult.Modified(result.FinalText));
-                        yield break;
+
+                        // the consumer's view is now exactly the rewritten text, so the buffer and
+                        // the yielded-char count have to follow it; later chunks append to that.
+                        accumulatedText.Clear().Append(result.FinalText);
+                        totalYieldedChars = result.FinalText.Length;
+                        modifiedMidStream = true;
                     }
                 }
 
@@ -231,6 +239,19 @@ public sealed partial class StreamingGuardrailPipeline
                     StreamingFinalResult.Modified(finalResult.FinalText));
                 yield break;
             }
+        }
+
+        // a stream rewritten mid-stream already handed the consumer the replacement text via the
+        // retract/replace events, so no further events are needed - but the terminal result has to
+        // say Modified, or the caller concludes nothing was changed.
+        if (modifiedMidStream)
+        {
+            var finalText = accumulatedText.ToString();
+            streamingActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Modified);
+            EmitDecision(baseContext, finalText, lastEvaluatedResults,
+                AgentGuardTelemetry.Outcomes.Modified, blockingResult: null, wasModified: true);
+            yield return StreamingPipelineOutput.Complete(StreamingFinalResult.Modified(finalText));
+            yield break;
         }
 
         streamingActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Passed);

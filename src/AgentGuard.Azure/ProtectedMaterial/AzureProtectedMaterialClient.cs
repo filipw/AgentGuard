@@ -66,6 +66,11 @@ public sealed partial class AzureProtectedMaterialClient : IDisposable
 
     private readonly HttpClient _httpClient;
     private readonly bool _ownsHttpClient;
+    private readonly string _endpoint;
+    private readonly string _apiKey;
+
+    private static readonly TimeSpan DefaultRetryDelay = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan MaxRetryDelay = TimeSpan.FromSeconds(10);
     private readonly ILogger<AzureProtectedMaterialClient> _logger;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -99,9 +104,13 @@ public sealed partial class AzureProtectedMaterialClient : IDisposable
             _ownsHttpClient = true;
         }
 
-        var baseUrl = endpoint.TrimEnd('/');
-        _httpClient.BaseAddress ??= new Uri(baseUrl);
-        _httpClient.DefaultRequestHeaders.TryAddWithoutValidation("Ocp-Apim-Subscription-Key", apiKey);
+        // The endpoint and key are held per instance and applied per request rather than written
+        // onto the HttpClient. Mutating a client that came from IHttpClientFactory is shared state:
+        // BaseAddress ??= silently ignored the configured endpoint when one was already set, and
+        // TryAddWithoutValidation appended a second subscription-key header for every additional
+        // instance built over the same client.
+        _endpoint = endpoint.TrimEnd('/');
+        _apiKey = apiKey;
     }
 
     /// <summary>
@@ -115,7 +124,7 @@ public sealed partial class AzureProtectedMaterialClient : IDisposable
         {
             var request = new TextRequest { Text = text };
             var url = $"/contentsafety/text:detectProtectedMaterial?api-version={TextApiVersion}";
-            var response = await SendWithRetryAsync(url, request, cancellationToken);
+            using var response = await SendWithRetryAsync(url, request, cancellationToken);
             response.EnsureSuccessStatusCode();
 
             var result = await response.Content.ReadFromJsonAsync<ProtectedMaterialResponse>(JsonOptions, cancellationToken);
@@ -145,7 +154,7 @@ public sealed partial class AzureProtectedMaterialClient : IDisposable
         {
             var request = new CodeRequest { Code = code };
             var url = $"/contentsafety/text:detectProtectedMaterialForCode?api-version={CodeApiVersion}";
-            var response = await SendWithRetryAsync(url, request, cancellationToken);
+            using var response = await SendWithRetryAsync(url, request, cancellationToken);
             response.EnsureSuccessStatusCode();
 
             var result = await response.Content.ReadFromJsonAsync<ProtectedMaterialResponse>(JsonOptions, cancellationToken);
@@ -171,30 +180,58 @@ public sealed partial class AzureProtectedMaterialClient : IDisposable
         }
     }
 
+    /// <summary>
+    /// POSTs <paramref name="request"/>, retrying on 429 up to <c>maxRetries</c> times.
+    /// </summary>
+    /// <remarks>
+    /// Discarded 429 responses are disposed rather than leaked, and the server's Retry-After is
+    /// clamped to <see cref="MaxRetryDelay"/> so a misconfigured or hostile value cannot park a
+    /// guarded request for minutes.
+    /// </remarks>
     private async Task<HttpResponseMessage> SendWithRetryAsync<TRequest>(
-        string url, TRequest request, CancellationToken cancellationToken)
+        string path, TRequest request, CancellationToken cancellationToken)
     {
         const int maxRetries = 3;
+        HttpResponseMessage? response = null;
+
         for (var attempt = 0; attempt < maxRetries; attempt++)
         {
-            var response = await _httpClient.PostAsJsonAsync(url, request, JsonOptions, cancellationToken);
+            using var message = new HttpRequestMessage(HttpMethod.Post, _endpoint + path)
+            {
+                Content = JsonContent.Create(request, options: JsonOptions)
+            };
+            message.Headers.TryAddWithoutValidation("Ocp-Apim-Subscription-Key", _apiKey);
+
+            response = await _httpClient.SendAsync(message, cancellationToken);
+
             if ((int)response.StatusCode != 429)
                 return response;
 
             if (attempt == maxRetries - 1)
             {
                 LogRetryExhausted(_logger, maxRetries);
-                return response;
+                return response; // will fail via EnsureSuccessStatusCode -> catch -> fail-open
             }
 
-            var retryAfter = response.Headers.RetryAfter?.Delta ?? TimeSpan.FromSeconds(1);
+            var retryAfter = response.Headers.RetryAfter?.Delta ?? DefaultRetryDelay;
+            if (retryAfter > MaxRetryDelay)
+                retryAfter = MaxRetryDelay;
+            if (retryAfter < TimeSpan.Zero)
+                retryAfter = DefaultRetryDelay;
+
+            // this response is being thrown away; its content stream has to go with it
+            response.Dispose();
+            response = null;
+
             LogRateLimited(_logger, attempt + 1, maxRetries, retryAfter);
             await Task.Delay(retryAfter, cancellationToken);
         }
 
-        throw new InvalidOperationException();
+        // unreachable: the loop either returns or throws
+        throw new InvalidOperationException("retry loop completed without a response");
     }
 
+    /// <summary>Disposes the <see cref="HttpClient"/> when this instance created it.</summary>
     public void Dispose()
     {
         if (_ownsHttpClient)

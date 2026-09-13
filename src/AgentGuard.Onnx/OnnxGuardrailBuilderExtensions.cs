@@ -45,7 +45,7 @@ public static class OnnxGuardrailBuilderExtensions
 
     /// <summary>
     /// Adds ONNX-based prompt injection detection (order 12) using the DeBERTa v3 model.
-    /// The ONNX model must be downloaded separately - see <c>eng/download-onnx-model.sh</c>.
+    /// The ONNX model must be downloaded separately - see <c>eng/MODELS.md</c>.
     /// For most use cases, prefer <see cref="BlockPromptInjectionWithDefender(GuardrailPolicyBuilder, DefenderPromptInjectionOptions?)"/>
     /// which uses the bundled StackOne Defender model (faster, higher accuracy, no download required).
     /// </summary>
@@ -62,7 +62,7 @@ public static class OnnxGuardrailBuilderExtensions
 
     /// <summary>
     /// Adds ONNX-based prompt injection detection (order 12) using the DeBERTa v3 model.
-    /// The ONNX model must be downloaded separately - see <c>eng/download-onnx-model.sh</c>.
+    /// The ONNX model must be downloaded separately - see <c>eng/MODELS.md</c>.
     /// </summary>
     /// <param name="builder">The policy builder.</param>
     /// <param name="modelPath">Path to the ONNX model file.</param>
@@ -87,7 +87,7 @@ public static class OnnxGuardrailBuilderExtensions
     /// Adds ONNX-based prompt injection detection (order 12) using the PIGuard DeBERTa v3 model
     /// (<c>leolee99/PIGuard</c>, ACL 2025, MIT). Trained with the "Mitigating Over-defense for Free"
     /// strategy: strong on indirect / code-style injection while keeping benign false positives low.
-    /// The ONNX model must be downloaded separately - see <c>eng/download-piguard-model.sh</c>.
+    /// The ONNX model must be downloaded separately - see <c>eng/MODELS.md</c>.
     /// Defaults to a 0.9 threshold (PIGuard's argmax over-blocks; 0.9 is the measured operating point).
     /// </summary>
     /// <param name="builder">The policy builder.</param>
@@ -103,7 +103,7 @@ public static class OnnxGuardrailBuilderExtensions
 
     /// <summary>
     /// Adds ONNX-based prompt injection detection (order 12) using the PIGuard DeBERTa v3 model.
-    /// The ONNX model must be downloaded separately - see <c>eng/download-piguard-model.sh</c>.
+    /// The ONNX model must be downloaded separately - see <c>eng/MODELS.md</c>.
     /// </summary>
     /// <param name="builder">The policy builder.</param>
     /// <param name="modelPath">Path to the PIGuard ONNX model file.</param>
@@ -131,7 +131,7 @@ public static class OnnxGuardrailBuilderExtensions
     /// self-harm, harassment) in any language and blocks when the strongest per-label probability
     /// reaches the threshold. Its niche is non-English content safety, where the bundled Defender
     /// classifier (English-only) and cloud APIs (per-call, PII-bound) leave a gap.
-    /// The ONNX model must be downloaded separately - see <c>eng/download-opir-model.sh</c>.
+    /// The ONNX model must be downloaded separately - see <c>eng/MODELS.md</c>.
     /// </summary>
     /// <param name="builder">The policy builder.</param>
     /// <param name="options">Opir options including model, tokenizer, and prefix file paths.</param>
@@ -146,7 +146,7 @@ public static class OnnxGuardrailBuilderExtensions
 
     /// <summary>
     /// Adds offline, multilingual content-safety detection (order 50) using the Opir-multilang model.
-    /// The ONNX model must be downloaded separately - see <c>eng/download-opir-model.sh</c>.
+    /// The ONNX model must be downloaded separately - see <c>eng/MODELS.md</c>.
     /// </summary>
     /// <param name="builder">The policy builder.</param>
     /// <param name="modelPath">Path to the Opir-multilang ONNX model file.</param>
@@ -175,7 +175,7 @@ public static class OnnxGuardrailBuilderExtensions
     /// recognizers with ONNX named-entity recognition, detecting the span entity types regex cannot
     /// catch - <c>PERSON</c>, <c>LOCATION</c>, <c>ORGANIZATION</c>, <c>DATE_TIME</c> - and resolving
     /// them against the regex entities in a single <c>PiiRule</c> pass. Opt-in and BYO-download (the
-    /// NER model is not bundled - see <c>eng/download-gliner-model.sh</c>); not part of
+    /// NER model is not bundled - see <c>eng/MODELS.md</c>); not part of
     /// <see cref="UseDefaults"/>.
     /// <para>
     /// The NER spans flow through the same analyzer as the regex entities, so overlap resolution and
@@ -187,18 +187,24 @@ public static class OnnxGuardrailBuilderExtensions
     /// <param name="builder">The policy builder.</param>
     /// <param name="nerOptions">NER model paths, threshold, span width, and label map.</param>
     /// <param name="piiOptions">Optional PII detection/anonymization configuration (entities, countries, operators).</param>
+    /// <param name="ruleOptions">Optional guardrail-side settings (phase, span merging).</param>
     /// <returns>The builder for chaining.</returns>
     public static GuardrailPolicyBuilder RedactPiiWithNer(
         this GuardrailPolicyBuilder builder,
         GlinerNerOptions nerOptions,
-        PiiOptions? piiOptions = null)
+        PiiOptions? piiOptions = null,
+        PiiRuleOptions? ruleOptions = null)
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(nerOptions);
 
         var language = piiOptions?.Language ?? "en";
         var registry = PiiRecognizers.CreateRegistry(language, piiOptions?.Countries);
-        registry.AddRecognizer(new GlinerNerRecognizer(nerOptions, supportedLanguage: language));
+
+        // the recognizer holds a ref-counted ONNX session; PiiRule takes over its lifetime so
+        // disposing the policy releases it.
+        var recognizer = new GlinerNerRecognizer(nerOptions, supportedLanguage: language);
+        registry.AddRecognizer(recognizer);
 
         // defaultScoreThreshold 0 here; PiiRule applies PiiOptions.ScoreThreshold per evaluation.
         var engine = new AnalyzerEngine(
@@ -206,14 +212,14 @@ public static class OnnxGuardrailBuilderExtensions
             new LemmaContextAwareEnhancer(contextMatchingMode: piiOptions?.ContextMatchingMode ?? ContextMatchingMode.Substring),
             defaultScoreThreshold: 0);
 
-        builder.AddRule(new PiiRule(piiOptions, analyzer: engine));
+        builder.AddRule(new PiiRule(piiOptions, analyzer: engine, ownedResources: [recognizer], ruleOptions: ruleOptions));
         return builder;
     }
 
     /// <summary>
     /// Adds offline, multilingual PII redaction (order 20) augmented with ONNX named-entity
     /// recognition (PERSON/LOCATION/ORGANIZATION/DATE_TIME). The NER model must be downloaded
-    /// separately - see <c>eng/download-gliner-model.sh</c>.
+    /// separately - see <c>eng/MODELS.md</c>.
     /// </summary>
     /// <param name="builder">The policy builder.</param>
     /// <param name="modelPath">Path to the NER ONNX model file.</param>
@@ -221,6 +227,7 @@ public static class OnnxGuardrailBuilderExtensions
     /// <param name="configPath">Path to the model <c>config.json</c> (special-token ids + max span width).</param>
     /// <param name="threshold">Span emission threshold (0.0-1.0). Default: 0.5.</param>
     /// <param name="piiOptions">Optional PII detection/anonymization configuration.</param>
+    /// <param name="ruleOptions">Optional guardrail-side settings (phase, span merging).</param>
     /// <returns>The builder for chaining.</returns>
     public static GuardrailPolicyBuilder RedactPiiWithNer(
         this GuardrailPolicyBuilder builder,
@@ -228,7 +235,8 @@ public static class OnnxGuardrailBuilderExtensions
         string tokenizerPath,
         string configPath,
         float threshold = 0.5f,
-        PiiOptions? piiOptions = null)
+        PiiOptions? piiOptions = null,
+        PiiRuleOptions? ruleOptions = null)
     {
         return builder.RedactPiiWithNer(
             new GlinerNerOptions
@@ -238,7 +246,8 @@ public static class OnnxGuardrailBuilderExtensions
                 ConfigPath = configPath,
                 NerThreshold = threshold,
             },
-            piiOptions);
+            piiOptions,
+            ruleOptions);
     }
 
     /// <summary>

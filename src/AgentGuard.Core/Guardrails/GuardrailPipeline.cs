@@ -7,12 +7,21 @@ using Microsoft.Extensions.Logging;
 
 namespace AgentGuard.Core.Guardrails;
 
+/// <summary>
+/// Runs a policy's rules in order against one piece of text. Rules see the text as rewritten by
+/// whichever rules ran before them, a block short-circuits the rest, and each decision is optionally
+/// recorded to a <see cref="IGuardrailLedger"/>.
+/// </summary>
 public sealed partial class GuardrailPipeline
 {
     private readonly IGuardrailPolicy _policy;
     private readonly ILogger<GuardrailPipeline> _logger;
     private readonly IGuardrailLedger? _ledger;
 
+    /// <summary>Initializes a new instance of the <see cref="GuardrailPipeline"/> class.</summary>
+    /// <param name="policy">The policy to run.</param>
+    /// <param name="logger">Logger for rule outcomes.</param>
+    /// <param name="ledger">Optional tamper-evident decision ledger.</param>
     public GuardrailPipeline(IGuardrailPolicy policy, ILogger<GuardrailPipeline> logger, IGuardrailLedger? ledger = null)
     {
         _policy = policy;
@@ -25,6 +34,10 @@ public sealed partial class GuardrailPipeline
     /// </summary>
     public IGuardrailLedger? Ledger => _ledger;
 
+    /// <summary>Evaluates <paramref name="context"/> against every rule for its phase.</summary>
+    /// <param name="context">The text and its surrounding state.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The combined outcome, including each rule's individual result.</returns>
     public async ValueTask<GuardrailPipelineResult> RunAsync(
         GuardrailContext context, CancellationToken cancellationToken = default)
     {
@@ -358,12 +371,22 @@ public sealed partial class GuardrailPipeline
     private static partial void LogLedgerError(ILogger logger, Exception exception);
 }
 
+/// <summary>The outcome of one pipeline run.</summary>
 public sealed record GuardrailPipelineResult
 {
+    /// <summary>Whether a rule rejected the text.</summary>
     public required bool IsBlocked { get; init; }
+
+    /// <summary>Whether <see cref="FinalText"/> differs from the text that went in.</summary>
     public bool WasModified { get; init; }
+
+    /// <summary>The rule result that blocked, when <see cref="IsBlocked"/> is true.</summary>
     public GuardrailResult? BlockingResult { get; init; }
+
+    /// <summary>Every rule result produced, in execution order, up to and including any block.</summary>
     public required IReadOnlyList<GuardrailResult> AllResults { get; init; }
+
+    /// <summary>The text after every modification. On a block, the text as it stood when blocked.</summary>
     public required string FinalText { get; init; }
 
     /// <summary>

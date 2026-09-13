@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using AgentGuard.Core.Abstractions;
+using Microsoft.Extensions.Logging;
 using AgentGuard.Core.Guardrails;
 using AgentGuard.Core.Telemetry;
 using Microsoft.Agents.AI.Workflows;
@@ -17,6 +18,7 @@ public sealed class GuardedExecutor<TInput> : Executor<TInput>
     private readonly Executor<TInput> _inner;
     private readonly GuardrailPipeline _pipeline;
     private readonly ITextExtractor _textExtractor;
+    private readonly ILogger? _log;
 
     internal GuardedExecutor(
         Executor<TInput> inner,
@@ -30,9 +32,11 @@ public sealed class GuardedExecutor<TInput> : Executor<TInput>
         Microsoft.Extensions.Logging.ILogger<GuardrailPipeline> logger = options?.Logger is not null
             ? new LoggerWrapper(options.Logger)
             : Microsoft.Extensions.Logging.Abstractions.NullLogger<GuardrailPipeline>.Instance;
-        _pipeline = new GuardrailPipeline(policy, logger);
+        _pipeline = new GuardrailPipeline(policy, logger, options?.Ledger);
+        _log = options?.Logger;
     }
 
+    /// <inheritdoc />
     public override async ValueTask HandleAsync(TInput message, IWorkflowContext context, CancellationToken cancellationToken = default)
     {
         using var guardActivity = AgentGuardTelemetry.ActivitySource.StartActivity(
@@ -69,7 +73,7 @@ public sealed class GuardedExecutor<TInput> : Executor<TInput>
             if (result.WasModified)
             {
                 guardActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Modified);
-                message = ReconstructInput(message, result.FinalText);
+                message = ReconstructInput(message, result.FinalText, _log, _inner.Id);
             }
             else
             {
@@ -84,7 +88,7 @@ public sealed class GuardedExecutor<TInput> : Executor<TInput>
         await _inner.HandleAsync(message, context, cancellationToken);
     }
 
-    private static TInput ReconstructInput(TInput original, string modifiedText)
+    private static TInput ReconstructInput(TInput original, string modifiedText, ILogger? log, string executorId)
     {
         if (original is string)
             return (TInput)(object)modifiedText;
@@ -92,7 +96,10 @@ public sealed class GuardedExecutor<TInput> : Executor<TInput>
         if (original is ChatMessage chatMessage)
             return (TInput)(object)new ChatMessage(chatMessage.Role, modifiedText);
 
-        // cannot reconstruct arbitrary types - pass original through
+        // An arbitrary type cannot be rebuilt from text, so the original goes through unchanged -
+        // while the pipeline has already reported Modified. Silently dropping a redaction that was
+        // reported as applied is the dangerous half, so say so loudly.
+        GuardedExecutorLog.ModificationDropped(log, executorId, typeof(TInput).Name);
         return original;
     }
 }
@@ -106,6 +113,7 @@ public sealed class GuardedExecutor<TInput, TOutput> : Executor<TInput, TOutput>
     private readonly Executor<TInput, TOutput> _inner;
     private readonly GuardrailPipeline _pipeline;
     private readonly ITextExtractor _textExtractor;
+    private readonly ILogger? _log;
 
     internal GuardedExecutor(
         Executor<TInput, TOutput> inner,
@@ -119,9 +127,11 @@ public sealed class GuardedExecutor<TInput, TOutput> : Executor<TInput, TOutput>
         Microsoft.Extensions.Logging.ILogger<GuardrailPipeline> logger = options?.Logger is not null
             ? new LoggerWrapper(options.Logger)
             : Microsoft.Extensions.Logging.Abstractions.NullLogger<GuardrailPipeline>.Instance;
-        _pipeline = new GuardrailPipeline(policy, logger);
+        _pipeline = new GuardrailPipeline(policy, logger, options?.Ledger);
+        _log = options?.Logger;
     }
 
+    /// <inheritdoc />
     public override async ValueTask<TOutput> HandleAsync(TInput message, IWorkflowContext context, CancellationToken cancellationToken = default)
     {
         // --- input guardrails ---
@@ -159,7 +169,7 @@ public sealed class GuardedExecutor<TInput, TOutput> : Executor<TInput, TOutput>
             if (inputResult.WasModified)
             {
                 inputGuardActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Modified);
-                message = ReconstructInput(message, inputResult.FinalText);
+                message = ReconstructInput(message, inputResult.FinalText, _log, _inner.Id);
             }
             else
             {
@@ -211,7 +221,7 @@ public sealed class GuardedExecutor<TInput, TOutput> : Executor<TInput, TOutput>
             if (outputResult.WasModified)
             {
                 outputGuardActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Modified);
-                output = ReconstructOutput(output, outputResult.FinalText);
+                output = ReconstructOutput(output, outputResult.FinalText, _log, _inner.Id);
             }
             else
             {
@@ -226,7 +236,7 @@ public sealed class GuardedExecutor<TInput, TOutput> : Executor<TInput, TOutput>
         return output;
     }
 
-    private static TInput ReconstructInput(TInput original, string modifiedText)
+    private static TInput ReconstructInput(TInput original, string modifiedText, ILogger? log, string executorId)
     {
         if (original is string)
             return (TInput)(object)modifiedText;
@@ -234,10 +244,11 @@ public sealed class GuardedExecutor<TInput, TOutput> : Executor<TInput, TOutput>
         if (original is ChatMessage chatMessage)
             return (TInput)(object)new ChatMessage(chatMessage.Role, modifiedText);
 
+        GuardedExecutorLog.ModificationDropped(log, executorId, typeof(TInput).Name);
         return original;
     }
 
-    private static TOutput ReconstructOutput(TOutput original, string modifiedText)
+    private static TOutput ReconstructOutput(TOutput original, string modifiedText, ILogger? log, string executorId)
     {
         if (original is string)
             return (TOutput)(object)modifiedText;
@@ -245,7 +256,23 @@ public sealed class GuardedExecutor<TInput, TOutput> : Executor<TInput, TOutput>
         if (original is ChatMessage chatMessage)
             return (TOutput)(object)new ChatMessage(chatMessage.Role, modifiedText);
 
+        GuardedExecutorLog.ModificationDropped(log, executorId, typeof(TOutput).Name);
         return original;
+    }
+}
+
+/// <summary>Log messages shared by both <c>GuardedExecutor</c> variants.</summary>
+internal static partial class GuardedExecutorLog
+{
+    [LoggerMessage(
+        Level = LogLevel.Warning,
+        Message = "Guardrail modified the text for executor '{ExecutorId}', but {MessageType} is neither string nor ChatMessage, so the change could NOT be applied and the original value was passed through. Supply an ITextExtractor that can rebuild this type, or use string/ChatMessage.")]
+    private static partial void LogModificationDropped(ILogger logger, string executorId, string messageType);
+
+    public static void ModificationDropped(ILogger? logger, string executorId, string messageType)
+    {
+        if (logger is not null)
+            LogModificationDropped(logger, executorId, messageType);
     }
 }
 

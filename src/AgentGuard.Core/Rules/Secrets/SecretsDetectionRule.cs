@@ -9,16 +9,40 @@ namespace AgentGuard.Core.Rules.Secrets;
 [Flags]
 public enum SecretCategory
 {
+    /// <summary>No category.</summary>
     None = 0,
+
+    /// <summary>Generic API keys, access tokens, bearer tokens, Slack tokens.</summary>
     ApiKey = 1,
+
+    /// <summary>AWS access key IDs and secret access keys.</summary>
     AwsCredential = 2,
+
+    /// <summary>Database connection strings carrying a password.</summary>
     ConnectionString = 4,
+
+    /// <summary>PEM-encoded private keys.</summary>
     PrivateKey = 8,
+
+    /// <summary>JSON Web Tokens.</summary>
     JwtToken = 16,
+
+    /// <summary>GitHub personal access and app tokens.</summary>
     GitHubToken = 32,
+
+    /// <summary>Azure storage account and subscription keys.</summary>
     AzureKey = 64,
+
+    /// <summary>
+    /// Any sufficiently random-looking token. Off by default: it is the highest-recall and
+    /// highest-false-positive category, and the most expensive to evaluate.
+    /// </summary>
     GenericHighEntropy = 128,
+
+    /// <summary>Everything except <see cref="GenericHighEntropy"/>.</summary>
     Default = ApiKey | AwsCredential | ConnectionString | PrivateKey | JwtToken | GitHubToken | AzureKey,
+
+    /// <summary>Every category.</summary>
     All = Default | GenericHighEntropy
 }
 
@@ -66,19 +90,42 @@ public sealed class SecretsDetectionOptions
 public sealed class SecretsDetectionRule : IGuardrailRule
 {
     private readonly SecretsDetectionOptions _options;
-    private readonly List<(string Label, Regex Pattern)> _patterns;
+    private readonly List<(string Label, Regex Pattern, Regex? RequiredContext)> _patterns;
+    private readonly Regex? _highEntropyPattern;
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(200);
 
+    /// <summary>Initializes a new instance of the <see cref="SecretsDetectionRule"/> class.</summary>
+    /// <param name="options">Categories, action and custom patterns. Defaults when null.</param>
+    /// <exception cref="ArgumentException"><c>MinHighEntropyLength</c> is below 8.</exception>
     public SecretsDetectionRule(SecretsDetectionOptions? options = null)
     {
         _options = options ?? new();
+
+        if (_options.MinHighEntropyLength < 8)
+            throw new ArgumentException("MinHighEntropyLength must be at least 8.", nameof(options));
+
         _patterns = BuildPatterns();
+
+        // compiled once here rather than per evaluation; RegexOptions.Compiled emits IL, so building
+        // this inside ContainsHighEntropyString cost roughly ten times the rest of the rule.
+        _highEntropyPattern = _options.Categories.HasFlag(SecretCategory.GenericHighEntropy)
+            ? new Regex(@"[A-Za-z0-9_\-/+=]{" + _options.MinHighEntropyLength + @",}", RegexOptions.Compiled, RegexTimeout)
+            : null;
+
+        // compiled patterns generate IL on first use; pay it here, not on the first request
+        RegexPatterns.Warm(_patterns.Select(p => p.Pattern));
+        if (_highEntropyPattern is not null)
+            RegexPatterns.Warm([_highEntropyPattern]);
     }
 
+    /// <inheritdoc />
     public string Name => "secrets-detection";
+    /// <inheritdoc />
     public GuardrailPhase Phase => GuardrailPhase.Both;
+    /// <inheritdoc />
     public int Order => 22;
 
+    /// <inheritdoc />
     public ValueTask<GuardrailResult> EvaluateAsync(GuardrailContext context, CancellationToken cancellationToken = default)
     {
         var text = context.Text;
@@ -87,25 +134,25 @@ public sealed class SecretsDetectionRule : IGuardrailRule
         var detected = new List<string>();
         var modified = text;
 
-        foreach (var (label, pattern) in _patterns)
+        foreach (var (label, pattern, requiredContext) in _patterns)
         {
-            if (pattern.IsMatch(modified))
+            if (requiredContext is not null && !requiredContext.IsMatch(modified))
+                continue;
+
+            if (pattern.IsMatchOrFalse(modified))
             {
                 detected.Add(label);
                 if (_options.Action == SecretAction.Redact)
                 {
-                    modified = pattern.Replace(modified, _options.Replacement);
+                    modified = pattern.ReplaceOrOriginal(modified, _options.Replacement);
                 }
             }
         }
 
         // Check for high-entropy strings if enabled
-        if (_options.Categories.HasFlag(SecretCategory.GenericHighEntropy))
+        if (_highEntropyPattern is not null && ContainsHighEntropyString(_highEntropyPattern, modified))
         {
-            if (ContainsHighEntropyString(modified, _options.MinHighEntropyLength))
-            {
-                detected.Add("high-entropy-string");
-            }
+            detected.Add("high-entropy-string");
         }
 
         if (detected.Count == 0)
@@ -126,16 +173,24 @@ public sealed class SecretsDetectionRule : IGuardrailRule
         });
     }
 
-    private List<(string, Regex)> BuildPatterns()
+    private List<(string Label, Regex Pattern, Regex? RequiredContext)> BuildPatterns()
     {
-        var p = new List<(string, Regex)>();
+        var p = new PatternList();
         var c = _options.Categories;
 
         // AWS access key ID (AKIA...) and secret access key
         if (c.HasFlag(SecretCategory.AwsCredential))
         {
-            p.Add(("aws-access-key", new(@"(?<![A-Za-z0-9/+=])AKIA[0-9A-Z]{16}(?![A-Za-z0-9/+=])", RegexOptions.Compiled, RegexTimeout)));
-            p.Add(("aws-secret-key", new(@"(?<![A-Za-z0-9/+=])[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])(?=.*(?:aws|secret|key))", RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout)));
+            // the leading lookbehind deliberately omits '=': it is base64 padding, so it only ever
+            // trails a value - excluding it here rejected the commonest form, KEY=<value>.
+            p.Add(("aws-access-key", new(@"(?<![A-Za-z0-9/+])AKIA[0-9A-Z]{16}(?![A-Za-z0-9/+=])", RegexOptions.Compiled, RegexTimeout)));
+            // A bare 40-character base64 run is far too common to flag on its own, so it is gated
+            // on AWS context appearing anywhere in the text. The previous form used a trailing
+            // lookahead, which required the keyword to come *after* the value - the opposite of how
+            // "aws_secret_access_key = <value>" is actually written, so real keys went undetected.
+            p.Add(("aws-secret-key",
+                new(@"(?<![A-Za-z0-9/+])[A-Za-z0-9/+]{40}(?![A-Za-z0-9/+=])", RegexOptions.Compiled, RegexTimeout),
+                new(@"aws|secret[_\-]?access|secret[_\-]?key", RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout)));
         }
 
         // GitHub tokens (ghp_, gho_, ghu_, ghs_, ghr_)
@@ -147,7 +202,14 @@ public sealed class SecretsDetectionRule : IGuardrailRule
         // Azure subscription keys and storage account keys
         if (c.HasFlag(SecretCategory.AzureKey))
         {
-            p.Add(("azure-key", new(@"(?<![A-Za-z0-9/+=])[A-Za-z0-9/+=]{44}==(?![A-Za-z0-9/+=])", RegexOptions.Compiled, RegexTimeout)));
+            // An Azure storage account key is 88 base64 characters ending in "==" (64 decoded
+            // bytes). The previous {44}== form could only ever match a 46-character run, which no
+            // real key is, so it never fired.
+            p.Add(("azure-storage-key", new(@"(?<![A-Za-z0-9/+])[A-Za-z0-9/+]{86}==(?![A-Za-z0-9/+=])", RegexOptions.Compiled, RegexTimeout)));
+            // Cognitive Services / APIM subscription keys are 32 lowercase hex characters.
+            p.Add(("azure-subscription-key",
+                new(@"(?<![A-Za-z0-9])[a-f0-9]{32}(?![A-Za-z0-9])", RegexOptions.Compiled, RegexTimeout),
+                new(@"ocp-apim-subscription-key|azure|cognitiveservices|subscription[_\-]?key", RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout)));
         }
 
         // JWT tokens (eyJ...)
@@ -192,10 +254,12 @@ public sealed class SecretsDetectionRule : IGuardrailRule
     /// Checks for high-entropy strings that might be secrets (e.g. random tokens not matching specific patterns).
     /// Uses Shannon entropy calculation on contiguous alphanumeric sequences.
     /// </summary>
-    internal static bool ContainsHighEntropyString(string text, int minLength)
+    internal static bool ContainsHighEntropyString(string text, int minLength) =>
+        ContainsHighEntropyString(
+            new Regex(@"[A-Za-z0-9_\-/+=]{" + minLength + @",}", RegexOptions.None, RegexTimeout), text);
+
+    private static bool ContainsHighEntropyString(Regex tokenPattern, string text)
     {
-        // Find contiguous sequences of alphanumeric + common secret chars
-        var tokenPattern = new Regex(@"[A-Za-z0-9_\-/+=]{" + minLength + @",}", RegexOptions.Compiled, RegexTimeout);
         foreach (Match match in tokenPattern.Matches(text))
         {
             var token = match.Value;
@@ -204,6 +268,12 @@ public sealed class SecretsDetectionRule : IGuardrailRule
             if (entropy > 4.5) return true;
         }
         return false;
+    }
+
+    /// <summary>List of detection patterns where most entries need no context gate.</summary>
+    private sealed class PatternList : List<(string Label, Regex Pattern, Regex? RequiredContext)>
+    {
+        public void Add((string Label, Regex Pattern) entry) => Add((entry.Label, entry.Pattern, null));
     }
 
     internal static double CalculateShannonEntropy(string s)

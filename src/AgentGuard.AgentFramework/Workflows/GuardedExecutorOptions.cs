@@ -1,3 +1,4 @@
+using AgentGuard.Core.Ledger;
 using Microsoft.Extensions.Logging;
 
 namespace AgentGuard.AgentFramework.Workflows;
@@ -17,4 +18,10 @@ public sealed class GuardedExecutorOptions
     /// Logger for the guardrail pipeline. If null, a null logger is used.
     /// </summary>
     public ILogger? Logger { get; set; }
+
+    /// <summary>
+    /// Optional decision ledger. The executor builds its own <see cref="Core.Guardrails.GuardrailPipeline"/>,
+    /// so a ledger registered with <c>AddAgentGuard</c> only records here if it is supplied.
+    /// </summary>
+    public IGuardrailLedger? Ledger { get; set; }
 }

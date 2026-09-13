@@ -29,12 +29,9 @@ CLAUDE.md
 ## Secrets
 .env
 
-## ONNX models (downloaded via eng/download-onnx-model.sh)
+## ONNX models - fetched from the Kyoto repo, never committed here (see eng/MODELS.md)
 /models/
-
-## Bundled models (committed to repo)
-!eng/models/
-eng/models/deberta-v3-prompt-injection/model.onnx
+eng/models/
 
 ## OS
 .DS_Store
@@ -43,9 +40,4 @@ Thumbs.db
 .benchmark-cache/test.parquet
 GEMINI.md
 
-# defender-sweep downloaded dataset cache
-eng/defender-sweep/.cache/
 eng/classifier-benchmark/.cache/
-eng/models/piguard/
-eng/models/opir-multilang/
-eng/models/gliner/

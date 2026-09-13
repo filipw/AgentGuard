@@ -15,7 +15,7 @@ namespace AgentGuard.Onnx;
 /// model. Best used either as a standalone guard (default threshold 0.9) or layered after Defender.
 /// </para>
 /// <para>
-/// The model must be downloaded separately - see <c>eng/download-piguard-model.sh</c>. The official
+/// The model must be downloaded separately - see <c>eng/MODELS.md</c>. The official
 /// repo ships only PyTorch weights, so AgentGuard distributes an ONNX export.
 /// </para>
 /// </summary>

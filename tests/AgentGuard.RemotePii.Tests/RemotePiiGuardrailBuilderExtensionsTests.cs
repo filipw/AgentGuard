@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Builders;
+using AgentGuard.Core.Guardrails;
 using AgentGuard.RemotePii;
 using TasmanianDevil;
 using TasmanianDevil.Remote;
@@ -167,5 +168,39 @@ public class RemotePiiGuardrailBuilderExtensionsTests
             {
                 Content = new StringContent(responseJson, Encoding.UTF8, "application/json"),
             });
+    }
+
+    // AG-29: the recognizer wraps the detection client, which owns an HttpClient. On the engine
+    // version this originally shipped against neither was IDisposable, so the handover was inert;
+    // 0.3.0 made them disposable and it now genuinely releases them.
+
+    [Fact]
+    public void ShouldDisposeTheDetectionClient_WhenThePolicyIsDisposed()
+    {
+        var client = new TrackingDetectionClient();
+        var policy = (GuardrailPolicy)new GuardrailPolicyBuilder("p")
+            .RedactPiiWithRemote(client, new RemotePiiOptions
+            {
+                Endpoint = "https://detector.example.com/detect",
+                SupportedEntities = [PiiEntities.Person],
+            })
+            .Build();
+
+        client.Disposed.Should().BeFalse();
+
+        policy.Dispose();
+
+        client.Disposed.Should().BeTrue();
+    }
+
+    private sealed class TrackingDetectionClient : IPiiDetectionClient, IDisposable
+    {
+        public bool Disposed { get; private set; }
+
+        public void Dispose() => Disposed = true;
+
+        public ValueTask<IReadOnlyList<RemotePiiEntity>> DetectAsync(
+            string text, string language, IReadOnlyList<string> entities, CancellationToken cancellationToken = default)
+            => ValueTask.FromResult<IReadOnlyList<RemotePiiEntity>>([]);
     }
 }

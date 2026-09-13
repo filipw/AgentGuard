@@ -81,7 +81,13 @@ public static class RemotePiiGuardrailBuilderExtensions
         // the recognizer to it, so the registry never filters the remote recognizer out on a mismatch.
         var language = piiOptions?.Language ?? "en";
         var registry = PiiRecognizers.CreateRegistry(language, piiOptions?.Countries);
-        registry.AddRecognizer(new RemotePiiRecognizer(client, remoteOptions, supportedLanguage: language));
+
+        // the recognizer wraps the detection client, which for the built-in HTTP one owns an
+        // HttpClient. TasmanianDevil 0.2.1 does not make either disposable; 0.3.0 does, so the
+        // handover is written to pick up whichever of them implements IDisposable at runtime.
+        var recognizer = new RemotePiiRecognizer(client, remoteOptions, supportedLanguage: language);
+        registry.AddRecognizer(recognizer);
+        var owned = Disposables(recognizer, client);
 
         // defaultScoreThreshold 0 here; PiiRule applies PiiOptions.ScoreThreshold per evaluation.
         var engine = new AnalyzerEngine(
@@ -89,7 +95,7 @@ public static class RemotePiiGuardrailBuilderExtensions
             new LemmaContextAwareEnhancer(contextMatchingMode: piiOptions?.ContextMatchingMode ?? ContextMatchingMode.Substring),
             defaultScoreThreshold: 0);
 
-        builder.AddRule(new PiiRule(piiOptions, analyzer: engine));
+        builder.AddRule(new PiiRule(piiOptions, analyzer: engine, ownedResources: owned));
         return builder;
     }
 
@@ -113,5 +119,20 @@ public static class RemotePiiGuardrailBuilderExtensions
         return builder.RedactPiiWithRemote(
             new RemotePiiOptions { Endpoint = endpoint, SupportedEntities = entities },
             piiOptions);
+    }
+    /// <summary>
+    /// Collects whichever of the supplied objects implement <see cref="IDisposable"/>, so the
+    /// handover survives the engine package gaining (or losing) disposability between versions.
+    /// </summary>
+    private static List<IDisposable> Disposables(params object[] candidates)
+    {
+        var owned = new List<IDisposable>(candidates.Length);
+        foreach (var candidate in candidates)
+        {
+            if (candidate is IDisposable disposable && !owned.Contains(disposable))
+                owned.Add(disposable);
+        }
+
+        return owned;
     }
 }

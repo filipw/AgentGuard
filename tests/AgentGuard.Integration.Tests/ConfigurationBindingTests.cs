@@ -1,4 +1,8 @@
+using AgentGuard.Azure.Pii;
 using AgentGuard.Core.Abstractions;
+using AgentGuard.Core.Builders;
+using AgentGuard.Core.Configuration;
+using AgentGuard.RemotePii;
 using AgentGuard.Core.Guardrails;
 using AgentGuard.Core.Rules.ContentSafety;
 using AgentGuard.Hosting;
@@ -243,7 +247,73 @@ public class ConfigurationBindingTests
             Phase = GuardrailPhase.Input
         });
         piiResult.WasModified.Should().BeTrue();
-        piiResult.FinalText.Should().Contain("[REDACTED]");
+
+        // AG-26: with no Replacement configured, config-driven PII now uses the same default as
+        // the code-driven path (<ENTITY_TYPE> tags) instead of being forced to "[REDACTED]".
+        piiResult.FinalText.Should().Contain("<EMAIL_ADDRESS>");
+    }
+
+    [Fact]
+    public async Task ShouldHonourConfiguredPiiReplacement()
+    {
+        var config = BuildConfig(new Dictionary<string, string?>
+        {
+            ["DefaultPolicy:Rules:0:Type"] = "PiiRedaction",
+            ["DefaultPolicy:Rules:0:Replacement"] = "[REDACTED]"
+        });
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddAgentGuard(config);
+
+        var pipeline = services.BuildServiceProvider().GetRequiredService<GuardrailPipeline>();
+        var result = await pipeline.RunAsync(new GuardrailContext
+        {
+            Text = "Email me at test@example.com",
+            Phase = GuardrailPhase.Input
+        });
+
+        result.FinalText.Should().Contain("[REDACTED]");
+    }
+
+    [Theory]
+    [InlineData("Secrets")]
+    [InlineData("ToolCallGuardrail")]
+    [InlineData("ToolResultGuardrail")]
+    [InlineData("Retrieval")]
+    public void ShouldSupportRuleTypesThatWereDocumentedButUnmapped(string type)
+    {
+        var config = BuildConfig(new Dictionary<string, string?>
+        {
+            ["DefaultPolicy:Rules:0:Type"] = type
+        });
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddAgentGuard(config);
+
+        var act = () => services.BuildServiceProvider().GetRequiredService<GuardrailPipeline>();
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void ShouldThrowForLlmTopicBoundary_WhenAllowedTopicsIsEmpty()
+    {
+        var config = BuildConfig(new Dictionary<string, string?>
+        {
+            ["DefaultPolicy:Rules:0:Type"] = "LlmTopicBoundary"
+        });
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton(Mock.Of<IChatClient>());
+        services.AddAgentGuard(config);
+
+        var act = () => services.BuildServiceProvider().GetRequiredService<GuardrailPipeline>();
+
+        // an empty list means "allow nothing", which would block every request
+        act.Should().Throw<InvalidOperationException>().WithMessage("*AllowedTopics*");
     }
 
     [Fact]
@@ -341,6 +411,7 @@ public class ConfigurationBindingTests
 
         var services = new ServiceCollection();
         services.AddLogging();
+        services.AddSingleton<IGuardrailRuleFactory, RemotePiiRuleFactory>();
         services.AddAgentGuard(config);
 
         var provider = services.BuildServiceProvider();
@@ -359,6 +430,7 @@ public class ConfigurationBindingTests
 
         var services = new ServiceCollection();
         services.AddLogging();
+        services.AddSingleton<IGuardrailRuleFactory, RemotePiiRuleFactory>();
         services.AddAgentGuard(config);
 
         var provider = services.BuildServiceProvider();
@@ -377,6 +449,7 @@ public class ConfigurationBindingTests
 
         var services = new ServiceCollection();
         services.AddLogging();
+        services.AddSingleton<IGuardrailRuleFactory, RemotePiiRuleFactory>();
         services.AddAgentGuard(config);
 
         var provider = services.BuildServiceProvider();
@@ -399,6 +472,7 @@ public class ConfigurationBindingTests
 
         var services = new ServiceCollection();
         services.AddLogging();
+        services.AddSingleton<IGuardrailRuleFactory, AzurePiiRuleFactory>();
         services.AddAgentGuard(config);
 
         var provider = services.BuildServiceProvider();
@@ -419,6 +493,7 @@ public class ConfigurationBindingTests
 
         var services = new ServiceCollection();
         services.AddLogging();
+        services.AddSingleton<IGuardrailRuleFactory, AzurePiiRuleFactory>();
         services.AddAgentGuard(config);
 
         var provider = services.BuildServiceProvider();
@@ -438,6 +513,7 @@ public class ConfigurationBindingTests
 
         var services = new ServiceCollection();
         services.AddLogging();
+        services.AddSingleton<IGuardrailRuleFactory, AzurePiiRuleFactory>();
         services.AddAgentGuard(config);
 
         var provider = services.BuildServiceProvider();
@@ -457,6 +533,7 @@ public class ConfigurationBindingTests
 
         var services = new ServiceCollection();
         services.AddLogging();
+        services.AddSingleton<IGuardrailRuleFactory, AzurePiiRuleFactory>();
         services.AddAgentGuard(config);
 
         var provider = services.BuildServiceProvider();
@@ -480,5 +557,80 @@ public class ConfigurationBindingTests
         var provider = services.BuildServiceProvider();
         var act = () => provider.GetRequiredService<IAgentGuardFactory>();
         act.Should().Throw<InvalidOperationException>().Which.ToString().Should().Contain("PolicyDescription");
+    }
+
+    // AG-05: AgentGuard.Hosting no longer references the Azure or out-of-process PII packages;
+    // those rule types arrive through a registered IGuardrailRuleFactory instead.
+
+    [Theory]
+    [InlineData("RemotePii")]
+    [InlineData("AzurePii")]
+    public void ShouldThrow_WhenAnAdapterRuleTypeHasNoRegisteredFactory(string type)
+    {
+        var config = BuildConfig(new Dictionary<string, string?>
+        {
+            ["DefaultPolicy:Rules:0:Type"] = type,
+            ["DefaultPolicy:Rules:0:Endpoint"] = "https://example.com",
+            ["DefaultPolicy:Rules:0:Entities:0"] = "PERSON",
+            ["DefaultPolicy:Rules:0:SubscriptionKey"] = "k",
+        });
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddAgentGuard(config);
+
+        var act = () => services.BuildServiceProvider().GetRequiredService<IAgentGuardFactory>();
+
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*IGuardrailRuleFactory*");
+    }
+
+    [Fact]
+    public void ShouldMatchTheFactoryRuleTypeCaseInsensitively()
+    {
+        var config = BuildConfig(new Dictionary<string, string?>
+        {
+            ["DefaultPolicy:Rules:0:Type"] = "remotepii",
+            ["DefaultPolicy:Rules:0:Endpoint"] = "https://detector.example.com/detect",
+            ["DefaultPolicy:Rules:0:Entities:0"] = "PERSON",
+        });
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton<IGuardrailRuleFactory, RemotePiiRuleFactory>();
+        services.AddAgentGuard(config);
+
+        var policy = services.BuildServiceProvider()
+            .GetRequiredService<IAgentGuardFactory>().GetDefaultPolicy();
+
+        policy.Rules.Should().ContainSingle().Which.Name.Should().Be("pii");
+    }
+
+    [Fact]
+    public void ShouldSupportACustomRuleTypeFromAFactory()
+    {
+        var config = BuildConfig(new Dictionary<string, string?>
+        {
+            ["DefaultPolicy:Rules:0:Type"] = "MyCompanyRule",
+        });
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton<IGuardrailRuleFactory, CustomRuleFactory>();
+        services.AddAgentGuard(config);
+
+        var policy = services.BuildServiceProvider()
+            .GetRequiredService<IAgentGuardFactory>().GetDefaultPolicy();
+
+        policy.Rules.Should().ContainSingle().Which.Name.Should().Be("my-company-rule");
+    }
+
+    private sealed class CustomRuleFactory : IGuardrailRuleFactory
+    {
+        public string RuleType => "MyCompanyRule";
+
+        public void Configure(GuardrailPolicyBuilder builder, RuleConfiguration configuration) =>
+            builder.AddRule("my-company-rule", GuardrailPhase.Input,
+                (_, _) => ValueTask.FromResult(GuardrailResult.Passed()));
     }
 }

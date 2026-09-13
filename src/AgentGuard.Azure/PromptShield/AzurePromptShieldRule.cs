@@ -32,19 +32,31 @@ public sealed class AzurePromptShieldRule : IGuardrailRule
     private readonly AzurePromptShieldClient _client;
     private readonly AzurePromptShieldOptions _options;
 
+    /// <summary>Initializes a new instance of the <see cref="AzurePromptShieldRule"/> class.</summary>
+    /// <param name="client">The configured Azure client.</param>
+    /// <param name="options">Rule options. Defaults when null.</param>
     public AzurePromptShieldRule(AzurePromptShieldClient client, AzurePromptShieldOptions? options = null)
     {
         _client = client;
         _options = options ?? new();
     }
 
+    /// <inheritdoc />
     public string Name => "azure-prompt-shield";
+    /// <inheritdoc />
     public GuardrailPhase Phase => GuardrailPhase.Input;
+    /// <inheritdoc />
     public int Order => 14;
 
+    /// <inheritdoc />
     public async ValueTask<GuardrailResult> EvaluateAsync(
         GuardrailContext context, CancellationToken cancellationToken = default)
     {
+        // every other rule short-circuits here; without it an empty turn costs a billable call and
+        // usually comes back 400.
+        if (string.IsNullOrWhiteSpace(context.Text))
+            return GuardrailResult.Passed();
+
         IReadOnlyList<string>? documents = null;
         if (_options.AnalyzeDocuments &&
             context.Properties.TryGetValue("Documents", out var docs) &&

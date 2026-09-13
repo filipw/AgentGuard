@@ -23,11 +23,31 @@ public class PiiRuleTests
         rule.Phase.Should().Be(GuardrailPhase.Both);
     }
 
+    // AG-43: the phase is a guardrail concern, so it moved off the engine's PiiOptions (which
+    // drops RedactOutput in its next release) onto AgentGuard's own PiiRuleOptions.
     [Fact]
     public void ShouldBeInputOnly_WhenRedactOutputDisabled()
     {
-        var rule = new PiiRule(new PiiOptions { RedactOutput = false });
+        var rule = new PiiRule(ruleOptions: new PiiRuleOptions { RedactOutput = false });
         rule.Phase.Should().Be(GuardrailPhase.Input);
+    }
+
+    // AG-44: nothing on the guardrail side used to reach this, so two adjacent emails always
+    // collapsed into one tag. It is an engine concern, so it is read from PiiOptions.
+    [Fact]
+    public async Task ShouldAnonymizeAdjacentEntitiesSeparately_WhenMergingDisabled()
+    {
+        const string text = "write to alice@example.com bob@example.com";
+
+        var merged = await new PiiRule().EvaluateAsync(Context(text));
+        var separate = await new PiiRule(new PiiOptions { MergeEntitiesWithSpaces = false })
+            .EvaluateAsync(Context(text));
+
+        CountTags(merged.ModifiedText!).Should().Be(1);
+        CountTags(separate.ModifiedText!).Should().Be(2);
+
+        static int CountTags(string s) =>
+            s.Split("<EMAIL_ADDRESS>", StringSplitOptions.None).Length - 1;
     }
 
     [Fact]
@@ -101,5 +121,37 @@ public class PiiRuleTests
         var result = await rule.EvaluateAsync(Context("card 4012888888881881 here"));
 
         result.ModifiedText.Should().Be("card ************1881 here");
+    }
+
+    // AG-46: the vocabulary the engine ships changed in 0.3.0 - a Netherlands pack arrived and the
+    // two German identity-document entities merged, since they share one format.
+
+    [Fact]
+    public async Task ShouldDetectTheNetherlandsPack_WhenOptedIn()
+    {
+        var rule = new PiiRule(new PiiOptions { Countries = [PiiCountries.Nl] });
+
+        var result = await rule.EvaluateAsync(Context("mijn burgerservicenummer is 111222333"));
+
+        result.IsModified.Should().BeTrue();
+        ((IEnumerable<string>)result.Metadata!["entityTypes"]).Should().Contain(PiiEntities.NlBsn);
+    }
+
+    [Fact]
+    public async Task ShouldNotDetectTheNetherlandsPack_WhenNotOptedIn()
+    {
+        var rule = new PiiRule();
+
+        var result = await rule.EvaluateAsync(Context("mijn burgerservicenummer is 111222333"));
+
+        result.IsModified.Should().BeFalse("non-US packs are opt-in");
+    }
+
+    [Fact]
+    public void ShouldTreatTheAlwaysOnUsPackAsAHarmlessNoOp_WhenListedExplicitly()
+    {
+        var act = () => new PiiRule(new PiiOptions { Countries = [PiiCountries.Us] });
+
+        act.Should().NotThrow();
     }
 }

@@ -39,6 +39,11 @@ public sealed class LlmPiiDetectionRule : LlmGuardrailRule
     private readonly LlmPiiDetectionOptions _options;
     private readonly string _systemPrompt;
 
+    /// <summary>Initializes a new instance of the <see cref="LlmPiiDetectionRule"/> class.</summary>
+    /// <param name="chatClient">The client used to call the judge model.</param>
+    /// <param name="options">Action (block or redact) and prompt override.</param>
+    /// <param name="chatOptions">Optional options for the judge call.</param>
+    /// <param name="errorBehavior">What to do when the judge fails or returns an off-format verdict.</param>
     public LlmPiiDetectionRule(IChatClient chatClient, LlmPiiDetectionOptions? options = null, ChatOptions? chatOptions = null, ErrorBehavior errorBehavior = ErrorBehavior.FailOpen)
         : base(chatClient, chatOptions, errorBehavior)
     {
@@ -46,8 +51,11 @@ public sealed class LlmPiiDetectionRule : LlmGuardrailRule
         _systemPrompt = _options.SystemPrompt ?? GetDefaultPrompt(_options.Action);
     }
 
+    /// <inheritdoc />
     public override string Name => "llm-pii-detection";
+    /// <inheritdoc />
     public override GuardrailPhase Phase => GuardrailPhase.Both;
+    /// <inheritdoc />
     public override int Order => 25;
 
     internal static string GetDefaultPrompt(PiiAction action) => action switch
@@ -89,34 +97,47 @@ public sealed class LlmPiiDetectionRule : LlmGuardrailRule
         _ => throw new ArgumentOutOfRangeException(nameof(action))
     };
 
+    /// <inheritdoc />
     protected override IEnumerable<ChatMessage> BuildPrompt(GuardrailContext context) =>
     [
         new(ChatRole.System, _systemPrompt),
         new(ChatRole.User, context.Text)
     ];
 
+    /// <inheritdoc />
     protected override GuardrailResult ParseResponse(string responseText, GuardrailContext context)
     {
-        var trimmed = responseText.Trim();
-        var upper = trimmed.ToUpperInvariant();
-
-        if (upper.StartsWith("CLEAN", StringComparison.Ordinal))
-            return GuardrailResult.Passed();
-
-        if (_options.Action == PiiAction.Block && upper.Contains("PII", StringComparison.Ordinal))
-            return GuardrailResult.Blocked("LLM classifier detected personally identifiable information.", GuardrailSeverity.High);
-
-        if (_options.Action == PiiAction.Redact && upper.StartsWith("REDACTED:", StringComparison.Ordinal))
+        // Redact mode carries the rewritten message on the verdict line, so it is read from the raw
+        // response rather than reduced to a token.
+        if (_options.Action == PiiAction.Redact)
         {
-            var redacted = trimmed["REDACTED:".Length..].TrimStart();
-            if (!string.IsNullOrEmpty(redacted))
-                return GuardrailResult.Modified(redacted, "LLM classifier redacted personally identifiable information.");
+            var line = ExtractVerdictLine(responseText);
+
+            if (line.StartsWith("CLEAN", StringComparison.OrdinalIgnoreCase))
+                return GuardrailResult.Passed();
+
+            if (line.StartsWith(RedactedPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                var redacted = line[RedactedPrefix.Length..].TrimStart();
+                if (redacted.Length > 0)
+                    return GuardrailResult.Modified(redacted, "LLM classifier redacted personally identifiable information.");
+            }
+
+            // a rule configured to redact must never silently turn into a block because the word
+            // "REDACTED" appeared somewhere in an off-format reply.
+            return UnparseableVerdict(responseText);
         }
 
-        // If we can't parse the response cleanly, check for PII keyword as fallback
-        if (upper.Contains("PII", StringComparison.Ordinal) || upper.Contains("REDACTED", StringComparison.Ordinal))
-            return GuardrailResult.Blocked("LLM classifier detected personally identifiable information.", GuardrailSeverity.High);
+        var verdict = ClassifyVerdict(responseText, "PII", "CLEAN", out _);
 
-        return GuardrailResult.Passed();
+        return verdict switch
+        {
+            LlmVerdict.Negative => GuardrailResult.Passed(),
+            LlmVerdict.Unparseable => UnparseableVerdict(responseText),
+            _ => GuardrailResult.Blocked(
+                "LLM classifier detected personally identifiable information.", GuardrailSeverity.High)
+        };
     }
+
+    private const string RedactedPrefix = "REDACTED:";
 }

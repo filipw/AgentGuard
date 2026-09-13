@@ -51,6 +51,9 @@ public sealed class AzureProtectedMaterialRule : IGuardrailRule
     private readonly AzureProtectedMaterialClient _client;
     private readonly AzureProtectedMaterialOptions _options;
 
+    /// <summary>Initializes a new instance of the <see cref="AzureProtectedMaterialRule"/> class.</summary>
+    /// <param name="client">The configured Azure client.</param>
+    /// <param name="options">Rule options. Defaults when null.</param>
     public AzureProtectedMaterialRule(
         AzureProtectedMaterialClient client,
         AzureProtectedMaterialOptions? options = null)
@@ -59,13 +62,22 @@ public sealed class AzureProtectedMaterialRule : IGuardrailRule
         _options = options ?? new();
     }
 
+    /// <inheritdoc />
     public string Name => "azure-protected-material";
+    /// <inheritdoc />
     public GuardrailPhase Phase => GuardrailPhase.Output;
+    /// <inheritdoc />
     public int Order => 76;
 
+    /// <inheritdoc />
     public async ValueTask<GuardrailResult> EvaluateAsync(
         GuardrailContext context, CancellationToken cancellationToken = default)
     {
+        // every other rule short-circuits here; without it an empty turn costs a billable call and
+        // usually comes back 400.
+        if (string.IsNullOrWhiteSpace(context.Text))
+            return GuardrailResult.Passed();
+
         // Always check text
         var textResult = await _client.AnalyzeTextAsync(context.Text, cancellationToken);
         if (textResult.IsError)

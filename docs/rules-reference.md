@@ -110,7 +110,7 @@ Order 12, Input phase. Uses a fine-tuned DeBERTa v3 ONNX model (`protectai/deber
 
 **Setup:** Download the model from HuggingFace using the included script:
 ```bash
-./eng/download-onnx-model.sh
+the Kyoto bootstrap (see `eng/MODELS.md`)
 # Downloads model.onnx (~370MB) + spm.model (~2MB) to ./models/deberta-v3-prompt-injection/
 ```
 
@@ -136,11 +136,11 @@ builder.BlockPromptInjection()              // tier 1: regex (order 10)
 
 `.BlockPromptInjectionWithPIGuard(options)` or `.BlockPromptInjectionWithPIGuard(modelPath, tokenizerPath, threshold)`
 
-Order 12, Input phase. Uses the [PIGuard](https://huggingface.co/leolee99/PIGuard) DeBERTa v3 model (ACL 2025, MIT), trained with the "Mitigating Over-defense for Free" strategy. In AgentGuard's own measurements it keeps benign false positives low (over-defense comparable to the bundled Defender) while detecting **indirect / code-style injection far better** than Defender (BIPIA_code recall 96% vs 34%). Fully offline. A heavier model than Defender, so best used as a standalone guard or layered after it. See [`eng/piguard-eval/RESULTS.md`](../eng/piguard-eval/RESULTS.md) for the full benchmark.
+Order 12, Input phase. Uses the [PIGuard](https://huggingface.co/leolee99/PIGuard) DeBERTa v3 model (ACL 2025, MIT), trained with the "Mitigating Over-defense for Free" strategy. In AgentGuard's own measurements it keeps benign false positives low (over-defense comparable to the bundled Defender) while detecting **indirect / code-style injection far better** than Defender (BIPIA_code recall 96% vs 34%). Fully offline. A heavier model than Defender, so best used as a standalone guard or layered after it. See the PIGuard evaluation in the [Kyoto](https://github.com/filipw/kyoto) repo for the full benchmark.
 
 **Setup:** Download the model from HuggingFace using the included script:
 ```bash
-./eng/download-piguard-model.sh
+the Kyoto bootstrap (see `eng/MODELS.md`)
 # Downloads model.onnx (fp16 ~369MB) + spm.model to ./models/piguard/
 ```
 
@@ -234,7 +234,9 @@ anonymization operators. Inspired by the architecture of Microsoft Presidio (see
 false positives, so non-US packs are opt-in by ISO 3166-1 alpha-2 code:
 
 - `uk`: `UK_NINO`, `UK_NHS` (mod-11), `UK_POSTCODE`, `UK_PASSPORT`, `UK_DRIVING_LICENCE`, `UK_VEHICLE_REGISTRATION`
-- `de`: `DE_ID_CARD` (checksum), `DE_TAX_ID` (checksum), `DE_PASSPORT` (checksum), `DE_PLZ`,
+- `de`: `DE_ID_DOCUMENT` (ICAO checksum; the Personalausweis and Reisepass share one format and
+  cannot be told apart by the number alone, so they are a single entity type - it replaces the
+  former `DE_ID_CARD` and `DE_PASSPORT`), `DE_TAX_ID` (checksum), `DE_PLZ`,
   `DE_SOCIAL_SECURITY` (checksum), `DE_VAT_ID` (checksum), `DE_FUEHRERSCHEIN`, `DE_KFZ`,
   `DE_TAX_NUMBER`, `DE_HANDELSREGISTER`
 - `in`: `IN_AADHAAR` (Verhoeff), `IN_PAN`, `IN_GSTIN` (structure), `IN_PASSPORT`, `IN_VOTER`, `IN_VEHICLE_REGISTRATION`
@@ -347,7 +349,7 @@ var detections = batchAnalyzer.Analyze(records);                  // IReadOnlyDi
 var anonymized = batchAnonymizer.Anonymize(records, detections);  // keys preserved
 ```
 
-See [`samples/PiiShowcase`](../samples/PiiShowcase) for a runnable end-to-end tour.
+See [`samples/AgentFrameworkPii`](../samples/AgentFrameworkPii) for a runnable tour of PII in an agent, and [`samples/RemotePii`](../samples/RemotePii) for out-of-process detection.
 
 ### Named-entity recognition (ONNX, offline, multilingual)
 
@@ -364,10 +366,10 @@ spans flow through the same engine, so the redaction output mixes `<PERSON>`, `<
 Uses a [GLiNER](https://huggingface.co/urchade/gliner_multi_pii-v1) span model (mDeBERTa-v3-base
 backbone, Apache-2.0) - **multilingual** (the reason to add it; regex and spaCy-style NER are
 English-leaning) and zero-shot. The model is **not bundled**; download it separately via
-[`eng/download-gliner-model.sh`](../eng/download-gliner-model.sh). Not part of `UseDefaults()`.
+[`eng/MODELS.md`](../eng/MODELS.md). Not part of `UseDefaults()`.
 
 `GlinerNerOptions.NerThreshold` (default **0.5**, the micro-F1 optimum - see
-[`eng/gliner-eval/RESULTS.md`](../eng/gliner-eval/RESULTS.md)) is the binding gate for NER spans; the
+the GLiNER evaluation in the [Kyoto](https://github.com/filipw/kyoto) repo) is the binding gate for NER spans; the
 analyzer's `PiiOptions.ScoreThreshold` still applies on top. NER coverage targets whitespace-segmented
 scripts (Latin / Cyrillic / Arabic / Devanagari); CJK is out of practical scope for the word splitter.
 
@@ -446,11 +448,11 @@ Blocklist matches are checked first and take precedence over category analysis. 
 
 Order 50, Input phase. Requires `AgentGuard.Onnx`. Uses the [Opir-multilang](https://huggingface.co/knowledgator/opir-multitask-multilang-v1.0) model (GLiClass uni-encoder over mDeBERTa-v3-base, Apache-2.0) to score text against a frozen harm taxonomy - **toxicity, hate speech, violence, sexual content, self-harm, harassment** - in any language. Blocks when the strongest per-label probability reaches the threshold. Fully offline.
 
-This is an **offline, multilingual** content-safety guard - the gap the other classifiers leave open. The bundled Defender is English-only (~0% recall off-English), and cloud content-safety APIs are per-call and PII-bound. Opir-multilang gives genuine non-English coverage locally (≈40-76% recall at 16-36% FPR across de/es/ru/ar/zh/hi on `textdetox/multilingual_toxicity_dataset`). Position it as *complementing* (not replacing) Azure Content Safety, the way Defender is positioned for English injection. See [`eng/opir-eval/RESULTS.md`](../eng/opir-eval/RESULTS.md) for the full benchmark.
+This is an **offline, multilingual** content-safety guard - the gap the other classifiers leave open. The bundled Defender is English-only (~0% recall off-English), and cloud content-safety APIs are per-call and PII-bound. Opir-multilang gives genuine non-English coverage locally (≈40-76% recall at 16-36% FPR across de/es/ru/ar/zh/hi on `textdetox/multilingual_toxicity_dataset`). Position it as *complementing* (not replacing) Azure Content Safety, the way Defender is positioned for English injection. See the Opir evaluation in the [Kyoto](https://github.com/filipw/kyoto) repo for the full benchmark.
 
 **Setup:** Download the model from HuggingFace using the included script:
 ```bash
-./eng/download-opir-model.sh
+the Kyoto bootstrap (see `eng/MODELS.md`)
 # Downloads model.onnx (fp16 ~561MB) + spm.model + prefix.json to ./models/opir-multilang/
 ```
 

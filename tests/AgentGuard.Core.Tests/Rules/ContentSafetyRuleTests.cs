@@ -24,12 +24,39 @@ public class ContentSafetyRuleTests
         return mock;
     }
 
+    // AG-10: a rule with no classifier cannot reach a verdict. It still lets content through under
+    // the default FailOpen, but it now reports an error rather than looking like a clean check.
     [Fact]
-    public async Task ShouldPass_WhenNoClassifierConfigured()
+    public async Task ShouldReportError_WhenNoClassifierConfigured()
     {
         var rule = new ContentSafetyRule();
         var result = await rule.EvaluateAsync(Ctx("anything"));
-        result.IsBlocked.Should().BeFalse();
+        result.IsBlocked.Should().BeFalse("the default OnError is FailOpen");
+        result.IsError.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ShouldBlock_WhenNoClassifierConfigured_AndFailClosed()
+    {
+        var rule = new ContentSafetyRule(new ContentSafetyOptions { OnError = ErrorBehavior.FailClosed });
+        var result = await rule.EvaluateAsync(Ctx("anything"));
+        result.IsBlocked.Should().BeTrue();
+        result.IsError.Should().BeTrue();
+    }
+
+    // AG-11: a classifier that could not analyze must not be mistaken for one that found nothing.
+    [Fact]
+    public async Task ShouldReportError_WhenClassifierReportsFailure()
+    {
+        var mock = new Mock<IContentSafetyClassifier>();
+        mock.Setup(c => c.AnalyzeWithOptionsAsync(It.IsAny<string>(), It.IsAny<ContentSafetyOptions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ContentSafetyResult { IsError = true });
+
+        var rule = new ContentSafetyRule(new ContentSafetyOptions { OnError = ErrorBehavior.FailClosed }, mock.Object);
+        var result = await rule.EvaluateAsync(Ctx("anything"));
+
+        result.IsError.Should().BeTrue();
+        result.IsBlocked.Should().BeTrue();
     }
 
     [Fact]

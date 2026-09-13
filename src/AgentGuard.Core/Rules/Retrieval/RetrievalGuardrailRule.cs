@@ -116,23 +116,38 @@ public sealed class RetrievalGuardrailRule : IGuardrailRule
     private readonly RetrievalGuardrailOptions _options;
     private readonly List<Regex> _injectionPatterns;
 
-    // Well-known property keys for GuardrailContext.Properties
+    /// <summary>Property-bag key the caller places the retrieved chunks under.</summary>
     public const string RetrievalChunksKey = "RetrievalChunks";
+
+    /// <summary>Property-bag key the rule writes the surviving chunks back to.</summary>
     public const string ApprovedChunksKey = "ApprovedChunks";
+
+    /// <summary>Property-bag key carrying the full per-chunk evaluation.</summary>
     public const string RetrievalResultKey = "RetrievalGuardrailResult";
 
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(200);
 
+    /// <summary>Initializes a new instance of the <see cref="RetrievalGuardrailRule"/> class.</summary>
+    /// <param name="options">Which filters to run, the action to take and any limits. Defaults when null.</param>
     public RetrievalGuardrailRule(RetrievalGuardrailOptions? options = null)
     {
         _options = options ?? new();
         _injectionPatterns = BuildInjectionPatterns();
+
+        // compiled patterns generate IL on first use; pay it here, not on the first request
+        RegexPatterns.Warm(_injectionPatterns);
+        RegexPatterns.Warm(SecretPatterns);
+        RegexPatterns.Warm(PiiPatterns);
     }
 
+    /// <inheritdoc />
     public string Name => "retrieval-guardrail";
+    /// <inheritdoc />
     public GuardrailPhase Phase => GuardrailPhase.Input;
+    /// <inheritdoc />
     public int Order => 8;
 
+    /// <inheritdoc />
     public ValueTask<GuardrailResult> EvaluateAsync(GuardrailContext context, CancellationToken cancellationToken = default)
     {
         // Retrieve chunks from the context properties bag
@@ -217,45 +232,54 @@ public sealed class RetrievalGuardrailRule : IGuardrailRule
         // Evaluate remaining chunks for content violations
         foreach (var chunk in workingChunks)
         {
-            var (isViolation, reason, filter) = EvaluateChunkContent(chunk.Content);
+            var triggered = EvaluateChunkContent(chunk.Content);
 
-            if (isViolation)
-            {
-                if (_options.Action == RetrievalFilterAction.Remove)
-                {
-                    evaluations.Add(new ChunkEvaluationResult
-                    {
-                        Chunk = chunk,
-                        IsFiltered = true,
-                        Reason = reason,
-                        TriggeredFilter = filter
-                    });
-                }
-                else // Sanitize
-                {
-                    var sanitized = SanitizeContent(chunk.Content, filter!);
-                    evaluations.Add(new ChunkEvaluationResult
-                    {
-                        Chunk = chunk,
-                        IsFiltered = false,
-                        SanitizedContent = sanitized,
-                        Reason = reason,
-                        TriggeredFilter = filter
-                    });
-                    approved.Add(new RetrievedChunk
-                    {
-                        Content = sanitized,
-                        Source = chunk.Source,
-                        Score = chunk.Score,
-                        Metadata = chunk.Metadata
-                    });
-                }
-            }
-            else
+            if (triggered.Count == 0)
             {
                 evaluations.Add(new ChunkEvaluationResult { Chunk = chunk });
                 approved.Add(chunk);
+                continue;
             }
+
+            var reason = string.Join("; ", triggered.Select(t => t.Reason));
+            var filters = string.Join(", ", triggered.Select(t => t.Filter));
+
+            if (_options.Action == RetrievalFilterAction.Remove)
+            {
+                evaluations.Add(new ChunkEvaluationResult
+                {
+                    Chunk = chunk,
+                    IsFiltered = true,
+                    Reason = reason,
+                    TriggeredFilter = filters
+                });
+                continue;
+            }
+
+            // Sanitize: every filter that fired is applied. Dispatching on only the first one left
+            // a chunk that tripped both the injection and the secret filter approved with the
+            // secret still in it.
+            var sanitized = chunk.Content;
+            foreach (var (_, filter) in triggered)
+            {
+                sanitized = SanitizeContent(sanitized, filter);
+            }
+
+            evaluations.Add(new ChunkEvaluationResult
+            {
+                Chunk = chunk,
+                IsFiltered = false,
+                SanitizedContent = sanitized,
+                Reason = reason,
+                TriggeredFilter = filters
+            });
+            approved.Add(new RetrievedChunk
+            {
+                Content = sanitized,
+                Source = chunk.Source,
+                Score = chunk.Score,
+                Metadata = chunk.Metadata
+            });
         }
 
         return new RetrievalGuardrailResult
@@ -265,40 +289,40 @@ public sealed class RetrievalGuardrailRule : IGuardrailRule
         };
     }
 
-    private (bool IsViolation, string? Reason, string? Filter) EvaluateChunkContent(string content)
+    /// <summary>
+    /// Returns every filter that the chunk trips, not just the first. Sanitization dispatches on
+    /// this list, so a chunk carrying more than one kind of problem has all of them removed.
+    /// </summary>
+    private List<(string Reason, string Filter)> EvaluateChunkContent(string content)
     {
+        var triggered = new List<(string Reason, string Filter)>();
+
         // Check for prompt injection patterns
-        if (_options.DetectPromptInjection)
+        if (_options.DetectPromptInjection && _injectionPatterns.Exists(p => p.IsMatchOrFalse(content)))
         {
-            foreach (var pattern in _injectionPatterns)
-            {
-                if (pattern.IsMatch(content))
-                    return (true, "Retrieved chunk contains prompt injection pattern", "prompt-injection");
-            }
+            triggered.Add(("Retrieved chunk contains prompt injection pattern", "prompt-injection"));
         }
 
         // Check for secrets
-        if (_options.DetectSecrets)
+        if (_options.DetectSecrets && ContainsSecretPatterns(content))
         {
-            if (ContainsSecretPatterns(content))
-                return (true, "Retrieved chunk contains secret/credential", "secrets");
+            triggered.Add(("Retrieved chunk contains secret/credential", "secrets"));
         }
 
         // Check for PII
-        if (_options.DetectPII)
+        if (_options.DetectPII && ContainsPiiPatterns(content))
         {
-            if (ContainsPiiPatterns(content))
-                return (true, "Retrieved chunk contains PII", "pii");
+            triggered.Add(("Retrieved chunk contains PII", "pii"));
         }
 
         // Custom filters
         foreach (var (name, predicate) in _options.CustomFilters)
         {
             if (predicate(content))
-                return (true, $"Retrieved chunk flagged by custom filter: {name}", name);
+                triggered.Add(($"Retrieved chunk flagged by custom filter: {name}", name));
         }
 
-        return (false, null, null);
+        return triggered;
     }
 
     private string SanitizeContent(string content, string filter)
@@ -317,7 +341,7 @@ public sealed class RetrievalGuardrailRule : IGuardrailRule
         var result = content;
         foreach (var pattern in _injectionPatterns)
         {
-            result = pattern.Replace(result, _options.SanitizationReplacement);
+            result = pattern.ReplaceOrOriginal(result, _options.SanitizationReplacement);
         }
         return result;
     }
@@ -335,7 +359,7 @@ public sealed class RetrievalGuardrailRule : IGuardrailRule
     {
         foreach (var pattern in SecretPatterns)
         {
-            if (pattern.IsMatch(text)) return true;
+            if (pattern.IsMatchOrFalse(text)) return true;
         }
         return false;
     }
@@ -345,7 +369,7 @@ public sealed class RetrievalGuardrailRule : IGuardrailRule
         var result = content;
         foreach (var pattern in SecretPatterns)
         {
-            result = pattern.Replace(result, _options.SanitizationReplacement);
+            result = pattern.ReplaceOrOriginal(result, _options.SanitizationReplacement);
         }
         return result;
     }
@@ -361,7 +385,7 @@ public sealed class RetrievalGuardrailRule : IGuardrailRule
     {
         foreach (var pattern in PiiPatterns)
         {
-            if (pattern.IsMatch(text)) return true;
+            if (pattern.IsMatchOrFalse(text)) return true;
         }
         return false;
     }
@@ -371,7 +395,7 @@ public sealed class RetrievalGuardrailRule : IGuardrailRule
         var result = content;
         foreach (var pattern in PiiPatterns)
         {
-            result = pattern.Replace(result, _options.SanitizationReplacement);
+            result = pattern.ReplaceOrOriginal(result, _options.SanitizationReplacement);
         }
         return result;
     }

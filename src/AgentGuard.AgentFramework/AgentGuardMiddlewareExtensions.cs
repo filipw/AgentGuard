@@ -5,6 +5,7 @@ using AgentGuard.AgentFramework.Workflows;
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Builders;
 using AgentGuard.Core.Guardrails;
+using AgentGuard.Core.Ledger;
 using AgentGuard.Core.Rules.ToolCall;
 using AgentGuard.Core.Rules.ToolResult;
 using AgentGuard.Core.Streaming;
@@ -12,6 +13,7 @@ using AgentGuard.Core.Telemetry;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace AgentGuard.AgentFramework;
@@ -24,25 +26,52 @@ public static class AgentGuardMiddlewareExtensions
     /// <summary>
     /// Adds AgentGuard guardrails to the MAF agent pipeline using a fluent builder configuration.
     /// </summary>
+    /// <summary>
+    /// Adds AgentGuard guardrails to the MAF agent pipeline using a fluent builder configuration.
+    /// </summary>
+    /// <param name="builder">The agent builder.</param>
+    /// <param name="configure">Configures the policy.</param>
+    /// <param name="logger">Optional logger for the pipeline.</param>
+    /// <param name="ledger">
+    /// Optional decision ledger. When omitted, one registered in DI is resolved automatically.
+    /// </param>
     public static AIAgentBuilder UseAgentGuard(
-        this AIAgentBuilder builder, Action<GuardrailPolicyBuilder> configure, ILogger<GuardrailPipeline>? logger = null)
+        this AIAgentBuilder builder,
+        Action<GuardrailPolicyBuilder> configure,
+        ILogger<GuardrailPipeline>? logger = null,
+        IGuardrailLedger? ledger = null)
     {
         var policyBuilder = new GuardrailPolicyBuilder();
         configure(policyBuilder);
-        return builder.UseAgentGuard(policyBuilder.Build(), logger);
+        return builder.UseAgentGuard(policyBuilder.Build(), toolResultOptions: null, logger, ledger);
     }
 
     /// <summary>
     /// Adds AgentGuard guardrails to the MAF agent pipeline using a pre-built policy.
     /// </summary>
+    /// <param name="builder">The agent builder.</param>
+    /// <param name="policy">The policy to enforce.</param>
+    /// <param name="logger">Optional logger for the pipeline.</param>
+    /// <param name="ledger">
+    /// Optional decision ledger. When omitted, one registered in DI is resolved automatically.
+    /// </param>
     public static AIAgentBuilder UseAgentGuard(
-        this AIAgentBuilder builder, IGuardrailPolicy policy, ILogger<GuardrailPipeline>? logger = null)
-        => builder.UseAgentGuard(policy, toolResultOptions: null, logger);
+        this AIAgentBuilder builder, IGuardrailPolicy policy, ILogger<GuardrailPipeline>? logger = null,
+        IGuardrailLedger? ledger = null)
+        => builder.UseAgentGuard(policy, toolResultOptions: null, logger, ledger);
 
     /// <summary>
     /// Adds AgentGuard guardrails to the MAF agent pipeline using a pre-built policy and explicit
     /// tool-result middleware options.
     /// </summary>
+    /// <param name="builder">The agent builder.</param>
+    /// <param name="policy">The policy to enforce.</param>
+    /// <param name="toolResultOptions">Tool-result interception options, or null for the defaults.</param>
+    /// <param name="logger">Optional logger for the pipeline.</param>
+    /// <param name="ledger">
+    /// Optional decision ledger. When omitted, one registered in DI is resolved automatically, so
+    /// <c>AddAgentGuard(o =&gt; o.UseDecisionLedger(...))</c> reaches the middleware's own pipeline.
+    /// </param>
     /// <remarks>
     /// When the policy contains a <see cref="ToolResultGuardrailRule"/> and
     /// <see cref="ToolResultMiddlewareOptions.Enabled"/> is true (the default), a function-invocation
@@ -53,34 +82,51 @@ public static class AgentGuardMiddlewareExtensions
         this AIAgentBuilder builder,
         IGuardrailPolicy policy,
         ToolResultMiddlewareOptions? toolResultOptions,
-        ILogger<GuardrailPipeline>? logger = null)
+        ILogger<GuardrailPipeline>? logger = null,
+        IGuardrailLedger? ledger = null)
     {
-        var pipeline = new GuardrailPipeline(policy, logger ?? NullLogger<GuardrailPipeline>.Instance);
-
         var hasToolResultRule = policy.Rules.Any(r => r is ToolResultGuardrailRule);
         var trOptions = toolResultOptions ?? new ToolResultMiddlewareOptions();
 
         if (hasToolResultRule && trOptions.Enabled)
         {
-            builder = WireToolResultMiddleware(builder, policy, trOptions, logger);
+            builder = WireToolResultMiddleware(builder, policy, trOptions, logger, ledger);
         }
 
-        return builder.Use(
-            runFunc: async (messages, session, options, innerAgent, ct) =>
-            {
-                var (blocked, processedMessages) = await RunInputGuardrails(pipeline, policy, messages, innerAgent.Name, ct);
-                if (blocked is not null)
-                    return blocked;
+        // the pipeline is built inside the agent factory so the service provider is in scope: that
+        // is what lets a ledger registered with AddAgentGuard reach this pipeline without the
+        // caller threading it through by hand.
+        return builder.Use((innerAgent, services) =>
+        {
+            var pipeline = new GuardrailPipeline(
+                policy,
+                logger ?? NullLogger<GuardrailPipeline>.Instance,
+                ledger ?? services?.GetService<IGuardrailLedger>());
 
-                var response = await innerAgent.RunAsync(processedMessages, session, options, ct);
+            var guarded = new AIAgentBuilder(innerAgent);
+            guarded.Use(
+                runFunc: async (messages, session, options, inner, ct) =>
+                {
+                    // materialize once: the caller may hand us a lazily-produced sequence, and the
+                    // guardrail path used to enumerate it five times (which throws on a one-shot one).
+                    var messageList = messages as IReadOnlyList<ChatMessage> ?? messages.ToList();
 
-                return await RunOutputGuardrails(pipeline, policy, response, processedMessages, innerAgent.Name, ct);
-            },
-            runStreamingFunc: (messages, session, options, innerAgent, ct) =>
-            {
-                return StreamWithGuardrails(pipeline, policy, messages, session, options, innerAgent, ct);
-            }
-        );
+                    var (blocked, processedMessages) = await RunInputGuardrails(pipeline, policy, messageList, inner.Name, ct);
+                    if (blocked is not null)
+                        return blocked;
+
+                    var response = await inner.RunAsync(processedMessages, session, options, ct);
+
+                    return await RunOutputGuardrails(pipeline, policy, response, processedMessages, inner.Name, ct);
+                },
+                runStreamingFunc: (messages, session, options, inner, ct) =>
+                {
+                    var messageList = messages as IReadOnlyList<ChatMessage> ?? messages.ToList();
+                    return StreamWithGuardrails(pipeline, policy, messageList, session, options, inner, ct);
+                });
+
+            return guarded.Build(services);
+        });
     }
 
     /// <summary>
@@ -92,41 +138,55 @@ public static class AgentGuardMiddlewareExtensions
         AIAgentBuilder builder,
         IGuardrailPolicy policy,
         ToolResultMiddlewareOptions options,
-        ILogger<GuardrailPipeline>? logger)
+        ILogger<GuardrailPipeline>? logger,
+        IGuardrailLedger? ledger)
     {
-        // build a sub-policy containing only the rules we want to run on tool results
-        var filteredRules = policy.Rules
+        // the sub-policy is split in two. The text rules (PII, secrets, LLM PII) rewrite the tool
+        // result; the tool-result rule then inspects what they produced. Running them in one pass
+        // meant the tool-result rule sanitized the *original* entry from the property bag, and the
+        // middleware preferred that output - throwing away the PII redaction that had just run.
+        var included = policy.Rules
             .Where(r => r.Phase.HasFlag(GuardrailPhase.Output) && options.IncludeRuleOrders.Contains(r.Order))
             .ToList();
 
-        if (filteredRules.Count == 0)
+        var textRules = included.Where(r => r is not ToolResultGuardrailRule).ToList();
+        var toolResultRules = included.Where(r => r is ToolResultGuardrailRule).ToList();
+
+        if (included.Count == 0)
         {
             return builder;
         }
 
-        var subPolicy = new GuardrailPolicy(
-            name: $"{policy.Name}.tool-results",
-            rules: filteredRules,
-            violationHandler: policy.ViolationHandler);
-
-        var subPipeline = new GuardrailPipeline(subPolicy, logger ?? NullLogger<GuardrailPipeline>.Instance);
-
-        // Wrap with an agent factory that only applies the function-invocation middleware
-        // when a FunctionInvokingChatClient is present. This avoids breaking agents that
-        // don't support function calling (e.g. tests, custom AIAgent subclasses).
         return builder.Use((innerAgent, services) =>
         {
             if (innerAgent.GetService<FunctionInvokingChatClient>() is null)
                 return innerAgent;
 
+            var effectiveLedger = ledger ?? services?.GetService<IGuardrailLedger>();
+            var effectiveLogger = logger ?? NullLogger<GuardrailPipeline>.Instance;
+
+            GuardrailPipeline? Build(List<IGuardrailRule> rules, string suffix) =>
+                rules.Count == 0
+                    ? null
+                    : new GuardrailPipeline(
+                        new GuardrailPolicy($"{policy.Name}.{suffix}", rules, policy.ViolationHandler),
+                        effectiveLogger,
+                        effectiveLedger);
+
             var subBuilder = new AIAgentBuilder(innerAgent);
-            subBuilder.Use(BuildFunctionMiddleware(subPipeline, options));
+            subBuilder.Use(BuildFunctionMiddleware(
+                Build(textRules, "tool-results.text"),
+                Build(toolResultRules, "tool-results"),
+                options));
             return subBuilder.Build(services);
         });
     }
 
     private static Func<AIAgent, FunctionInvocationContext, Func<FunctionInvocationContext, CancellationToken, ValueTask<object?>>, CancellationToken, ValueTask<object?>>
-        BuildFunctionMiddleware(GuardrailPipeline subPipeline, ToolResultMiddlewareOptions options)
+        BuildFunctionMiddleware(
+            GuardrailPipeline? textPipeline,
+            GuardrailPipeline? toolResultPipeline,
+            ToolResultMiddlewareOptions options)
     {
         return async (agent, ctx, next, ct) =>
         {
@@ -138,49 +198,73 @@ public static class AgentGuardMiddlewareExtensions
                 return raw;
             }
 
-            var entry = new ToolResultEntry
-            {
-                ToolName = ctx.Function.Name,
-                Content = content
-            };
+            var messages = ctx.Messages?.ToList();
+            var changed = false;
 
-            var subContext = new GuardrailContext
+            // pass 1: text rules rewrite the content in place
+            if (textPipeline is not null)
             {
-                Text = content,
-                Phase = GuardrailPhase.Output,
-                Messages = ctx.Messages?.ToList(),
-                AgentName = agent.Name
-            };
-            subContext.Properties[ToolResultGuardrailRule.ToolResultsKey] = new[] { entry };
-
-            var result = await subPipeline.RunAsync(subContext, ct);
-
-            if (result.IsBlocked)
-            {
-                if (options.HardFail)
+                var textContext = new GuardrailContext
                 {
-                    throw new GuardrailViolationException(
-                        result.BlockingResult!,
-                        GuardrailPhase.Output,
-                        $"{agent.Name ?? "agent"}.tool-result.{ctx.Function.Name}");
-                }
+                    Text = content,
+                    Phase = GuardrailPhase.Output,
+                    Messages = messages,
+                    AgentName = agent.Name
+                };
 
-                return options.BlockedPlaceholder;
+                var textResult = await textPipeline.RunAsync(textContext, ct);
+                if (textResult.IsBlocked)
+                    return Blocked(agent, ctx, options, textResult);
+
+                if (textResult.WasModified)
+                {
+                    content = textResult.FinalText;
+                    changed = true;
+                }
             }
 
-            if (result.WasModified)
+            // pass 2: the tool-result rule sees whatever pass 1 produced
+            if (toolResultPipeline is not null)
             {
-                if (subContext.Properties.TryGetValue(ToolResultGuardrailRule.SanitizedResultsKey, out var sanitizedObj) &&
+                var entry = new ToolResultEntry { ToolName = ctx.Function.Name, Content = content };
+                var trContext = new GuardrailContext
+                {
+                    Text = content,
+                    Phase = GuardrailPhase.Output,
+                    Messages = messages,
+                    AgentName = agent.Name
+                };
+                trContext.Properties[ToolResultGuardrailRule.ToolResultsKey] = new[] { entry };
+
+                var trResult = await toolResultPipeline.RunAsync(trContext, ct);
+                if (trResult.IsBlocked)
+                    return Blocked(agent, ctx, options, trResult);
+
+                if (trResult.WasModified &&
+                    trContext.Properties.TryGetValue(ToolResultGuardrailRule.SanitizedResultsKey, out var sanitizedObj) &&
                     sanitizedObj is IReadOnlyList<ToolResultEntry> sanitized && sanitized.Count > 0)
                 {
-                    return sanitized[0].Content;
+                    content = sanitized[0].Content;
+                    changed = true;
                 }
-
-                return result.FinalText;
             }
 
-            return raw;
+            return changed ? content : raw;
         };
+    }
+
+    private static string Blocked(
+        AIAgent agent, FunctionInvocationContext ctx, ToolResultMiddlewareOptions options, GuardrailPipelineResult result)
+    {
+        if (options.HardFail)
+        {
+            throw new GuardrailViolationException(
+                result.BlockingResult!,
+                GuardrailPhase.Output,
+                $"{agent.Name ?? "agent"}.tool-result.{ctx.Function.Name}");
+        }
+
+        return options.BlockedPlaceholder;
     }
 
     /// <summary>
@@ -203,10 +287,10 @@ public static class AgentGuardMiddlewareExtensions
         }
     }
 
-    private static async Task<(AgentResponse? blocked, IEnumerable<ChatMessage> messages)> RunInputGuardrails(
+    private static async Task<(AgentResponse? blocked, IReadOnlyList<ChatMessage> messages)> RunInputGuardrails(
         GuardrailPipeline pipeline,
         IGuardrailPolicy policy,
-        IEnumerable<ChatMessage> messages,
+        IReadOnlyList<ChatMessage> messages,
         string? agentName,
         CancellationToken ct)
     {
@@ -216,7 +300,10 @@ public static class AgentGuardMiddlewareExtensions
         inputActivity?.SetTag(AgentGuardTelemetry.Tags.AgentName, agentName);
         inputActivity?.SetTag(AgentGuardTelemetry.Tags.Phase, "input");
 
-        var lastMessage = messages.LastOrDefault();
+        // the last *user* message, not simply the last one. Taking whatever came last meant a
+        // trailing assistant message was evaluated as untrusted user input, and it disagreed with
+        // GuardrailChatClient, which has always used the last user message.
+        var lastMessage = messages.LastOrDefault(m => m.Role == ChatRole.User);
         var inputText = lastMessage?.Text ?? "";
 
         if (string.IsNullOrEmpty(inputText))
@@ -229,7 +316,7 @@ public static class AgentGuardMiddlewareExtensions
         {
             Text = inputText,
             Phase = GuardrailPhase.Input,
-            Messages = messages.ToList(),
+            Messages = messages,
             AgentName = agentName
         };
 
@@ -247,7 +334,7 @@ public static class AgentGuardMiddlewareExtensions
         {
             inputActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Modified);
             var modified = messages.ToList();
-            modified[^1] = new ChatMessage(lastMessage.Role, inputResult.FinalText);
+            modified[modified.LastIndexOf(lastMessage)] = new ChatMessage(lastMessage.Role, inputResult.FinalText);
             return (null, modified);
         }
 
@@ -259,7 +346,7 @@ public static class AgentGuardMiddlewareExtensions
         GuardrailPipeline pipeline,
         IGuardrailPolicy policy,
         AgentResponse response,
-        IEnumerable<ChatMessage> messages,
+        IReadOnlyList<ChatMessage> messages,
         string? agentName,
         CancellationToken ct)
     {
@@ -293,7 +380,7 @@ public static class AgentGuardMiddlewareExtensions
         {
             Text = responseText ?? "",
             Phase = GuardrailPhase.Output,
-            Messages = messages.ToList(),
+            Messages = messages,
             AgentName = agentName
         };
 
@@ -310,17 +397,68 @@ public static class AgentGuardMiddlewareExtensions
             outputActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Blocked);
             outputActivity?.SetStatus(ActivityStatusCode.Error, outputResult.BlockingResult?.Reason);
             var msg = await policy.ViolationHandler.HandleViolationAsync(outputResult.BlockingResult!, outputContext, ct);
-            return new AgentResponse([new ChatMessage(ChatRole.Assistant, msg)]);
+            return ReplaceText(response, msg, keepOtherContent: false);
         }
 
         if (outputResult.WasModified)
         {
             outputActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Modified);
-            return new AgentResponse([new ChatMessage(ChatRole.Assistant, outputResult.FinalText)]);
+            return ReplaceText(response, outputResult.FinalText, keepOtherContent: true);
         }
 
         outputActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Passed);
         return response;
+    }
+
+    /// <summary>
+    /// Rebuilds a response around new assistant text while keeping the response-level metadata
+    /// (id, agent id, usage, created-at) and, for a modification, the non-text content such as
+    /// function calls. A bare <c>new AgentResponse([...])</c> discarded all of it, so a PII
+    /// redaction on a tool-calling turn used to erase the tool calls and break the agent loop.
+    /// </summary>
+    private static AgentResponse ReplaceText(AgentResponse response, string text, bool keepOtherContent)
+    {
+        List<ChatMessage> messages;
+
+        if (keepOtherContent)
+        {
+            messages = [.. response.Messages];
+            var index = messages.FindLastIndex(m => m.Role == ChatRole.Assistant && !string.IsNullOrEmpty(m.Text));
+
+            if (index >= 0)
+            {
+                var original = messages[index];
+                var contents = original.Contents
+                    .Where(c => c is not TextContent)
+                    .Prepend<AIContent>(new TextContent(text))
+                    .ToList();
+
+                messages[index] = new ChatMessage(original.Role, contents)
+                {
+                    AuthorName = original.AuthorName,
+                    MessageId = original.MessageId,
+                    AdditionalProperties = original.AdditionalProperties
+                };
+            }
+            else
+            {
+                messages.Add(new ChatMessage(ChatRole.Assistant, text));
+            }
+        }
+        else
+        {
+            // a blocked response must not carry any of the original content through
+            messages = [new ChatMessage(ChatRole.Assistant, text)];
+        }
+
+        return new AgentResponse(messages)
+        {
+            ResponseId = response.ResponseId,
+            AgentId = response.AgentId,
+            CreatedAt = response.CreatedAt,
+            Usage = response.Usage,
+            AdditionalProperties = response.AdditionalProperties
+        };
     }
 
     /// <summary>
@@ -476,7 +614,7 @@ public static class AgentGuardMiddlewareExtensions
     private static async IAsyncEnumerable<AgentResponseUpdate> StreamWithGuardrails(
         GuardrailPipeline pipeline,
         IGuardrailPolicy policy,
-        IEnumerable<ChatMessage> messages,
+        IReadOnlyList<ChatMessage> messages,
         AgentSession? session,
         AgentRunOptions? options,
         AIAgent innerAgent,
@@ -523,7 +661,7 @@ public static class AgentGuardMiddlewareExtensions
     private static async IAsyncEnumerable<AgentResponseUpdate> StreamWithBufferedGuardrails(
         GuardrailPipeline pipeline,
         IGuardrailPolicy policy,
-        IEnumerable<ChatMessage> processedMessages,
+        IReadOnlyList<ChatMessage> processedMessages,
         AgentSession? session,
         AgentRunOptions? options,
         AIAgent innerAgent,
@@ -553,7 +691,7 @@ public static class AgentGuardMiddlewareExtensions
             {
                 Text = fullText ?? "",
                 Phase = GuardrailPhase.Output,
-                Messages = processedMessages.ToList(),
+                Messages = processedMessages,
                 AgentName = innerAgent.Name
             };
 
@@ -595,7 +733,7 @@ public static class AgentGuardMiddlewareExtensions
     private static async IAsyncEnumerable<AgentResponseUpdate> StreamWithProgressiveGuardrails(
         GuardrailPipeline pipeline,
         IGuardrailPolicy policy,
-        IEnumerable<ChatMessage> processedMessages,
+        IReadOnlyList<ChatMessage> processedMessages,
         AgentSession? session,
         AgentRunOptions? options,
         AIAgent innerAgent,
@@ -607,7 +745,7 @@ public static class AgentGuardMiddlewareExtensions
         {
             Text = "", // will be set per-evaluation inside the pipeline
             Phase = GuardrailPhase.Output,
-            Messages = processedMessages.ToList(),
+            Messages = processedMessages,
             AgentName = innerAgent.Name
         };
 

@@ -261,4 +261,66 @@ public class SecretsDetectionRuleTests
         var result = await rule.EvaluateAsync(CreateContext(input));
         result.IsBlocked.Should().BeFalse(because: $"'{input}' should not be flagged as a secret");
     }
+
+    // AG-12: the AWS lookahead required the keyword *after* the value, and the Azure pattern could
+    // only match a 46-character run - neither shape occurs in real credentials.
+
+    [Theory]
+    [InlineData("aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")]
+    [InlineData("AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")]
+    [InlineData("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY is my aws secret key")]
+    public async Task ShouldDetect_AwsSecretKey_RegardlessOfKeywordPosition(string input)
+    {
+        var rule = new SecretsDetectionRule();
+
+        var result = await rule.EvaluateAsync(CreateContext(input));
+
+        result.IsBlocked.Should().BeTrue();
+        result.Reason.Should().Contain("aws-secret-key");
+    }
+
+    [Fact]
+    public async Task ShouldNotDetect_A40CharTokenWithoutAwsContext()
+    {
+        var rule = new SecretsDetectionRule();
+
+        var result = await rule.EvaluateAsync(CreateContext("the build id is wJalrXUtnFEMIxK7MDENGxbPxRfiCYEXAMPLEKEY"));
+
+        result.IsBlocked.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ShouldDetect_AzureStorageAccountKey()
+    {
+        var key = new string('A', 86) + "==";
+        var rule = new SecretsDetectionRule();
+
+        var result = await rule.EvaluateAsync(CreateContext($"DefaultEndpointsProtocol=https;AccountKey={key};"));
+
+        result.IsBlocked.Should().BeTrue();
+        result.Reason.Should().Contain("azure-storage-key");
+    }
+
+    [Fact]
+    public async Task ShouldInsertReplacementVerbatim_WhenItContainsDollarSequences()
+    {
+        var rule = new SecretsDetectionRule(new SecretsDetectionOptions
+        {
+            Action = SecretAction.Redact,
+            Replacement = "<$1-removed>"
+        });
+
+        var result = await rule.EvaluateAsync(CreateContext("token ghp_abcdefghijklmnopqrstuvwxyz0123456789 here"));
+
+        result.IsModified.Should().BeTrue();
+        result.ModifiedText.Should().Contain("<$1-removed>");
+    }
+
+    [Fact]
+    public void ShouldThrow_WhenMinHighEntropyLengthIsTooSmall()
+    {
+        var act = () => new SecretsDetectionRule(new SecretsDetectionOptions { MinHighEntropyLength = 0 });
+
+        act.Should().Throw<ArgumentException>();
+    }
 }
