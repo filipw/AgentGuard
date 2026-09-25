@@ -98,9 +98,8 @@ public sealed class HashChainLedger : IGuardrailLedger, IDisposable
                 Directory.CreateDirectory(dir);
             }
 
-            // one handle held open for the life of the ledger. Appending used to open, write and
-            // close the file per entry, on the guarded request's own thread; FileShare.Read also
-            // lets an auditor tail the file while it is being written.
+            // one handle held open for the life of the ledger, so an append never opens the file on the
+            // guarded request's thread; FileShare.Read lets an auditor tail the file while it is being written.
             _writer = new StreamWriter(
                 new FileStream(_jsonlPath, FileMode.Append, FileAccess.Write, FileShare.Read))
             {

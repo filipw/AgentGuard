@@ -14,8 +14,10 @@ public static class GuardrailChatClientExtensions
 {
     /// <summary>
     /// Wraps this <see cref="IChatClient"/> with AgentGuard guardrails configured via a fluent builder.
-    /// Input guardrails run on the last user message; output guardrails run on the response.
-    /// Conversation history is automatically propagated from the messages passed to each call.
+    /// Input guardrails run on every user message of the request (earlier turns re-apply the verdict
+    /// they got the first time - see <see cref="ChatMessageGuard"/>); output guardrails run on each
+    /// assistant message of the response and on its tool calls and results. Conversation history is
+    /// automatically propagated from the messages passed to each call.
     /// </summary>
     /// <example>
     /// <code>

@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using AgentGuard.Core.Abstractions;
 using Microsoft.Extensions.AI;
 
@@ -34,7 +35,7 @@ public enum PiiAction
 /// Detects and optionally redacts PII using an LLM classifier.
 /// More accurate than regex-based detection for unstructured PII like names, addresses, and contextual identifiers.
 /// </summary>
-public sealed class LlmPiiDetectionRule : LlmGuardrailRule
+public sealed partial class LlmPiiDetectionRule : LlmGuardrailRule
 {
     private readonly LlmPiiDetectionOptions _options;
     private readonly string _systemPrompt;
@@ -107,18 +108,25 @@ public sealed class LlmPiiDetectionRule : LlmGuardrailRule
     /// <inheritdoc />
     protected override GuardrailResult ParseResponse(string responseText, GuardrailContext context)
     {
-        // Redact mode carries the rewritten message on the verdict line, so it is read from the raw
-        // response rather than reduced to a token.
+        // Redact mode carries the rewritten message after the verdict marker, so it is read from
+        // the raw response rather than reduced to a token. The message can span several lines, and
+        // the judge may put it on the lines below the marker.
         if (_options.Action == PiiAction.Redact)
         {
-            var line = ExtractVerdictLine(responseText);
+            var reply = UnwrapFence(LeadingReasoningBlocks().Replace(responseText, ""));
 
-            if (line.StartsWith("CLEAN", StringComparison.OrdinalIgnoreCase))
+            if (reply.StartsWith("CLEAN", StringComparison.OrdinalIgnoreCase))
                 return GuardrailResult.Passed();
 
-            if (line.StartsWith(RedactedPrefix, StringComparison.OrdinalIgnoreCase))
+            if (reply.StartsWith(RedactedPrefix, StringComparison.OrdinalIgnoreCase))
             {
-                var redacted = line[RedactedPrefix.Length..].TrimStart();
+                var redacted = reply[RedactedPrefix.Length..].Trim();
+
+                // a judge that fences the message it returns is unwrapped, unless the message it
+                // was given was itself a fenced block
+                if (!IsFenced(context.Text))
+                    redacted = UnwrapFence(redacted);
+
                 if (redacted.Length > 0)
                     return GuardrailResult.Modified(redacted, "LLM classifier redacted personally identifiable information.");
             }
@@ -140,4 +148,36 @@ public sealed class LlmPiiDetectionRule : LlmGuardrailRule
     }
 
     private const string RedactedPrefix = "REDACTED:";
+
+    private const string Fence = "```";
+
+    /// <summary>
+    /// Trims <paramref name="text"/> and, when it opens with a markdown fence line, drops that line
+    /// and the closing fence line if there is one.
+    /// </summary>
+    private static string UnwrapFence(string text)
+    {
+        var trimmed = text.Trim();
+        if (!trimmed.StartsWith(Fence, StringComparison.Ordinal))
+            return trimmed;
+
+        var firstBreak = trimmed.IndexOf('\n');
+        if (firstBreak < 0)
+            return "";
+
+        var inner = trimmed[(firstBreak + 1)..].TrimEnd();
+        var lastBreak = inner.LastIndexOf('\n');
+        var lastLine = lastBreak < 0 ? inner : inner[(lastBreak + 1)..];
+        if (lastLine.Trim() == Fence)
+            inner = lastBreak < 0 ? "" : inner[..lastBreak];
+
+        return inner.Trim();
+    }
+
+    private static bool IsFenced(string text) => text.TrimStart().StartsWith(Fence, StringComparison.Ordinal);
+
+    // only the reasoning in front of the verdict is dropped: the redacted message after the marker
+    // is the user's text and is returned as the judge wrote it
+    [GeneratedRegex(@"\A\s*(?:<(think|thinking|reasoning)>.*?</\1>\s*)+", RegexOptions.Singleline | RegexOptions.IgnoreCase)]
+    private static partial Regex LeadingReasoningBlocks();
 }

@@ -262,8 +262,7 @@ public class SecretsDetectionRuleTests
         result.IsBlocked.Should().BeFalse(because: $"'{input}' should not be flagged as a secret");
     }
 
-    // AG-12: the AWS lookahead required the keyword *after* the value, and the Azure pattern could
-    // only match a 46-character run - neither shape occurs in real credentials.
+    // AWS keys with the keyword before the value, and 88-character Azure storage keys
 
     [Theory]
     [InlineData("aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")]
@@ -316,11 +315,96 @@ public class SecretsDetectionRuleTests
         result.ModifiedText.Should().Contain("<$1-removed>");
     }
 
+    // redaction covers the whole PEM block: header, key body and footer
+
+    private const string KeyLine = "MIIEowIBAAKCAQEAu1SU1LfVLPHCozMxH2Mo4lgOEePzNm0tRgeLezV6ffAt0gun";
+
+    internal static string KeyBody(int lines) => string.Join("\n", Enumerable.Repeat(KeyLine, lines));
+
+    [Theory]
+    [InlineData("RSA PRIVATE KEY")]
+    [InlineData("EC PRIVATE KEY")]
+    [InlineData("DSA PRIVATE KEY")]
+    [InlineData("OPENSSH PRIVATE KEY")]
+    [InlineData("ENCRYPTED PRIVATE KEY")]
+    [InlineData("PRIVATE KEY")]
+    [InlineData("PGP PRIVATE KEY BLOCK")]
+    public async Task ShouldRedactTheWholeBlock_WhenAPrivateKeyIsFound(string label)
+    {
+        var rule = new SecretsDetectionRule(new SecretsDetectionOptions { Action = SecretAction.Redact });
+        var text = $"Here is the key:\n-----BEGIN {label}-----\n{KeyBody(3)}\n-----END {label}-----\nDone.";
+
+        var result = await rule.EvaluateAsync(CreateContext(text));
+
+        result.IsModified.Should().BeTrue();
+        result.ModifiedText.Should().Be("Here is the key:\n[SECRET_REDACTED]\nDone.");
+    }
+
+    [Fact]
+    public async Task ShouldRedactEachPrivateKeyBlock_WhenThereAreSeveral()
+    {
+        var rule = new SecretsDetectionRule(new SecretsDetectionOptions { Action = SecretAction.Redact });
+        var text = $"A\n-----BEGIN RSA PRIVATE KEY-----\n{KeyBody(2)}\n-----END RSA PRIVATE KEY-----\n"
+            + $"B\n-----BEGIN OPENSSH PRIVATE KEY-----\n{KeyBody(2)}\n-----END OPENSSH PRIVATE KEY-----\nC";
+
+        var result = await rule.EvaluateAsync(CreateContext(text));
+
+        result.ModifiedText.Should().Be("A\n[SECRET_REDACTED]\nB\n[SECRET_REDACTED]\nC");
+    }
+
+    [Theory]
+    // no END line at all - e.g. a truncated reply
+    [InlineData("")]
+    // an END line that does not close this block
+    [InlineData("\n-----END EC PRIVATE KEY-----\ntrailing text")]
+    public async Task ShouldRedactToTheEnd_WhenThePrivateKeyBlockIsNotClosed(string tail)
+    {
+        var rule = new SecretsDetectionRule(new SecretsDetectionOptions { Action = SecretAction.Redact });
+
+        var result = await rule.EvaluateAsync(CreateContext($"Key:\n-----BEGIN RSA PRIVATE KEY-----\n{KeyBody(3)}{tail}"));
+
+        result.ModifiedText.Should().Be("Key:\n[SECRET_REDACTED]");
+    }
+
+    [Fact]
+    public async Task ShouldBlock_WhenAPrivateKeyBlockIsFound()
+    {
+        var rule = new SecretsDetectionRule();
+
+        var result = await rule.EvaluateAsync(CreateContext(
+            $"-----BEGIN ENCRYPTED PRIVATE KEY-----\n{KeyBody(3)}\n-----END ENCRYPTED PRIVATE KEY-----"));
+
+        result.IsBlocked.Should().BeTrue();
+        result.Reason.Should().Contain("private-key");
+    }
+
     [Fact]
     public void ShouldThrow_WhenMinHighEntropyLengthIsTooSmall()
     {
         var act = () => new SecretsDetectionRule(new SecretsDetectionOptions { MinHighEntropyLength = 0 });
 
         act.Should().Throw<ArgumentException>();
+    }
+}
+
+// scans a large unterminated key block on purpose, so it runs in the non-parallel large-input
+// collection
+[Collection(LargeInputTestGroup.Name)]
+public class SecretsDetectionRuleLargeInputTests
+{
+    // a large unterminated block, and many headers without END lines, come back fully redacted
+    [Theory]
+    [InlineData(1)]
+    [InlineData(1_000)]
+    public async Task ShouldRedactWithinTheMatchTimeout_WhenALargePrivateKeyBlockIsUnterminated(int headers)
+    {
+        var rule = new SecretsDetectionRule(new SecretsDetectionOptions { Action = SecretAction.Redact });
+        var section = $"-----BEGIN RSA PRIVATE KEY-----\n{SecretsDetectionRuleTests.KeyBody(2)}\n";
+        var text = "Key:\n" + string.Concat(Enumerable.Repeat(section, headers)) + SecretsDetectionRuleTests.KeyBody(2_000 / headers);
+
+        var result = await rule.EvaluateAsync(new GuardrailContext { Text = text, Phase = GuardrailPhase.Output });
+
+        result.IsModified.Should().BeTrue();
+        result.ModifiedText.Should().Be("Key:\n[SECRET_REDACTED]");
     }
 }

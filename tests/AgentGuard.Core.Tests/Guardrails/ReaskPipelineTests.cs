@@ -55,6 +55,8 @@ public class ReaskPipelineTests
         result.WasReasked.Should().BeTrue();
         result.ReaskAttemptsUsed.Should().Be(1);
         result.FinalText.Should().Be("good response");
+        // the adapters apply FinalText when WasModified is set
+        result.WasModified.Should().BeTrue();
         callCount.Should().Be(2); // first eval + re-eval after reask
     }
 

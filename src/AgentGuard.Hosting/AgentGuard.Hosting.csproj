@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <Description>DI registration, health checks, and configuration binding for AgentGuard. Rules that live outside the core engine (Azure, out-of-process PII) plug in through IGuardrailRuleFactory, so this package does not pull their dependencies in.</Description>
+    <Description>DI registration and configuration binding for AgentGuard. Rules that live outside the core engine (Azure, out-of-process PII) plug in through IGuardrailRuleFactory, so this package does not pull their dependencies in.</Description>
     <PackageId>AgentGuard.Hosting</PackageId>
     <RootNamespace>AgentGuard.Hosting</RootNamespace>
   </PropertyGroup>

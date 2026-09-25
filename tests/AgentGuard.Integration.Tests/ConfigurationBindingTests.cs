@@ -248,8 +248,8 @@ public class ConfigurationBindingTests
         });
         piiResult.WasModified.Should().BeTrue();
 
-        // AG-26: with no Replacement configured, config-driven PII now uses the same default as
-        // the code-driven path (<ENTITY_TYPE> tags) instead of being forced to "[REDACTED]".
+        // with no Replacement configured, config-driven PII uses the same default as the code-driven
+        // path (<ENTITY_TYPE> tags)
         piiResult.FinalText.Should().Contain("<EMAIL_ADDRESS>");
     }
 
@@ -559,8 +559,8 @@ public class ConfigurationBindingTests
         act.Should().Throw<InvalidOperationException>().Which.ToString().Should().Contain("PolicyDescription");
     }
 
-    // AG-05: AgentGuard.Hosting no longer references the Azure or out-of-process PII packages;
-    // those rule types arrive through a registered IGuardrailRuleFactory instead.
+    // AgentGuard.Hosting doesn't reference the Azure or out-of-process PII packages; those rule
+    // types arrive through a registered IGuardrailRuleFactory
 
     [Theory]
     [InlineData("RemotePii")]

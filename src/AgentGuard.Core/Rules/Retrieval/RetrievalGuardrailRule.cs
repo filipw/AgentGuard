@@ -350,7 +350,8 @@ public sealed class RetrievalGuardrailRule : IGuardrailRule
     [
         new(@"(?<![A-Za-z0-9/+=])AKIA[0-9A-Z]{16}(?![A-Za-z0-9/+=])", RegexOptions.Compiled, TimeSpan.FromMilliseconds(200)),
         new(@"(?<![A-Za-z0-9_])gh[pousr]_[A-Za-z0-9_]{36,255}(?![A-Za-z0-9_])", RegexOptions.Compiled, TimeSpan.FromMilliseconds(200)),
-        new(@"-----BEGIN\s+(?:RSA\s+)?(?:EC\s+)?(?:DSA\s+)?(?:OPENSSH\s+)?PRIVATE\s+KEY-----", RegexOptions.Compiled, TimeSpan.FromMilliseconds(200)),
+        // the whole PEM block, so sanitizing removes the key body and not just its header line
+        new(RegexPatterns.PemPrivateKeyBlock, RegexOptions.Compiled, TimeSpan.FromMilliseconds(200)),
         new(@"(?i)(?:api[_-]?key|api[_-]?secret|access[_-]?token|auth[_-]?token)\s*[:=]\s*[""']?([A-Za-z0-9_\-./+=]{20,})[""']?", RegexOptions.Compiled, TimeSpan.FromMilliseconds(200)),
         new(@"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}", RegexOptions.Compiled, TimeSpan.FromMilliseconds(200)),
     ];

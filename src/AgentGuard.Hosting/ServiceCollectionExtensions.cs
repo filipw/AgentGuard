@@ -29,8 +29,11 @@ public sealed class AgentGuardOptions
 
     /// <summary>
     /// Enables the tamper-evident decision ledger, recording one hash-chained entry per
-    /// guardrail pipeline decision. The ledger is registered as a singleton and flows into
-    /// every pipeline (including the MAF / Workflows / IChatClient adapters resolved from DI).
+    /// guardrail pipeline decision. The ledger is registered as a singleton: the pipelines
+    /// registered here and the MAF agent middleware (<c>UseAgentGuard</c> on an
+    /// <c>AIAgentBuilder</c>) resolve it from DI; the <c>IChatClient</c> decorator and workflow
+    /// executors take it as a parameter (<c>UseAgentGuard(..., ledger)</c>,
+    /// <c>GuardedExecutorOptions.Ledger</c>).
     /// </summary>
     /// <param name="ledger">The ledger to use.</param>
     public AgentGuardOptions UseDecisionLedger(IGuardrailLedger ledger) { Ledger = ledger; return this; }

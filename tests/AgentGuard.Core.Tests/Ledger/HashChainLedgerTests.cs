@@ -450,8 +450,7 @@ public class LedgerPipelineTests
         ledger.Verify().Should().BeTrue();
     }
 
-    // AG-32: the in-memory chain had no cap and the JSONL mirror opened, wrote and closed the file
-    // once per entry, on the guarded request's own thread.
+    // the in-memory chain is capped, and the JSONL mirror keeps one handle open
 
     private static GuardrailDecision Decision(string tag) => new()
     {

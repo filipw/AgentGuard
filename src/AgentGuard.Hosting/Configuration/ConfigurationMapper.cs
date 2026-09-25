@@ -95,8 +95,7 @@ internal static class ConfigurationMapper
                 break;
 
             case "onnxpromptinjection" when rule.ModelPath is not null:
-                // ModelPath used to be accepted and then ignored, quietly loading the bundled
-                // Defender model instead of the one that was configured.
+                // a ModelPath selects the generic DeBERTa rule; without one the bundled Defender model is used
                 goto case "debertapromptinjection";
 
             case "onnxpromptinjection":

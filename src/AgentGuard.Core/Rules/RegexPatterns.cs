@@ -14,6 +14,20 @@ namespace AgentGuard.Core.Rules;
 /// </remarks>
 internal static class RegexPatterns
 {
+    /// <summary>
+    /// A whole PEM private key block: the <c>-----BEGIN ... PRIVATE KEY-----</c> header (RSA, EC,
+    /// DSA, OPENSSH, ENCRYPTED, plain PKCS#8, or PGP's <c>PRIVATE KEY BLOCK</c>), the key body, and
+    /// the END line carrying the same label - or everything to the end of the text when that END
+    /// line never comes.
+    /// </summary>
+    /// <remarks>
+    /// An unterminated or mismatched block runs to the end of the text on purpose: over-redacting a
+    /// truncated key is the safe failure. The body is a lazy scan that tests two alternatives per
+    /// character, so the whole match is linear in the text length.
+    /// </remarks>
+    internal const string PemPrivateKeyBlock =
+        @"-----BEGIN\s+(?<label>(?:[A-Z0-9]+\s+){0,3}PRIVATE\s+KEY(?:\s+BLOCK)?)-----(?s:.*?)(?:-----END\s+\k<label>-----|\z)";
+
     /// <summary>Runs each pattern once so the first real request does not pay IL generation.</summary>
     internal static void Warm(IEnumerable<Regex> patterns)
     {

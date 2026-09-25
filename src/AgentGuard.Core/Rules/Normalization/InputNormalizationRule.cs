@@ -25,7 +25,15 @@ public sealed class InputNormalizationOptions
     /// <summary>Whether to decode leetspeak substitutions (e.g. 1gn0r3 → ignore). Default: true.</summary>
     public bool DecodeLeetspeak { get; init; } = true;
 
-    /// <summary>Whether to strip invisible Unicode characters (zero-width joiners, invisible tags, etc.). Default: true.</summary>
+    /// <summary>
+    /// Whether to strip invisible Unicode characters (zero-width joiners, Unicode tag characters,
+    /// etc.). Default: true.
+    /// </summary>
+    /// <remarks>
+    /// Unicode tag characters (U+E0000-U+E007F) spell ASCII that a model can read but a person
+    /// cannot see ("ASCII smuggling"). Besides being stripped, what they spell is appended as a
+    /// decoded view, like the other decoders, so downstream rules can inspect it.
+    /// </remarks>
     public bool StripInvisibleUnicode { get; init; } = true;
 
     /// <summary>
@@ -73,24 +81,25 @@ public sealed partial class InputNormalizationRule : IGuardrailRule
 
         var text = context.Text;
 
-        // Normalization passes rewrite the working text in place. They run before the decoders
-        // because an attacker interleaves invisible characters *into* a payload: stripping them
-        // afterwards, as this rule used to, left the base64 decoder looking at text it could never
-        // decode.
+        // Normalization passes rewrite the working text in place. They run before the decoders, so
+        // invisible characters interleaved into an encoded payload are gone before it is decoded.
         if (_options.NormalizeUnicode)
         {
             text = NormalizeUnicode(text);
         }
 
+        // tag characters are an ASCII encoding in their own right, so what they spell is decoded
+        // before they are stripped and surfaced below alongside the other decoded views.
+        string? tagPayload = null;
         if (_options.StripInvisibleUnicode)
         {
+            tagPayload = InvisibleCharacters.DecodeUnicodeTags(text);
             text = StripInvisibleCharacters(text) ?? text;
         }
 
         // Decoding passes produce extra views of the text rather than replacing it, so downstream
         // rules can match the plaintext without the decoders' false positives rewriting the input.
-        // Only distinct views are kept: emitting the whole normalized string once per pass used to
-        // triple the text and eat the budget of the 256-token classifier downstream.
+        // Only distinct views are kept.
         var decodedSegments = new List<string>();
 
         void AddView(string? view)
@@ -100,6 +109,8 @@ public sealed partial class InputNormalizationRule : IGuardrailRule
             if (!decodedSegments.Contains(view, StringComparer.Ordinal))
                 decodedSegments.Add(view);
         }
+
+        AddView(tagPayload);
 
         if (_options.DecodeBase64)
             AddView(DecodeBase64Segments(text));
@@ -227,23 +238,15 @@ public sealed partial class InputNormalizationRule : IGuardrailRule
     /// Unicode tag characters (U+E0000-U+E007F), soft hyphens, and other invisible formatting characters.
     /// Returns null if no invisible characters were found.
     /// </summary>
-    internal static string? StripInvisibleCharacters(string text)
-    {
-        var sb = new StringBuilder(text.Length);
-        var changed = false;
+    /// <remarks>
+    /// Walks the text by code point: tag characters are surrogate pairs, which a per-char loop
+    /// never recognises.
+    /// </remarks>
+    internal static string? StripInvisibleCharacters(string text) =>
+        InvisibleCharacters.Remove(text, IsInvisibleCharacter);
 
-        foreach (var c in text)
-        {
-            if (IsInvisibleCharacter(c))
-            {
-                changed = true;
-                continue;
-            }
-            sb.Append(c);
-        }
-
-        return changed ? sb.ToString() : null;
-    }
+    private static bool IsInvisibleCharacter(Rune rune) =>
+        InvisibleCharacters.IsUnicodeTag(rune) || (rune.IsBmp && IsInvisibleCharacter((char)rune.Value));
 
     private static bool IsInvisibleCharacter(char c) => c switch
     {

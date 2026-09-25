@@ -12,7 +12,7 @@ namespace AgentGuard.Onnx.Tests;
 public class PIGuardPromptInjectionRuleTests
 {
     private static PIGuardPromptInjectionRule CreateRuleWithoutSession() =>
-        new(null!, new PIGuardPromptInjectionOptions
+        new(WindowingTestHelpers.NotCalled<float>, WindowingTestHelpers.CountWords, new PIGuardPromptInjectionOptions
         {
             ModelPath = "/nonexistent/model.onnx",
             TokenizerPath = "/nonexistent/spm.model"
@@ -138,4 +138,70 @@ public class PIGuardPromptInjectionRuleTests
 
         result.IsBlocked.Should().BeFalse("whitespace-only text must pass without invoking the classifier");
     }
+
+    // windowing: input longer than one window is classified window by window (fake classifier that
+    // flags any window containing INJECT, and one token per word)
+
+    [Fact]
+    public void ShouldHaveWindowingDefaults_WhenOptionsAreNotSet()
+    {
+        var options = new PIGuardPromptInjectionOptions { ModelPath = "m", TokenizerPath = "t" };
+
+        options.WindowSize.Should().Be(510);
+        options.WindowOverlap.Should().Be(128);
+        options.MaxWindows.Should().Be(32);
+    }
+
+    [Fact]
+    public async Task ShouldClassifyWholeTextInOneCall_WhenTextFitsInOneWindow()
+    {
+        var text = WindowingTestHelpers.WordsWithMarker(300, 250, "INJECT");
+        var calls = new List<string>();
+        var rule = CreateWindowedRule(calls);
+
+        var result = await rule.EvaluateAsync(new GuardrailContext { Text = text, Phase = GuardrailPhase.Input });
+
+        calls.Should().Equal([text], "text that fits the model's input must be classified exactly as before, in one call");
+        result.IsBlocked.Should().BeTrue();
+        result.Reason.Should().NotContain("window");
+        result.Metadata.Should().NotContainKey("windowCount");
+    }
+
+    [Fact]
+    public async Task ShouldBlock_WhenInjectionIsBeyondTheModelInputLength()
+    {
+        var text = WindowingTestHelpers.WordsWithMarker(3000, 2500, "INJECT");
+        var calls = new List<string>();
+        var rule = CreateWindowedRule(calls);
+
+        var result = await rule.EvaluateAsync(new GuardrailContext { Text = text, Phase = GuardrailPhase.Input });
+
+        result.IsBlocked.Should().BeTrue("text past the model's input length must still be classified");
+        result.Reason.Should().Contain("window");
+        result.Metadata!["model"].Should().Be("piguard-deberta-v3");
+        text.Substring((int)result.Metadata["windowStart"], (int)result.Metadata["windowLength"]).Should().Contain("INJECT");
+        calls.Should().OnlyContain(window => WindowingTestHelpers.CountWords(window) <= 510);
+    }
+
+    [Fact]
+    public async Task ShouldPass_WhenNoWindowBlocks()
+    {
+        var calls = new List<string>();
+        var rule = CreateWindowedRule(calls);
+
+        var result = await rule.EvaluateAsync(new GuardrailContext { Text = WindowingTestHelpers.Words(3000), Phase = GuardrailPhase.Input });
+
+        result.IsBlocked.Should().BeFalse();
+        calls.SelectMany(window => window.Split(' ')).Distinct().Should().HaveCount(3000, "no word may go unclassified");
+    }
+
+    private static PIGuardPromptInjectionRule CreateWindowedRule(List<string> calls) =>
+        new(
+            text =>
+            {
+                calls.Add(text);
+                return text.Contains("INJECT") ? 0.97f : 0.02f;
+            },
+            WindowingTestHelpers.CountWords,
+            new PIGuardPromptInjectionOptions { ModelPath = "m", TokenizerPath = "t" });
 }

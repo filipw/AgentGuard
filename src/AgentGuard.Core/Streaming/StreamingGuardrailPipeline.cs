@@ -4,6 +4,7 @@ using System.Text;
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Guardrails;
 using AgentGuard.Core.Ledger;
+using AgentGuard.Core.Rules;
 using AgentGuard.Core.Rules.LLM;
 using AgentGuard.Core.Telemetry;
 using Microsoft.Extensions.Logging;
@@ -306,12 +307,15 @@ public sealed partial class StreamingGuardrailPipeline
 
     private static StreamingEvaluationMode GetStreamingMode(IGuardrailRule rule)
     {
+        // unwrap .When()/.Unless() gates so a gated rule keeps its streaming mode
+        var inner = rule.Unwrap();
+
         // if the rule explicitly declares its streaming mode, use it
-        if (rule is IStreamingGuardrailRule streamingRule)
+        if (inner is IStreamingGuardrailRule streamingRule)
             return streamingRule.StreamingMode;
 
         // default heuristic: LLM rules are FinalOnly, all others are EveryCheck
-        if (rule is LlmGuardrailRule)
+        if (inner is LlmGuardrailRule)
             return StreamingEvaluationMode.FinalOnly;
 
         return StreamingEvaluationMode.EveryCheck;
@@ -331,7 +335,7 @@ public sealed partial class StreamingGuardrailPipeline
                 lastCheck = 0;
 
             // check MinTokensBeforeFirstCheck
-            if (rule is IStreamingGuardrailRule streamingRule &&
+            if (rule.Unwrap() is IStreamingGuardrailRule streamingRule &&
                 currentTotalChars < streamingRule.MinTokensBeforeFirstCheck * 4) // rough char-to-token heuristic
                 continue;
 

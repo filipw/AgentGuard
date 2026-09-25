@@ -182,12 +182,10 @@ public sealed class SecretsDetectionRule : IGuardrailRule
         if (c.HasFlag(SecretCategory.AwsCredential))
         {
             // the leading lookbehind deliberately omits '=': it is base64 padding, so it only ever
-            // trails a value - excluding it here rejected the commonest form, KEY=<value>.
+            // trails a value, and the commonest form is KEY=<value>.
             p.Add(("aws-access-key", new(@"(?<![A-Za-z0-9/+])AKIA[0-9A-Z]{16}(?![A-Za-z0-9/+=])", RegexOptions.Compiled, RegexTimeout)));
             // A bare 40-character base64 run is far too common to flag on its own, so it is gated
-            // on AWS context appearing anywhere in the text. The previous form used a trailing
-            // lookahead, which required the keyword to come *after* the value - the opposite of how
-            // "aws_secret_access_key = <value>" is actually written, so real keys went undetected.
+            // on AWS context appearing anywhere in the text, before or after the value.
             p.Add(("aws-secret-key",
                 new(@"(?<![A-Za-z0-9/+])[A-Za-z0-9/+]{40}(?![A-Za-z0-9/+=])", RegexOptions.Compiled, RegexTimeout),
                 new(@"aws|secret[_\-]?access|secret[_\-]?key", RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout)));
@@ -218,10 +216,11 @@ public sealed class SecretsDetectionRule : IGuardrailRule
             p.Add(("jwt-token", new(@"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}", RegexOptions.Compiled, RegexTimeout)));
         }
 
-        // Private keys (PEM format)
+        // Private keys (PEM format). The whole block matches, not just the header line, so
+        // redaction removes the key body too.
         if (c.HasFlag(SecretCategory.PrivateKey))
         {
-            p.Add(("private-key", new(@"-----BEGIN\s+(?:RSA\s+)?(?:EC\s+)?(?:DSA\s+)?(?:OPENSSH\s+)?PRIVATE\s+KEY-----", RegexOptions.Compiled, RegexTimeout)));
+            p.Add(("private-key", new(RegexPatterns.PemPrivateKeyBlock, RegexOptions.Compiled, RegexTimeout)));
         }
 
         // Generic API key patterns (api_key=..., apikey:..., x-api-key:...)

@@ -15,6 +15,13 @@ public static class AzurePiiGuardrailBuilderExtensions
 {
     private const string CognitiveServicesScope = "https://cognitiveservices.azure.com/.default";
 
+    // the service rejects a synchronous-call document over 5,120 text elements, so longer text is
+    // analyzed in windows. A UTF-16 code unit count is never below the text element count, so
+    // windows of 5,000 code units always fit, and a 500-unit overlap keeps a name or address that
+    // straddles a window boundary whole in one of them.
+    private const int MaxChunkLength = 5_000;
+    private const int ChunkOverlap = 500;
+
     /// <summary>
     /// Adds PII redaction (order 20) augmented with Azure AI Language's PII entity recognition -
     /// native <c>Person</c> and full street <c>Address</c> categories that the offline regex/GLiNER
@@ -24,6 +31,11 @@ public static class AzurePiiGuardrailBuilderExtensions
     /// <para>
     /// PRIVACY: this sends the raw, unredacted analyzed text to Azure. <c>loggingOptOut</c> defaults
     /// to <c>true</c> on <see cref="AzurePiiOptions"/> so Azure does not retain it - see docs/remote-pii.md.
+    /// </para>
+    /// <para>
+    /// Text over the service's 5,120-character document limit is analyzed in overlapping windows of
+    /// at most 5,000 characters, one call at a time, each subject to <see cref="AzurePiiOptions.Timeout"/>
+    /// and <see cref="AzurePiiOptions.FailOpen"/>; the spans are mapped back onto the full text.
     /// </para>
     /// </summary>
     /// <param name="builder">The policy builder.</param>
@@ -41,7 +53,8 @@ public static class AzurePiiGuardrailBuilderExtensions
 
     /// <summary>
     /// Adds PII redaction (order 20) augmented with Azure AI Language, using a pre-configured
-    /// <see cref="AzurePiiClient"/> (e.g. one built over a shared <see cref="HttpClient"/>).
+    /// <see cref="AzurePiiClient"/> (e.g. one built over a shared <see cref="HttpClient"/>). Text over
+    /// the service's 5,120-character document limit is analyzed in overlapping windows.
     /// </summary>
     /// <param name="builder">The policy builder.</param>
     /// <param name="client">The Azure PII client to delegate to.</param>
@@ -67,7 +80,11 @@ public static class AzurePiiGuardrailBuilderExtensions
         // does not make either disposable; 0.3.0 does, so the handover is written to pick up
         // whichever of them implements IDisposable at runtime.
         var recognizer = new AzurePiiRecognizer(client, azureOptions, supportedLanguage: language);
-        registry.AddRecognizer(recognizer);
+
+        // the recognizer sends the whole text as one document, so text over the service's document
+        // limit is split into windows that fit. The wrapper does not take over the recognizer's
+        // lifetime; the rule still owns the recognizer and the client below.
+        registry.AddRecognizer(new ChunkingEntityRecognizer(recognizer, MaxChunkLength, ChunkOverlap));
         var owned = Disposables(recognizer, client);
 
         // defaultScoreThreshold 0 here; PiiRule applies PiiOptions.ScoreThreshold per evaluation.

@@ -29,7 +29,7 @@ public sealed class RuleConfiguration
     /// (e.g. PERSON, ADDRESS) and is required - there is no "detect everything" default for a remote call.
     /// </summary>
     public List<string>? Entities { get; set; }
-    /// <summary>Replacement text for redacted PII. Default: [REDACTED].</summary>
+    /// <summary>Replacement text for redacted PII. Default: null, which replaces each entity with its <c>&lt;ENTITY_TYPE&gt;</c> tag.</summary>
     public string? Replacement { get; set; }
     /// <summary>
     /// Country packs to enable in addition to the generic recognizers and the always-on US pack, by

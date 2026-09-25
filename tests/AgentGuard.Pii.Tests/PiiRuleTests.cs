@@ -23,8 +23,7 @@ public class PiiRuleTests
         rule.Phase.Should().Be(GuardrailPhase.Both);
     }
 
-    // AG-43: the phase is a guardrail concern, so it moved off the engine's PiiOptions (which
-    // drops RedactOutput in its next release) onto AgentGuard's own PiiRuleOptions.
+    // the phase is a guardrail concern, configured on AgentGuard's own PiiRuleOptions
     [Fact]
     public void ShouldBeInputOnly_WhenRedactOutputDisabled()
     {
@@ -32,8 +31,7 @@ public class PiiRuleTests
         rule.Phase.Should().Be(GuardrailPhase.Input);
     }
 
-    // AG-44: nothing on the guardrail side used to reach this, so two adjacent emails always
-    // collapsed into one tag. It is an engine concern, so it is read from PiiOptions.
+    // MergeEntitiesWithSpaces is an engine concern, so it is read from PiiOptions
     [Fact]
     public async Task ShouldAnonymizeAdjacentEntitiesSeparately_WhenMergingDisabled()
     {
@@ -123,8 +121,7 @@ public class PiiRuleTests
         result.ModifiedText.Should().Be("card ************1881 here");
     }
 
-    // AG-46: the vocabulary the engine ships changed in 0.3.0 - a Netherlands pack arrived and the
-    // two German identity-document entities merged, since they share one format.
+    // the country packs the engine ships, including nl, and its single German identity-document entity
 
     [Fact]
     public async Task ShouldDetectTheNetherlandsPack_WhenOptedIn()

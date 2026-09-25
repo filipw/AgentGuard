@@ -1,3 +1,5 @@
+using AgentGuard.Core.Abstractions;
+
 namespace AgentGuard.Onnx;
 
 /// <summary>
@@ -39,14 +41,52 @@ public sealed class OpirSafetyOptions
     public float Threshold { get; init; } = 0.5f;
 
     /// <summary>
-    /// Maximum input token length (including the frozen label prefix). Inputs longer than the
-    /// remaining text budget are truncated. Default: 512 (mDeBERTa-v3 base sequence length).
+    /// Maximum sequence length the model is run with, including the frozen label prefix and the
+    /// trailing <c>[SEP]</c>. What remains is the text budget that caps <see cref="WindowSize"/>;
+    /// longer input is split into windows rather than truncated. Default: 512 (mDeBERTa-v3 base
+    /// sequence length).
     /// </summary>
     public int MaxTokenLength { get; init; } = 512;
 
     /// <summary>
+    /// Maximum number of text tokens per classification window. Input that fits in one window is
+    /// classified in a single call. Longer input is split at word boundaries into
+    /// overlapping windows (see <see cref="WindowOverlap"/>) that are classified separately: the input
+    /// is blocked when any window is, and the scores of the highest-scoring window are reported. Values
+    /// above the text budget (<see cref="MaxTokenLength"/> minus the label prefix and <c>[SEP]</c>) are
+    /// clamped to it.
+    /// <para>
+    /// Default: 512, which is clamped to the whole text budget, so input up to a full model window is
+    /// classified in one pass. Harmful content surrounded by a lot of benign
+    /// text in the same window can be diluted below the threshold; lower this (for example to 128-256)
+    /// to trade more model calls and some false-positive risk for sensitivity to such content.
+    /// </para>
+    /// </summary>
+    public int WindowSize { get; init; } = 512;
+
+    /// <summary>
+    /// Number of tokens consecutive windows share, so text near a window boundary is also classified
+    /// together with what follows it. A passage of up to about this many tokens always lies entirely
+    /// within at least one window. Must be smaller than the effective <see cref="WindowSize"/>.
+    /// Default: 128.
+    /// </summary>
+    public int WindowOverlap { get; init; } = 128;
+
+    /// <summary>
+    /// Maximum number of windows classified for a single input. Each window is a full model call, so
+    /// the cost of the rule grows linearly with input length; this bounds it. Input that needs more
+    /// windows is blocked (with <see cref="GuardrailSeverity.Medium"/> severity and
+    /// <c>inputTooLong</c> metadata) instead of being passed with part of it never classified.
+    /// Set to 0 to remove the limit. Default: 32, which covers roughly 11,000 tokens with the default
+    /// window settings.
+    /// </summary>
+    public int MaxWindows { get; init; } = 32;
+
+    /// <summary>
     /// Whether to include the triggering label, its score, and the full per-label scores in result
-    /// metadata. Default: true.
+    /// metadata. For input split into windows these are the reported window's scores, and the metadata
+    /// also carries <c>windowIndex</c> (zero-based), <c>windowCount</c>, <c>windowStart</c> and
+    /// <c>windowLength</c> (the character range of that window). Default: true.
     /// </summary>
     public bool IncludeConfidence { get; init; } = true;
 }

@@ -1,5 +1,7 @@
+using System.Text;
 using System.Text.RegularExpressions;
 using AgentGuard.Core.Abstractions;
+using AgentGuard.Core.Rules.Normalization;
 
 namespace AgentGuard.Core.Rules.ToolResult;
 
@@ -27,7 +29,14 @@ public enum ToolResultAction
     /// <summary>Block the entire pipeline.</summary>
     Block,
 
-    /// <summary>Sanitize the tool result by stripping detected injection content.</summary>
+    /// <summary>
+    /// Sanitize the tool result by removing the detected injection. A match only marks where an
+    /// injected instruction starts, so everything from the start of the matched line through the
+    /// end of its paragraph (the next blank line, or the end of the content) is replaced with
+    /// <see cref="ToolResultGuardrailOptions.SanitizationReplacement"/>. Content with no paragraph
+    /// breaks loses everything from the matched line on; use <see cref="Block"/> when precision
+    /// matters more than keeping the rest of the result.
+    /// </summary>
     Sanitize
 }
 
@@ -95,7 +104,9 @@ public sealed class ToolResultGuardrailOptions
         new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
-    /// Whether to strip Unicode control characters and zero-width characters. Default: true.
+    /// Whether to strip Unicode control characters, zero-width characters and Unicode tag
+    /// characters (U+E0000-U+E007F) from the results handed back. Detection of those characters
+    /// runs either way. Default: true.
     /// </summary>
     public bool StripUnicodeControl { get; init; } = true;
 
@@ -106,7 +117,8 @@ public sealed class ToolResultGuardrailOptions
 
     /// <summary>
     /// Replacement text used when <see cref="Action"/> is <see cref="ToolResultAction.Sanitize"/>.
-    /// Default: "[FILTERED]".
+    /// Each removed span (see <see cref="ToolResultAction.Sanitize"/>) becomes one copy of it,
+    /// inserted literally - <c>$</c> sequences are not regex substitutions. Default: "[FILTERED]".
     /// </summary>
     public string SanitizationReplacement { get; init; } = "[FILTERED]";
 
@@ -152,9 +164,11 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
 
     private static readonly (string Category, string Description, Regex Pattern)[] CorePatterns =
     [
-        // Role/system markers - attempts to hijack the conversation role
+        // Role/system markers - attempts to hijack the conversation role. The line start is a
+        // lookbehind checked once the marker is found, with an indent that cannot cross a newline,
+        // which keeps the scan linear.
         ("RoleHijacking", "System role marker injection",
-            new(@"(?i)(?:^|\n)\s*(?:system|assistant|developer)\s*:", RegexOptions.Compiled, RegexTimeout)),
+            new(@"(?i)(?<=(?:^|\n)[^\S\n]*)(?:system|assistant|developer)\s*:", RegexOptions.Compiled, RegexTimeout)),
 
         // Bracket-style role markers
         ("RoleHijacking", "Bracket role marker injection",
@@ -175,9 +189,10 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
             new(@"<\|(?:im_start|im_end|system|user|assistant|endoftext|pad|sep)\|>",
                 RegexOptions.Compiled, RegexTimeout)),
 
-        // XML-style role tags
+        // XML-style role tags. The optional slash owns the whitespace after it, which keeps the scan
+        // linear.
         ("TokenInjection", "XML role tag injection",
-            new(@"<\s*/?\s*(?:system|assistant|user|instruction|tool_response)\s*>",
+            new(@"<\s*(?:/\s*)?(?:system|assistant|user|instruction|tool_response)\s*>",
                 RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout)),
 
         // JSON-style injection - fake JSON role/instruction fields
@@ -198,6 +213,15 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
         // Text direction override characters - can reverse visible text to hide payloads
         ("HiddenContent", "Text direction override characters",
             new(@"[\u202A-\u202E\u2066-\u2069]",
+                RegexOptions.Compiled, RegexTimeout)),
+
+        // Unicode tag characters (U+E0000-U+E007F) - invisible ASCII a model still reads ("ASCII
+        // smuggling"). Each is a surrogate pair, U+DB40 then U+DC00-U+DC7F. The one legitimate
+        // use is an emoji flag tag sequence (U+1F3F4, a short tag spec, a cancel tag, e.g. the
+        // flag of Scotland), so tags within a few code points of a black flag are not flagged; the
+        // lookbehind is bounded, which keeps the scan linear.
+        ("HiddenContent", "Unicode tag characters",
+            new(@"(?<!\uD83C\uDFF4(?:\uDB40[\uDC20-\uDC7E]){0,8})(?:\uDB40[\uDC00-\uDC7F])+",
                 RegexOptions.Compiled, RegexTimeout)),
 
         // Data exfiltration - URLs that may exfiltrate context
@@ -230,9 +254,11 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
             new(@"(?i)(?:execute|run|eval)\s+(?:the\s+following\s+)?(?:command|code|script|query|function)\s*[:\(]",
                 RegexOptions.Compiled, RegexTimeout)),
 
-        // Separator injection - long separator lines followed by injection-like keywords
+        // Separator injection - long separator lines followed by injection-like keywords. A
+        // separator only starts at the beginning of its run and the whitespace before the line
+        // break cannot itself contain one, which keeps the scan linear.
         ("DelimiterManipulation", "Separator injection",
-            new(@"(?:[-=]{10,}|[─═]{5,})\s*\n\s*(?i)(?:system|instruction|important|new\s+(?:rules|instructions|prompt))\s*:",
+            new(@"(?:(?<![-=])[-=]{10,}|(?<![─═])[─═]{5,})[^\S\n]*\n\s*(?i)(?:system|instruction|important|new\s+(?:rules|instructions|prompt))\s*:",
                 RegexOptions.Compiled, RegexTimeout)),
     ];
 
@@ -583,64 +609,148 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
         }
     }
 
+    /// <summary>
+    /// Removes the injected instructions from one tool result's content, for
+    /// <see cref="ToolResultAction.Sanitize"/>.
+    /// </summary>
+    /// <remarks>
+    /// A pattern match marks where an injection starts, not where it ends, so each match
+    /// is widened to the whole line it starts on, through the end of its paragraph - the next
+    /// blank line, or the end of the content - which also catches an instruction hard-wrapped over
+    /// several lines, as plain-text email is. Lines before the match's line and paragraphs after
+    /// it are kept, and each removed span becomes one copy of
+    /// <see cref="ToolResultGuardrailOptions.SanitizationReplacement"/>, inserted literally. When a
+    /// pattern times out, where its injection ends cannot be known, so the whole content is
+    /// replaced instead.
+    /// </remarks>
     private string SanitizeContent(string content, ToolRiskLevel riskLevel)
     {
-        var replacement = _options.SanitizationReplacement;
-        var sanitized = content;
+        var matches = new List<(int Start, int End)>();
 
-        // Apply core patterns
-        foreach (var (_, _, pattern) in CorePatterns)
-        {
-            try
-            {
-                sanitized = pattern.Replace(sanitized, replacement);
-            }
-            catch (RegexMatchTimeoutException) { }
-        }
+        var complete = CollectMatches(content, CorePatterns, matches)
+            && (riskLevel < ToolRiskLevel.Medium || CollectMatches(content, MediumRiskPatterns, matches))
+            && (riskLevel < ToolRiskLevel.High || CollectMatches(content, HighRiskPatterns, matches))
+            && CollectMatches(content, _options.CustomPatterns, matches);
 
-        if (riskLevel >= ToolRiskLevel.Medium)
-        {
-            foreach (var (_, _, pattern) in MediumRiskPatterns)
-            {
-                try
-                {
-                    sanitized = pattern.Replace(sanitized, replacement);
-                }
-                catch (RegexMatchTimeoutException) { }
-            }
-        }
+        if (!complete)
+            return _options.SanitizationReplacement;
 
-        if (riskLevel >= ToolRiskLevel.High)
-        {
-            foreach (var (_, _, pattern) in HighRiskPatterns)
-            {
-                try
-                {
-                    sanitized = pattern.Replace(sanitized, replacement);
-                }
-                catch (RegexMatchTimeoutException) { }
-            }
-        }
-
-        // Apply custom patterns
-        foreach (var (_, _, pattern) in _options.CustomPatterns)
-        {
-            try
-            {
-                sanitized = pattern.Replace(sanitized, replacement);
-            }
-            catch (RegexMatchTimeoutException) { }
-        }
-
-        return sanitized;
+        return matches.Count == 0 ? content : RemoveInjectedParagraphs(content, matches, _options.SanitizationReplacement);
     }
 
-    private static string StripControlCharacters(string text)
+    /// <summary>
+    /// Adds every match of every pattern to <paramref name="matches"/>. Returns <c>false</c> when a
+    /// pattern times out.
+    /// </summary>
+    private static bool CollectMatches(
+        string content,
+        IReadOnlyList<(string Category, string Description, Regex Pattern)> patterns,
+        List<(int Start, int End)> matches)
     {
-        // Remove zero-width and invisible Unicode characters that could be used to hide payloads
-        return Regex.Replace(text, @"[\u200B\u200C\u200D\u2060\uFEFF\u00AD\u200E\u200F\u202A-\u202E\u2066-\u2069]", "",
-            RegexOptions.Compiled, TimeSpan.FromMilliseconds(100));
+        foreach (var (_, _, pattern) in patterns)
+        {
+            try
+            {
+                foreach (Match match in pattern.Matches(content))
+                    matches.Add((match.Index, match.Index + match.Length));
+            }
+            catch (RegexMatchTimeoutException)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
+
+    /// <summary>
+    /// Replaces, for each match, the text from the start of the match's line to the end of the
+    /// match's paragraph; overlapping spans are merged first. Linear in the content length.
+    /// </summary>
+    internal static string RemoveInjectedParagraphs(string content, List<(int Start, int End)> matches, string replacement)
+    {
+        // line breaks at a match's edges belong to the neighbouring lines, not to the match
+        for (var i = 0; i < matches.Count; i++)
+        {
+            var (start, end) = matches[i];
+            while (start < end && content[start] is '\r' or '\n')
+                start++;
+            while (end > start && content[end - 1] is '\r' or '\n')
+                end--;
+            matches[i] = (start, end);
+        }
+
+        matches.Sort((a, b) => a.Start.CompareTo(b.Start));
+
+        var spans = new List<(int Start, int End)>();
+        foreach (var (start, end) in matches)
+        {
+            if (spans.Count > 0 && start < spans[^1].End)
+            {
+                // starts inside the span being built, so its line is already covered; only its
+                // end can carry the span on into a later paragraph
+                if (end > spans[^1].End)
+                    spans[^1] = (spans[^1].Start, ParagraphEnd(content, end));
+                continue;
+            }
+
+            var lineStart = start == 0 ? 0 : content.LastIndexOf('\n', start - 1) + 1;
+            var paragraphEnd = ParagraphEnd(content, end);
+
+            if (spans.Count > 0 && lineStart <= spans[^1].End)
+                spans[^1] = (spans[^1].Start, Math.Max(spans[^1].End, paragraphEnd));
+            else
+                spans.Add((lineStart, paragraphEnd));
+        }
+
+        var builder = new StringBuilder(content.Length);
+        var copied = 0;
+        foreach (var (start, end) in spans)
+        {
+            builder.Append(content, copied, start - copied).Append(replacement);
+            copied = end;
+        }
+
+        return builder.Append(content, copied, content.Length - copied).ToString();
+    }
+
+    /// <summary>
+    /// The end of the paragraph containing the character before <paramref name="position"/>: the
+    /// line break ahead of the next blank line (the break itself is kept), or the end of the text.
+    /// </summary>
+    private static int ParagraphEnd(string content, int position)
+    {
+        var lineEnd = content.IndexOf('\n', position);
+        while (lineEnd >= 0)
+        {
+            var nextStart = lineEnd + 1;
+            var nextEnd = content.IndexOf('\n', nextStart);
+            var nextLine = content.AsSpan(nextStart, (nextEnd < 0 ? content.Length : nextEnd) - nextStart);
+
+            if (nextLine.IsWhiteSpace())
+                return lineEnd > position && content[lineEnd - 1] == '\r' ? lineEnd - 1 : lineEnd;
+
+            lineEnd = nextEnd;
+        }
+
+        return content.Length;
+    }
+
+    /// <summary>
+    /// Removes zero-width, bidirectional-control and Unicode tag characters that could be used to
+    /// hide payloads. Walks the text by code point, so the surrogate pairs that tag characters are
+    /// encoded as are removed whole.
+    /// </summary>
+    private static string StripControlCharacters(string text) =>
+        InvisibleCharacters.Remove(text, IsHiddenCharacter) ?? text;
+
+    private static bool IsHiddenCharacter(Rune rune) => rune.Value switch
+    {
+        0x200B or 0x200C or 0x200D or 0x2060 or 0xFEFF or 0x00AD or 0x200E or 0x200F => true,
+        >= 0x202A and <= 0x202E => true,
+        >= 0x2066 and <= 0x2069 => true,
+        _ => InvisibleCharacters.IsUnicodeTag(rune)
+    };
 
     private static string TruncateMatch(string match)
     {

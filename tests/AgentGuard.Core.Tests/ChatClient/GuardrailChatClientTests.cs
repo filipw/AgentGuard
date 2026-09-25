@@ -105,13 +105,13 @@ public class GuardrailChatClientTests
     [Fact]
     public async Task ShouldPropagateConversationHistory_ToInputRules()
     {
-        // Capture what was sent to the inner rule via a custom delegate rule
-        List<ChatMessage>? capturedHistory = null;
+        // Capture what was sent to the inner rule via a custom delegate rule, per evaluated message
+        var capturedHistories = new Dictionary<string, List<ChatMessage>?>();
 
         var policy = new GuardrailPolicyBuilder()
             .AddRule("history-capture", GuardrailPhase.Input, (ctx, _) =>
             {
-                capturedHistory = ctx.Messages?.ToList();
+                capturedHistories[ctx.Text] = ctx.Messages?.ToList();
                 return ValueTask.FromResult(GuardrailResult.Passed());
             })
             .Build();
@@ -128,10 +128,15 @@ public class GuardrailChatClientTests
 
         await client.GetResponseAsync(history);
 
+        // the newest message is judged against the whole conversation
+        var capturedHistory = capturedHistories["Can I get a refund?"];
         capturedHistory.Should().NotBeNull();
         capturedHistory!.Should().HaveCount(3);
         capturedHistory![0].Text.Should().Be("What is my invoice total?");
         capturedHistory![2].Text.Should().Be("Can I get a refund?");
+
+        // an earlier one against the conversation as it stood when it was the newest
+        capturedHistories["What is my invoice total?"].Should().ContainSingle();
     }
 
     [Fact]
@@ -166,14 +171,14 @@ public class GuardrailChatClientTests
     // ── evaluates only last user message for input ────────────────────────────
 
     [Fact]
-    public async Task ShouldEvaluate_OnlyLastUserMessage_ForInputPhase()
+    public async Task ShouldEvaluateNewestUserMessageFirst_AndEarlierUserMessagesToo_ForInputPhase()
     {
-        // A rule that blocks "DANGER" - only the last message should be checked
-        string? evaluatedText = null;
+        // the caller owns the history, so earlier user turns reach the model again on every call
+        var evaluated = new List<string>();
         var policy = new GuardrailPolicyBuilder()
             .AddRule("text-capture", GuardrailPhase.Input, (ctx, _) =>
             {
-                evaluatedText = ctx.Text;
+                evaluated.Add(ctx.Text);
                 return ValueTask.FromResult(GuardrailResult.Passed());
             })
             .Build();
@@ -190,7 +195,7 @@ public class GuardrailChatClientTests
 
         await client.GetResponseAsync(history);
 
-        evaluatedText.Should().Be("New clean message");
+        evaluated.Should().Equal("New clean message", "Old message with DANGER");
     }
 
     // ── UseAgentGuard extension ───────────────────────────────────────────────

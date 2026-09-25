@@ -1,3 +1,4 @@
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -32,7 +33,9 @@ public sealed class HttpClassifierOptions
     public required string EndpointUrl { get; init; }
 
     /// <summary>
-    /// Optional API key for authenticated endpoints. Sent as "Bearer" in the Authorization header.
+    /// Optional API key for authenticated endpoints. Sent as "Bearer" in the Authorization header of
+    /// each request to <see cref="EndpointUrl"/>; it is never written onto the <see cref="HttpClient"/>,
+    /// so classifiers sharing a client each send their own key.
     /// </summary>
     public string? ApiKey { get; init; }
 
@@ -110,11 +113,10 @@ public sealed class HttpClassifier : IRemoteClassifier, IDisposable
         if (string.IsNullOrWhiteSpace(options.EndpointUrl))
             throw new ArgumentException("EndpointUrl is required.", nameof(options));
 
-        if (options.ApiKey is not null)
-        {
-            _httpClient.DefaultRequestHeaders.Authorization =
-                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", options.ApiKey);
-        }
+        // the API key is applied per request in ClassifyAsync, never to the client's default headers:
+        // a client from IHttpClientFactory or DI is shared, so the last classifier constructed over it
+        // would send its key to every other classifier's endpoint (and mutating DefaultRequestHeaders
+        // while requests are in flight is not thread-safe).
     }
 
     /// <inheritdoc />
@@ -127,10 +129,15 @@ public sealed class HttpClassifier : IRemoteClassifier, IDisposable
             _ => new { inputs = text }
         };
 
-        var response = await _httpClient.PostAsJsonAsync(
-            _options.EndpointUrl,
-            requestBody,
-            cancellationToken);
+        using var request = new HttpRequestMessage(HttpMethod.Post, _options.EndpointUrl)
+        {
+            Content = JsonContent.Create(requestBody)
+        };
+
+        if (_options.ApiKey is not null)
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _options.ApiKey);
+
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
 
         response.EnsureSuccessStatusCode();
 

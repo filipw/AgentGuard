@@ -291,8 +291,12 @@ public sealed partial class GuardrailPipeline
                 LogReaskSuccess(_logger, attempt + 1);
                 reaskActivity?.SetTag(AgentGuardTelemetry.Tags.ReaskAttemptsUsed, attempt + 1);
                 reaskActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Passed);
+
+                // the core run compared the re-asked text with itself; against the caller's text the answer
+                // changed, and the adapters apply FinalText when WasModified is set
                 return reaskResult with
                 {
+                    WasModified = !string.Equals(reaskResult.FinalText, originalContext.Text, StringComparison.Ordinal),
                     WasReasked = true,
                     ReaskAttemptsUsed = attempt + 1
                 };
@@ -377,7 +381,10 @@ public sealed record GuardrailPipelineResult
     /// <summary>Whether a rule rejected the text.</summary>
     public required bool IsBlocked { get; init; }
 
-    /// <summary>Whether <see cref="FinalText"/> differs from the text that went in.</summary>
+    /// <summary>
+    /// Whether <see cref="FinalText"/> differs from the text that went in - including when a successful
+    /// re-ask replaced it with a new answer.
+    /// </summary>
     public bool WasModified { get; init; }
 
     /// <summary>The rule result that blocked, when <see cref="IsBlocked"/> is true.</summary>

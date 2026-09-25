@@ -70,13 +70,12 @@ public class OnnxPromptInjectionRuleTests
     }
 
     // -----------------------------------------------------------------------
-    // Rule property tests - use the internal constructor with a null session
-    // guard: we build a minimal fake by supplying null and relying on the fact
-    // that property accessors do not touch the session.
+    // Rule property tests - use the internal constructor with a classifier that
+    // must never be called: property accessors do not touch the model.
     // -----------------------------------------------------------------------
 
     private static OnnxPromptInjectionRule CreateRuleWithoutSession() =>
-        new(null!, new OnnxPromptInjectionOptions
+        new(WindowingTestHelpers.NotCalled<float>, WindowingTestHelpers.CountWords, new OnnxPromptInjectionOptions
         {
             ModelPath = "/nonexistent/model.onnx",
             TokenizerPath = "/nonexistent/tokenizer.spm"
@@ -269,18 +268,14 @@ public class OnnxPromptInjectionRuleTests
 
     // -----------------------------------------------------------------------
     // EvaluateAsync behaviour tests - use the internal constructor so no
-    // real model files are required. The session is passed as null; we only
-    // exercise code paths that return early (null/whitespace text).
+    // real model files are required. The classifier must never be called; we
+    // only exercise code paths that return early (null/whitespace text).
     // -----------------------------------------------------------------------
 
     [Fact]
     public async Task ShouldReturnPassed_WhenTextIsEmpty()
     {
-        var rule = new OnnxPromptInjectionRule(null!, new OnnxPromptInjectionOptions
-        {
-            ModelPath = "/nonexistent/model.onnx",
-            TokenizerPath = "/nonexistent/tokenizer.spm"
-        });
+        var rule = CreateRuleWithoutSession();
 
         var ctx = new GuardrailContext { Text = "", Phase = GuardrailPhase.Input };
         var result = await rule.EvaluateAsync(ctx);
@@ -291,15 +286,111 @@ public class OnnxPromptInjectionRuleTests
     [Fact]
     public async Task ShouldReturnPassed_WhenTextIsWhitespace()
     {
-        var rule = new OnnxPromptInjectionRule(null!, new OnnxPromptInjectionOptions
-        {
-            ModelPath = "/nonexistent/model.onnx",
-            TokenizerPath = "/nonexistent/tokenizer.spm"
-        });
+        var rule = CreateRuleWithoutSession();
 
         var ctx = new GuardrailContext { Text = "   ", Phase = GuardrailPhase.Input };
         var result = await rule.EvaluateAsync(ctx);
 
         result.IsBlocked.Should().BeFalse("whitespace-only text must pass without invoking the classifier");
     }
+
+    // windowing: input longer than one window is classified window by window (fake classifier that
+    // flags any window containing INJECT, and one token per word)
+
+    [Fact]
+    public void ShouldHaveWindowingDefaults_WhenOptionsAreNotSet()
+    {
+        var options = new OnnxPromptInjectionOptions { ModelPath = "m", TokenizerPath = "t" };
+
+        options.WindowSize.Should().Be(510);
+        options.WindowOverlap.Should().Be(128);
+        options.MaxWindows.Should().Be(32);
+    }
+
+    [Fact]
+    public async Task ShouldClassifyWholeTextInOneCall_WhenTextFitsInOneWindow()
+    {
+        var text = WindowingTestHelpers.WordsWithMarker(510, 500, "INJECT");
+        var calls = new List<string>();
+        var rule = CreateWindowedRule(calls);
+
+        var result = await rule.EvaluateAsync(new GuardrailContext { Text = text, Phase = GuardrailPhase.Input });
+
+        calls.Should().Equal([text], "text that fits the model's input must be classified exactly as before, in one call");
+        result.IsBlocked.Should().BeTrue();
+        result.Metadata.Should().NotContainKey("windowCount");
+    }
+
+    [Fact]
+    public async Task ShouldBlock_WhenInjectionIsBeyondTheModelInputLength()
+    {
+        var text = WindowingTestHelpers.WordsWithMarker(2000, 1800, "INJECT");
+        var calls = new List<string>();
+        var rule = CreateWindowedRule(calls);
+
+        var result = await rule.EvaluateAsync(new GuardrailContext { Text = text, Phase = GuardrailPhase.Input });
+
+        result.IsBlocked.Should().BeTrue("text past the model's input length must still be classified");
+        result.Severity.Should().Be(GuardrailSeverity.Critical);
+        result.Metadata!["confidence"].Should().Be(0.99f);
+        ((int)result.Metadata["windowCount"]).Should().Be(calls.Count);
+        text.Substring((int)result.Metadata["windowStart"], (int)result.Metadata["windowLength"]).Should().Contain("INJECT");
+        calls.Should().OnlyContain(window => WindowingTestHelpers.CountWords(window) <= 510);
+    }
+
+    [Fact]
+    public async Task ShouldBlockAsTooLong_WhenInputNeedsMoreThanMaxWindows()
+    {
+        var rule = new OnnxPromptInjectionRule(
+            WindowingTestHelpers.NotCalled<float>,
+            WindowingTestHelpers.CountWords,
+            new OnnxPromptInjectionOptions { ModelPath = "m", TokenizerPath = "t", MaxWindows = 2 });
+
+        var result = await rule.EvaluateAsync(new GuardrailContext { Text = WindowingTestHelpers.Words(2000), Phase = GuardrailPhase.Input });
+
+        result.IsBlocked.Should().BeTrue("input that cannot be scanned completely must not pass");
+        result.Severity.Should().Be(GuardrailSeverity.Medium);
+        result.Reason.Should().Contain(nameof(OnnxPromptInjectionOptions)).And.Contain("MaxWindows");
+        result.Metadata!["inputTooLong"].Should().Be(true);
+    }
+
+    [Theory]
+    [InlineData(0, 0, 32)]
+    [InlineData(128, 128, 32)]
+    [InlineData(510, -1, 32)]
+    [InlineData(510, 128, -1)]
+    public void ShouldThrow_WhenWindowSettingsAreInvalid(int windowSize, int windowOverlap, int maxWindows)
+    {
+        // both files must exist so validation reaches the window checks
+        var modelTemp = Path.GetTempFileName();
+        var tokenizerTemp = Path.GetTempFileName();
+        try
+        {
+            var act = () => new OnnxPromptInjectionRule(new OnnxPromptInjectionOptions
+            {
+                ModelPath = modelTemp,
+                TokenizerPath = tokenizerTemp,
+                WindowSize = windowSize,
+                WindowOverlap = windowOverlap,
+                MaxWindows = maxWindows
+            });
+
+            act.Should().Throw<ArgumentOutOfRangeException>().WithMessage("*Window*");
+        }
+        finally
+        {
+            File.Delete(modelTemp);
+            File.Delete(tokenizerTemp);
+        }
+    }
+
+    private static OnnxPromptInjectionRule CreateWindowedRule(List<string> calls) =>
+        new(
+            text =>
+            {
+                calls.Add(text);
+                return text.Contains("INJECT") ? 0.99f : 0.01f;
+            },
+            WindowingTestHelpers.CountWords,
+            new OnnxPromptInjectionOptions { ModelPath = "m", TokenizerPath = "t" });
 }

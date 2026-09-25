@@ -187,7 +187,7 @@ public static class OnnxGuardrailBuilderExtensions
     /// <param name="builder">The policy builder.</param>
     /// <param name="nerOptions">NER model paths, threshold, span width, and label map.</param>
     /// <param name="piiOptions">Optional PII detection/anonymization configuration (entities, countries, operators).</param>
-    /// <param name="ruleOptions">Optional guardrail-side settings (phase, span merging).</param>
+    /// <param name="ruleOptions">Optional guardrail-side settings (the phase; span merging is <c>PiiOptions.MergeEntitiesWithSpaces</c>).</param>
     /// <returns>The builder for chaining.</returns>
     public static GuardrailPolicyBuilder RedactPiiWithNer(
         this GuardrailPolicyBuilder builder,
@@ -227,7 +227,7 @@ public static class OnnxGuardrailBuilderExtensions
     /// <param name="configPath">Path to the model <c>config.json</c> (special-token ids + max span width).</param>
     /// <param name="threshold">Span emission threshold (0.0-1.0). Default: 0.5.</param>
     /// <param name="piiOptions">Optional PII detection/anonymization configuration.</param>
-    /// <param name="ruleOptions">Optional guardrail-side settings (phase, span merging).</param>
+    /// <param name="ruleOptions">Optional guardrail-side settings (the phase; span merging is <c>PiiOptions.MergeEntitiesWithSpaces</c>).</param>
     /// <returns>The builder for chaining.</returns>
     public static GuardrailPolicyBuilder RedactPiiWithNer(
         this GuardrailPolicyBuilder builder,

@@ -8,7 +8,8 @@
 // Defender rules (only one fires per request); they share one pooled ONNX session.
 //
 // Tradeoff: a higher threshold also weakens detection of native-language attacks, so for real
-// non-English coverage pair this with a multilingual classifier. (See CLAUDE.md for the data.)
+// non-English coverage pair this with a multilingual classifier. (See the Defender section of
+// docs/rules-reference.md.)
 //
 // The gate reads request context. Here an AsyncLocal stands in for IHttpContextAccessor; in
 // ASP.NET the predicate closure would read HttpContext (ClaimsPrincipal / RequestCulture)
