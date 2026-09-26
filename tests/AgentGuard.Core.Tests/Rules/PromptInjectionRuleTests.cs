@@ -544,6 +544,10 @@ public class PromptInjectionRuleLargeInputTests
     [InlineData("henceforth")]
     [InlineData("urls")]
     [InlineData("links")]
+    [InlineData("open-links")]
+    [InlineData("image-links")]
+    [InlineData("brackets")]
+    [InlineData("comments")]
     [InlineData("long-line-then-short")]
     public async Task ShouldNotTimeOut_WhenBenignInputIsPadded(string kind)
     {
@@ -558,6 +562,10 @@ public class PromptInjectionRuleLargeInputTests
             "henceforth" => "henceforth" + new string(' ', 50_000),
             "urls" => string.Concat(Enumerable.Repeat("http://", 10_000)),
             "links" => string.Concat(Enumerable.Repeat("[x](ignore", 10_000)),
+            "open-links" => string.Concat(Enumerable.Repeat("[a](", 50_000)),
+            "image-links" => string.Concat(Enumerable.Repeat("![a](", 40_000)),
+            "brackets" => new string('[', 200_000),
+            "comments" => string.Concat(Enumerable.Repeat("<!-- note ", 20_000)),
             _ => throw new ArgumentOutOfRangeException(nameof(kind))
         };
         var rule = new PromptInjectionRule(new() { Sensitivity = Sensitivity.High });

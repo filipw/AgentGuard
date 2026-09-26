@@ -26,12 +26,12 @@ internal static class PathTraversalDetector
     // a parent-directory segment: "..", or "..;param" as servlet containers read it. The segment must
     // start a path component, and its parameter is bounded, which keeps the scan linear.
     private static readonly Regex ParentSegment = new(
-        @"(?<![\w.~\-])\.\.(?:;[^/]{0,32})?(?=/|$)",
+        @"(?<![\w.~\-])\.\.(?>;[^/]{0,32})?(?=/|$)",
         RegexOptions.Compiled | RegexOptions.CultureInvariant, Timeout);
 
     // two parent-directory segments in a row
     private static readonly Regex ParentSegments = new(
-        @"(?<![\w.~\-])\.\.(?:;[^/]{0,32})?/\.\.(?:;[^/]{0,32})?(?=/|$)",
+        @"(?<![\w.~\-])\.\.(?>;[^/]{0,32})?/\.\.(?>;[^/]{0,32})?(?=/|$)",
         RegexOptions.Compiled | RegexOptions.CultureInvariant, Timeout);
 
     private static readonly Regex SensitivePath = new(

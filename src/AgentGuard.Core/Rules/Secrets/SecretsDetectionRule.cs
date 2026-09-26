@@ -334,12 +334,13 @@ public sealed class SecretsDetectionRule : IGuardrailRule
         {
             // key=value connection strings (SQL Server, PostgreSQL, MySQL): a host key, then a
             // password key after up to 20 further ';'-terminated segments on the same line or the
-            // next. Each segment is scanned once, which keeps the scan linear. Only the password
-            // value is replaced.
+            // next. A segment that starts another host key ends the search, so a run of connection
+            // strings is scanned once and a password is never attributed to an earlier one. Only the
+            // password value is replaced.
             p.Add(new("connection-string",
                 Compile(
                     @"(?<![A-Za-z0-9])(?:Server|Data[^\S\r\n]+Source|Host|Hostname)[^\S\r\n]*=[^;\r\n]*;(?:\r?\n)?"
-                    + @"(?:[^;\r\n]*;(?:\r?\n)?){0,20}?[^\S\r\n]*(?:Password|Pwd)[^\S\r\n]*=[^\S\r\n]*"
+                    + @"(?:(?![^\S\r\n]*(?:Server|Data[^\S\r\n]+Source|Host|Hostname)[^\S\r\n]*=)[^;\r\n]*;(?:\r?\n)?){0,20}?[^\S\r\n]*(?:Password|Pwd)[^\S\r\n]*=[^\S\r\n]*"
                     + @"(?<secret>[^;\r\n""']*[^;\s""'])",
                     RegexOptions.IgnoreCase),
                 Accept: m => IsSecretValue(m.Groups[SecretGroup].ValueSpan, minLength: 1)));

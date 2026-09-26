@@ -345,7 +345,8 @@ public sealed class ToolCallGuardrailRule : IGuardrailRule
             // bounded, so an unclosed "$(" or backtick cannot drive a quadratic scan
             AddPattern(checks, command, "Command substitution", @"\$\([^)]{1,256}\)|`[^`]{1,256}`");
             AddPattern(checks, command, "Pipe to shell", @"\|\s*(?:bash|sh|zsh|ksh|cmd|powershell|pwsh)\b");
-            AddPattern(checks, command, "Reverse shell patterns", @"bash\s+-i\s+>&|/dev/tcp/|\bnc\s+-[elp]|mkfifo|\bncat\s[^\r\n]{0,128}?-e");
+            // the ncat option search stops at the next "ncat ", so repeating the command can't multiply the scan
+            AddPattern(checks, command, "Reverse shell patterns", @"bash\s+-i\s+>&|/dev/tcp/|\bnc\s+-[elp]|mkfifo|\bncat\s(?:[^\r\nn]|n(?!cat\s)){0,128}?-e");
         }
 
         if (c.HasFlag(ToolCallInjectionCategory.Ssrf))
@@ -356,14 +357,15 @@ public sealed class ToolCallGuardrailRule : IGuardrailRule
         if (c.HasFlag(ToolCallInjectionCategory.TemplateInjection))
         {
             const ToolCallInjectionCategory template = ToolCallInjectionCategory.TemplateInjection;
-            // the keyword search is atomic - only the first keyword in reach is tried - which keeps
-            // the scan linear
+            // each expression is scanned only up to the next opener of its own kind ("{{", "${", "#{"),
+            // so repeating the opener can't multiply the work; a nested opener is scanned from its own
+            // start. The keyword search is atomic: only the first keyword in reach is tried
             AddPattern(checks, template, "Jinja2/Python template injection",
-                @"\{\{(?>[^\r\n]{0,256}?(?:config|self|request|lipsum|cycler|joiner|namespace|__class__|__mro__|__subclasses__))[^\r\n]{0,256}?\}\}");
+                @"\{\{(?>(?:[^\r\n{]|\{(?!\{)){0,256}?(?:config|self|request|lipsum|cycler|joiner|namespace|__class__|__mro__|__subclasses__))(?:[^\r\n{]|\{(?!\{)){0,256}?\}\}");
             AddPattern(checks, template, "Server-side template injection",
-                @"\$\{(?>[^\r\n]{0,256}?(?:Runtime|getClass|forName|exec|ProcessBuilder))[^\r\n]{0,256}?\}");
+                @"\$\{(?>(?:[^\r\n$]|\$(?!\{)){0,256}?(?:Runtime|getClass|forName|exec|ProcessBuilder))(?:[^\r\n$]|\$(?!\{)){0,256}?\}");
             AddPattern(checks, template, "Handlebars injection", @"\{\{(?:#each|#if|#with|lookup|helper)\b");
-            AddPattern(checks, template, "Expression language injection", @"#\{[^\r\n]{0,256}?\}");
+            AddPattern(checks, template, "Expression language injection", @"#\{(?:[^\r\n#}]|#(?!\{)){0,256}\}");
         }
 
         if (c.HasFlag(ToolCallInjectionCategory.Xss))
@@ -373,7 +375,8 @@ public sealed class ToolCallGuardrailRule : IGuardrailRule
             AddPattern(checks, xss, "Event handler XSS", @"\bon(?:error|load|click|mouseover|focus|blur|submit|change|input|keyup|keydown)\s*=");
             AddPattern(checks, xss, "JavaScript protocol XSS", @"javascript\s*:");
             AddPattern(checks, xss, "Data URI XSS", @"data\s*:\s*text/html");
-            AddPattern(checks, xss, "SVG XSS", @"<\s*svg\b[^>]{0,1024}?\bon\w{1,32}\s*=");
+            // attributes are scanned up to the next "<svg" rather than any "<", which an attribute value may hold
+            AddPattern(checks, xss, "SVG XSS", @"<\s*svg\b(?:[^<>]|<(?!\s*svg\b)){0,1024}?\bon\w{1,32}\s*=");
         }
 
         return checks;

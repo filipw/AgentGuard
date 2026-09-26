@@ -164,9 +164,9 @@ public sealed class PromptInjectionRule : IGuardrailRule
         (@"[-=]{5,}\s*(SYSTEM|END|BEGIN|RESET|OVERRIDE)\s*[-=]*", InjectionPatternCategory.General),
         (@"#{3,}\s*(SYSTEM|END|BEGIN|RESET)", InjectionPatternCategory.General),
 
-        // HTML comment injection - hidden directives in document content. The body is bounded so a
-        // long line of unclosed "<!-- system" openers cannot drive a quadratic scan.
-        (@"<!--\s*(?:system|ignore|instruction|prompt|override)[^>\n]{0,200}?-->", InjectionPatternCategory.General),
+        // HTML comment injection - hidden directives in document content. The body is bounded and ends
+        // at the next "<!--", so a long line of unclosed "<!-- system" openers is scanned once.
+        (@"<!--\s*(?:system|ignore|instruction|prompt|override)(?:[^<>\n]|<(?!!--)){0,200}?-->", InjectionPatternCategory.General),
 
         // Variable expansion attacks
         (@"\$\{(system_prompt|instructions|config|prompt)\}", InjectionPatternCategory.General),
@@ -223,8 +223,10 @@ public sealed class PromptInjectionRule : IGuardrailRule
         // the beginning of a non-space run and commits to the first scheme in it.
         (@"(?<!\S)(?>\S*?https?://)\S*?(system_prompt|ignore_rules|jailbreak|override|injection)", InjectionPatternCategory.General),
         // the keyword search is atomic: if the link does not close within reach of the keyword nearest
-        // the closing parenthesis, it cannot for any earlier one either, so those are not retried.
-        (@"\[[^\]\n]{0,200}\]\((?>[^)\n]{0,200}(ignore|override|system|jailbreak|injection))[^)\n]{0,200}\)", InjectionPatternCategory.General),
+        // the closing parenthesis, it cannot for any earlier one either, so those are not retried. The
+        // link text ends at the next "[" and the target at the next "](", so a run of unclosed links is
+        // scanned once.
+        (@"\[[^\[\]\n]{0,200}\]\((?>(?:[^)\]\n]|\](?!\()){0,200}(ignore|override|system|jailbreak|injection))(?:[^)\]\n]|\](?!\()){0,200}\)", InjectionPatternCategory.General),
 
         // Bare chat-role markers. Weak evidence on their own - a pasted log line ("System: the build
         // failed") or a support transcript ("User: hi / Agent: hello") trips them - so they only run

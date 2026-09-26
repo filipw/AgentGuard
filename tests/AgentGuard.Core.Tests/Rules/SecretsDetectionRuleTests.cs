@@ -650,6 +650,7 @@ public class SecretsDetectionRuleLargeInputTests
     [Theory]
     [InlineData("jwt-run", "jwt-token")]
     [InlineData("connection-string-segments", "connection-string")]
+    [InlineData("connection-string-servers", "connection-string")]
     [InlineData("mongodb-colons", "mongodb-uri")]
     [InlineData("uri-without-host", "connection-uri")]
     [InlineData("unterminated-quoted-value", "secret-field")]
@@ -662,6 +663,8 @@ public class SecretsDetectionRuleLargeInputTests
         {
             "jwt-run" => "x " + string.Concat(Enumerable.Repeat("eyJ", 100_000)) + " token " + jwt,
             "connection-string-segments" => string.Concat(Enumerable.Repeat("Host=a;", 50_000))
+                + "\nServer=db;Database=app;Password=hunter2!",
+            "connection-string-servers" => string.Concat(Enumerable.Repeat("Server=a;b=c;", 30_000))
                 + "\nServer=db;Database=app;Password=hunter2!",
             "mongodb-colons" => "mongodb://" + string.Concat(Enumerable.Repeat("a:", 100_000))
                 + " then mongodb://admin:hunter2@mongo:27017",
