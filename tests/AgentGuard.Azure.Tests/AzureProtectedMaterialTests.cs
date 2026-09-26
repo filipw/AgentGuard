@@ -155,6 +155,106 @@ public class AzureProtectedMaterialTests
         await act.Should().ThrowAsync<OperationCanceledException>();
     }
 
+    [Fact]
+    public async Task ShouldPropagateCancellation_WhenTheCallerCancelsCodeAnalysis()
+    {
+        var handler = new FakeProtectedMaterialHandler();
+        var rule = new AzureProtectedMaterialRule(
+            CreateClient(handler), new AzureProtectedMaterialOptions { AnalyzeCode = true, OnError = ErrorBehavior.FailClosed });
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+
+        var act = async () => await rule.EvaluateAsync(CodeContext(), cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        handler.Calls.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ShouldPropagateCancellation_WhenATextRequestFailsAfterTheCallerCanceled()
+    {
+        // a request torn down by the caller's cancellation can end with a transport failure instead
+        using var cts = new CancellationTokenSource();
+        var rule = new AzureProtectedMaterialRule(
+            new AzureProtectedMaterialClient(Endpoint, "key", new HttpClient(LambdaHttpHandler.CancelsThenFails(cts))),
+            new AzureProtectedMaterialOptions { OnError = ErrorBehavior.FailClosed });
+
+        var act = async () => await rule.EvaluateAsync(Context(Words(500)), cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Fact]
+    public async Task ShouldPropagateCancellation_WhenACodeRequestFailsAfterTheCallerCanceled()
+    {
+        using var cts = new CancellationTokenSource();
+        var rule = new AzureProtectedMaterialRule(
+            new AzureProtectedMaterialClient(Endpoint, "key", new HttpClient(LambdaHttpHandler.CancelsThenFails(cts))),
+            new AzureProtectedMaterialOptions { AnalyzeCode = true, OnError = ErrorBehavior.FailClosed });
+
+        var act = async () => await rule.EvaluateAsync(CodeContext(), cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Fact]
+    public async Task ShouldPropagateCancellation_WhenTheCallerCancelsBetweenWindows()
+    {
+        using var cts = new CancellationTokenSource();
+        var handler = new LambdaHttpHandler(async (_, _) =>
+        {
+            await cts.CancelAsync();
+            return LambdaHttpHandler.Json("""{"protectedMaterialAnalysis": {"detected": false}}""");
+        });
+        using var client = new AzureProtectedMaterialClient(Endpoint, "key", new HttpClient(handler));
+
+        var act = async () => await client.AnalyzeTextAsync(Words(30_000), cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        handler.Calls.Should().Be(1, "no request is sent once the caller has canceled");
+    }
+
+    [Theory]
+    [InlineData(false, ErrorBehavior.FailOpen, false)]
+    [InlineData(false, ErrorBehavior.FailClosed, true)]
+    [InlineData(true, ErrorBehavior.FailOpen, false)]
+    [InlineData(true, ErrorBehavior.FailClosed, true)]
+    public async Task ShouldApplyOnError_WhenTheRequestTimesOut(bool analyzeCode, ErrorBehavior onError, bool expectBlocked)
+    {
+        // the HttpClient's own timeout is not the caller's cancellation
+        var client = new AzureProtectedMaterialClient(
+            Endpoint, "key", new HttpClient(LambdaHttpHandler.Hanging()) { Timeout = TimeSpan.FromMilliseconds(100) });
+        var rule = new AzureProtectedMaterialRule(client, new AzureProtectedMaterialOptions { AnalyzeCode = analyzeCode, OnError = onError });
+
+        var result = await rule.EvaluateAsync(analyzeCode ? CodeContext() : Context(Words(500)));
+
+        result.IsError.Should().BeTrue();
+        result.IsBlocked.Should().Be(expectBlocked);
+    }
+
+    [Theory]
+    [InlineData(ErrorBehavior.FailOpen, false)]
+    [InlineData(ErrorBehavior.FailClosed, true)]
+    public async Task ShouldApplyOnError_WhenTheServiceIsUnreachable(ErrorBehavior onError, bool expectBlocked)
+    {
+        var rule = new AzureProtectedMaterialRule(
+            new AzureProtectedMaterialClient(Endpoint, "key", new HttpClient(LambdaHttpHandler.Unreachable())),
+            new AzureProtectedMaterialOptions { OnError = onError });
+
+        var result = await rule.EvaluateAsync(Context(Words(500)));
+
+        result.IsError.Should().BeTrue();
+        result.IsBlocked.Should().Be(expectBlocked);
+    }
+
+    // an answer under the service minimum, so only the code in the "Code" property is sent
+    private static GuardrailContext CodeContext()
+    {
+        var context = Context("Here you go.");
+        context.Properties["Code"] = string.Concat(Enumerable.Repeat("int value = compute(input);\n", 20));
+        return context;
+    }
+
     /// <summary>
     /// Emulates <c>text:detectProtectedMaterial</c> and <c>text:detectProtectedMaterialForCode</c>,
     /// including their documented limits: input over 10,000 or under 110 characters is rejected with a

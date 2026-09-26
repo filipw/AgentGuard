@@ -44,19 +44,19 @@ builder.Services.AddOpenTelemetry()
 
 | Span name | Description | Key tags |
 |-----------|-------------|----------|
-| `agentguard.pipeline.run` | Full pipeline evaluation | `agentguard.policy.name`, `agentguard.phase`, `agentguard.outcome`, `agentguard.agent.name` |
-| `agentguard.rule.evaluate {name}` | Individual rule evaluation | `agentguard.rule.name`, `agentguard.phase`, `agentguard.rule.order`, `agentguard.outcome`; on a block also `agentguard.blocked.reason` and `agentguard.severity`, on a rule error `error.type`. Rule spans from progressive streaming carry `agentguard.streaming.strategy` instead of the block and error tags |
-| `agentguard.pipeline.reask` | Re-ask loop | `agentguard.policy.name`, `agentguard.reask.max_attempts`, `agentguard.reask.attempts_used`, `agentguard.outcome` |
-| `agentguard.streaming.pipeline` | Progressive streaming evaluation | `agentguard.policy.name`, `agentguard.outcome`, `agentguard.streaming.progressive_rules`, `agentguard.streaming.final_only_rules`, `agentguard.streaming.adaptive_rules` |
+| `agentguard.pipeline.run` | Full pipeline evaluation | `agentguard.policy.name`, `agentguard.phase`, `agentguard.outcome`, `agentguard.agent.name`; on a block also `agentguard.blocked.reason` and `agentguard.severity` |
+| `agentguard.rule.evaluate {name}` | Individual rule evaluation | `agentguard.rule.name`, `agentguard.phase`, `agentguard.rule.order`, `agentguard.outcome`; on a block also `agentguard.blocked.reason` and `agentguard.severity`, on a rule error `error.type`. Rule spans from progressive streaming also carry `agentguard.streaming.strategy` |
+| `agentguard.pipeline.reask` | Re-ask loop | `agentguard.policy.name`, `agentguard.reask.max_attempts`, `agentguard.reask.attempts_used`, `agentguard.outcome`; when the attempts run out also `agentguard.blocked.reason` and `agentguard.severity` |
+| `agentguard.streaming.pipeline` | Progressive streaming evaluation | `agentguard.policy.name`, `agentguard.outcome`, `agentguard.streaming.progressive_rules`, `agentguard.streaming.final_only_rules`, `agentguard.streaming.adaptive_rules`; on a block also `agentguard.blocked.reason` and `agentguard.severity` |
 
 ### AgentFramework middleware spans
 
 | Span name | Description | Key tags |
 |-----------|-------------|----------|
-| `agentguard.middleware.input` | MAF input guardrails | `agentguard.agent.name`, `agentguard.phase`, `agentguard.outcome` |
-| `agentguard.middleware.output` | MAF output guardrails | `agentguard.agent.name`, `agentguard.phase`, `agentguard.outcome`, `agentguard.tool_call.count` |
-| `agentguard.middleware.streaming` | MAF streaming guardrails | `agentguard.agent.name`, `agentguard.streaming.strategy` |
-| `agentguard.executor.guard` | Workflow executor guardrails (`agentguard.executor.guard input` / `agentguard.executor.guard output` for executors with a typed output) | `agentguard.executor.id`, `agentguard.phase`, `agentguard.message.type`, `agentguard.outcome` |
+| `agentguard.middleware.input` | MAF input guardrails | `agentguard.agent.name`, `agentguard.phase`, `agentguard.outcome`; on a block also `agentguard.blocked.reason` and `agentguard.severity` |
+| `agentguard.middleware.output` | MAF output guardrails (also emitted under `agentguard.middleware.streaming` for buffered streaming) | `agentguard.agent.name`, `agentguard.phase`, `agentguard.outcome`, `agentguard.tool_call.count`; on a block also `agentguard.blocked.reason` and `agentguard.severity` |
+| `agentguard.middleware.streaming` | MAF streaming guardrails | `agentguard.agent.name`, `agentguard.streaming.strategy`, `agentguard.outcome` (the outcome of the whole streamed run: blocked on an input or output block, otherwise modified or passed); on a block also `agentguard.blocked.reason` and `agentguard.severity` |
+| `agentguard.executor.guard` | Workflow executor guardrails (`agentguard.executor.guard input` / `agentguard.executor.guard output` for executors with a typed output) | `agentguard.executor.id`, `agentguard.phase`, `agentguard.message.type`, `agentguard.outcome`; on a block also `agentguard.blocked.reason` and `agentguard.severity` |
 
 ### Span hierarchy
 
@@ -79,9 +79,13 @@ Rule spans are named after the rule's `Name` (`prompt-injection`, `pii`, `tool-c
 
 ### Span status
 
-- Pipeline and rule spans set `ActivityStatusCode.Error` when a rule blocks.
-- The `StatusDescription` is set to the block reason.
-- Blocked rule spans from `GuardrailPipeline` include an `agentguard.rule.blocked` event with `reason` and `severity` tags.
+A block is an expected outcome of a policy, not a failure, so error-rate alerts built on span status don't fire on policy decisions:
+
+- A blocked span records the block in `agentguard.outcome` = `blocked`, plus `agentguard.blocked.reason` and `agentguard.severity` where listed above, and leaves the span status unset. This includes running out of re-ask attempts.
+- Blocked rule spans from `GuardrailPipeline` also include an `agentguard.rule.blocked` event with `reason` and `severity` tags.
+- A rule that could not reach a verdict (a result with `IsError`) sets `ActivityStatusCode.Error` on its rule span, with the error detail in `error.type` and the status description. This applies whatever its `ErrorBehavior` did with the text, so a fail-open error is still visible.
+- An exception that escapes a rule, a pipeline run, a re-ask or a streaming evaluation sets `ActivityStatusCode.Error` on that span, with the exception type in `error.type`. Cancellation through the caller's token is not recorded as an error.
+- The MAF middleware and workflow executor spans follow the same rules: a block sets the outcome, reason and severity tags; an exception sets `ActivityStatusCode.Error`. A middleware span also sets it when the block came from a rule that could not reach a verdict and failed closed.
 
 ## Metrics
 
@@ -171,7 +175,7 @@ The ledger types live in `AgentGuard.Core.Ledger` and are dependency-free (`Syst
 - `IGuardrailLedger` - append-only sink (`Append(GuardrailDecision)`).
 - `GuardrailDecision` - the immutable decision facts (policy, phase, outcome, blocking rule/severity/reason, per-rule outcomes, input/output hashes, timestamp).
 - `GuardrailLedgerEntry` - a chain record: the decision plus `Seq`, `PreviousHash`, and `Hash`.
-- `HashChainLedger` - the concrete tamper-evident store: thread-safe append, optional append-only JSONL file mirror, `Verify()` (recompute and compare the whole chain), `Export()` (JSON of the chain), and `Load(path)` (re-hydrate a persisted JSONL chain so it can be re-verified after a process restart).
+- `HashChainLedger` - the concrete tamper-evident store: thread-safe append, optional append-only JSONL file mirror, `Verify()` (recompute and compare the entries held in memory), `Export()` (JSON of those entries), and `Load(path)` (re-hydrate a persisted JSONL chain so it can be re-verified after a process restart). A ledger constructed over an existing JSONL file continues its chain.
 
 A decision is emitted once per pipeline evaluation, so every re-ask attempt is independently auditable. The adapters evaluate messages one at a time (each user message not answered from the verdict cache, each assistant message of a response), so a single request can add several entries.
 
@@ -224,7 +228,9 @@ if (!loaded.Verify(out var brokenAtSeq))
     Console.WriteLine($"chain broken at entry {brokenAtSeq}");
 ```
 
-The loaded ledger is verification-only by default. Pass `resumeWriting: true` to keep appending to (and persisting into) the same chain after a restart. The JSONL directory is created eagerly when the ledger is constructed, so the first append cannot fail on a missing directory.
+A ledger constructed over a JSONL file that already holds entries - as `UseDecisionLedger(path)` does on every process start - continues that chain. It reads only the file's last line, gives its first entry the next sequence number, and links that entry to the last entry's hash. The file therefore stays one chain that `Load` verifies from genesis, while the new ledger holds only the entries appended since (its `Verify()` checks that they link to the persisted tail). If the last line is not an intact entry (an interrupted write, or an edit), the constructor throws `InvalidDataException` naming the file instead of starting a second chain; `Load` throws the same exception, naming the line, for any bad line.
+
+The loaded ledger is verification-only by default. Pass `resumeWriting: true` to keep appending to the same chain with every persisted entry also held in memory. The JSONL directory is created eagerly when the ledger is constructed, so the first append cannot fail on a missing directory.
 
 ### Failure isolation
 

@@ -5,7 +5,8 @@ using Microsoft.Agents.AI.Workflows;
 namespace AgentGuard.AgentFramework.Workflows;
 
 /// <summary>
-/// Extension methods for wrapping workflow executors with guardrails.
+/// Extension methods for wrapping workflow executors with guardrails. The returned executor, with the id
+/// <c>guarded-{executor id}</c>, replaces the original in the workflow and keeps its protocol and lifecycle.
 /// </summary>
 public static class WorkflowGuardrailExtensions
 {
@@ -17,9 +18,12 @@ public static class WorkflowGuardrailExtensions
         Action<GuardrailPolicyBuilder> configure,
         GuardedExecutorOptions? options = null)
     {
+        ArgumentNullException.ThrowIfNull(executor);
+        ArgumentNullException.ThrowIfNull(configure);
+
         var builder = new GuardrailPolicyBuilder($"guarded-{executor.Id}");
         configure(builder);
-        return new GuardedExecutor<TInput>(executor, builder.Build(), options);
+        return GuardedExecutor<TInput>.Create(executor, builder.Build(), options);
     }
 
     /// <summary>
@@ -30,7 +34,10 @@ public static class WorkflowGuardrailExtensions
         IGuardrailPolicy policy,
         GuardedExecutorOptions? options = null)
     {
-        return new GuardedExecutor<TInput>(executor, policy, options);
+        ArgumentNullException.ThrowIfNull(executor);
+        ArgumentNullException.ThrowIfNull(policy);
+
+        return GuardedExecutor<TInput>.Create(executor, policy, options);
     }
 
     /// <summary>
@@ -41,9 +48,12 @@ public static class WorkflowGuardrailExtensions
         Action<GuardrailPolicyBuilder> configure,
         GuardedExecutorOptions? options = null)
     {
+        ArgumentNullException.ThrowIfNull(executor);
+        ArgumentNullException.ThrowIfNull(configure);
+
         var builder = new GuardrailPolicyBuilder($"guarded-{executor.Id}");
         configure(builder);
-        return new GuardedExecutor<TInput, TOutput>(executor, builder.Build(), options);
+        return GuardedExecutor<TInput, TOutput>.Create(executor, builder.Build(), options);
     }
 
     /// <summary>
@@ -54,6 +64,9 @@ public static class WorkflowGuardrailExtensions
         IGuardrailPolicy policy,
         GuardedExecutorOptions? options = null)
     {
-        return new GuardedExecutor<TInput, TOutput>(executor, policy, options);
+        ArgumentNullException.ThrowIfNull(executor);
+        ArgumentNullException.ThrowIfNull(policy);
+
+        return GuardedExecutor<TInput, TOutput>.Create(executor, policy, options);
     }
 }

@@ -73,7 +73,7 @@ The pipeline sets `RuleName` itself. The severity is reported on the rule's span
 
 ## Rules that call other services
 
-The pipeline does not catch exceptions thrown by a rule, so a rule that calls out of process (an HTTP API, a model server) should catch its own failures and return `GuardrailResult.Error(Name, behavior, detail)`. `ErrorBehavior.FailOpen` and `ErrorBehavior.Warn` let the text through; `ErrorBehavior.FailClosed` blocks it. Every error result has `IsError = true` and `error` in `Metadata` (plus `errorDetail` when a detail is given), so callers can tell "checked and clean" from "failed to check". Let cancellation of the caller's token propagate rather than turning it into an error result:
+The pipeline does not catch exceptions thrown by a rule, so a rule that calls out of process (an HTTP API, a model server) should catch its own failures and return `GuardrailResult.Error(Name, behavior, detail)`. `ErrorBehavior.FailOpen` lets the text through quietly (the pipeline logs the error at Debug level). `ErrorBehavior.Warn` lets it through but surfaces the error: the result carries a `Reason` and `IsWarning = true`, the pipeline logs it at Warning level, and `GuardrailPipelineResult.Warnings` lists it. `ErrorBehavior.FailClosed` blocks the text. Every error result has `IsError = true` and `error` in `Metadata` (plus `errorDetail` when a detail is given), so callers can tell "checked and clean" from "failed to check", and the rule's span is marked as failed. Let cancellation of the caller's token propagate rather than turning it into an error result:
 
 ```csharp
 try

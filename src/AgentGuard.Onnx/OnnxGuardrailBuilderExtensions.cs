@@ -189,6 +189,7 @@ public static class OnnxGuardrailBuilderExtensions
     /// <param name="piiOptions">Optional PII detection/anonymization configuration (entities, countries, operators).</param>
     /// <param name="ruleOptions">Optional guardrail-side settings (the phase; span merging is <c>PiiOptions.MergeEntitiesWithSpaces</c>).</param>
     /// <returns>The builder for chaining.</returns>
+    /// <exception cref="ArgumentOutOfRangeException">Thrown when <see cref="GlinerNerOptions.NerThreshold"/> is NaN or outside 0.0-1.0.</exception>
     public static GuardrailPolicyBuilder RedactPiiWithNer(
         this GuardrailPolicyBuilder builder,
         GlinerNerOptions nerOptions,
@@ -197,6 +198,9 @@ public static class OnnxGuardrailBuilderExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(nerOptions);
+
+        // the recognizer's own range check lets NaN through, and a NaN threshold would emit no span
+        OptionValidation.RequireProbability(nerOptions.NerThreshold, nameof(nerOptions.NerThreshold), nameof(nerOptions));
 
         var language = piiOptions?.Language ?? "en";
         var registry = PiiRecognizers.CreateRegistry(language, piiOptions?.Countries);

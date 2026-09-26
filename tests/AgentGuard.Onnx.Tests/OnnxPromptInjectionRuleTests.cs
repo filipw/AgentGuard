@@ -266,6 +266,105 @@ public class OnnxPromptInjectionRuleTests
         }
     }
 
+    [Theory]
+    [InlineData(float.NaN)]
+    [InlineData(float.PositiveInfinity)]
+    [InlineData(float.NegativeInfinity)]
+    public void ShouldThrow_WhenThresholdIsNotANumberBetweenZeroAndOne(float threshold)
+    {
+        // checked before any model file is opened
+        var act = () => new OnnxPromptInjectionRule(new OnnxPromptInjectionOptions
+        {
+            ModelPath = "/nonexistent/model.onnx",
+            TokenizerPath = "/nonexistent/spm.model",
+            Threshold = threshold
+        });
+
+        act.Should().Throw<ArgumentOutOfRangeException>().WithMessage("*Threshold*");
+    }
+
+    [Theory]
+    [InlineData(2)]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void ShouldThrow_WhenMaxTokenLengthLeavesNoRoomForInput(int maxTokenLength)
+    {
+        var act = () => new OnnxPromptInjectionRule(new OnnxPromptInjectionOptions
+        {
+            ModelPath = "/nonexistent/model.onnx",
+            TokenizerPath = "/nonexistent/spm.model",
+            MaxTokenLength = maxTokenLength
+        });
+
+        act.Should().Throw<ArgumentOutOfRangeException>().WithMessage("*MaxTokenLength*");
+    }
+
+    [Fact]
+    public void ShouldThrow_WhenTheTestConstructorGetsANaNThreshold()
+    {
+        var act = () => new OnnxPromptInjectionRule(
+            WindowingTestHelpers.NotCalled<float>,
+            WindowingTestHelpers.CountWords,
+            new OnnxPromptInjectionOptions { ModelPath = "m", TokenizerPath = "t", Threshold = float.NaN });
+
+        act.Should().Throw<ArgumentOutOfRangeException>().WithMessage("*Threshold*");
+    }
+
+    [Fact]
+    public async Task ShouldScanEveryWindow_WhenMaxWindowsIsZero()
+    {
+        // 0 means no limit
+        var calls = new List<string>();
+        var rule = new OnnxPromptInjectionRule(
+            text =>
+            {
+                calls.Add(text);
+                return 0.01f;
+            },
+            WindowingTestHelpers.CountWords,
+            new OnnxPromptInjectionOptions { ModelPath = "m", TokenizerPath = "t", MaxWindows = 0 });
+
+        var result = await rule.EvaluateAsync(new GuardrailContext { Text = WindowingTestHelpers.Words(40_000), Phase = GuardrailPhase.Input });
+
+        result.IsBlocked.Should().BeFalse();
+        calls.Should().HaveCountGreaterThan(32, "the default limit does not apply when MaxWindows is 0");
+    }
+
+    [Fact]
+    public void ShouldReleaseTheSessionOnce_WhenDisposedTwice()
+    {
+        var session = new CountingDisposable();
+        var rule = CreateRuleWithSession(session);
+
+        rule.Dispose();
+        rule.Dispose();
+
+        session.DisposeCount.Should().Be(1);
+    }
+
+    [Fact]
+    public void ShouldReleaseTheSessionOnce_WhenDisposedFromSeveralThreadsAtOnce()
+    {
+        var counts = CountingDisposable.DisposeConcurrently(CreateRuleWithSession);
+
+        counts.Should().OnlyContain(count => count == 1);
+    }
+
+    [Fact]
+    public async Task ShouldThrowObjectDisposed_WhenEvaluatedAfterDispose()
+    {
+        var rule = CreateRuleWithSession(new CountingDisposable());
+        rule.Dispose();
+
+        var act = async () => await rule.EvaluateAsync(new GuardrailContext { Text = "hello", Phase = GuardrailPhase.Input });
+
+        await act.Should().ThrowAsync<ObjectDisposedException>();
+    }
+
+    private static OnnxPromptInjectionRule CreateRuleWithSession(IDisposable session) =>
+        new(WindowingTestHelpers.NotCalled<float>, WindowingTestHelpers.CountWords,
+            new OnnxPromptInjectionOptions { ModelPath = "m", TokenizerPath = "t" }, session);
+
     // -----------------------------------------------------------------------
     // EvaluateAsync behaviour tests - use the internal constructor so no
     // real model files are required. The classifier must never be called; we

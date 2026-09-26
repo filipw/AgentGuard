@@ -1,6 +1,5 @@
 using AgentGuard.Core.Abstractions;
 using Kyoto;
-using Microsoft.ML.Tokenizers;
 
 namespace AgentGuard.Onnx;
 
@@ -31,10 +30,11 @@ public sealed class PIGuardPromptInjectionRule : IGuardrailRule, IDisposable
     // the session adds [CLS] and [SEP] around the tokenizer output
     private const int SpecialTokenCount = 2;
 
-    private readonly OnnxModelSession? _session;
+    private readonly IDisposable? _session;
     private readonly Func<string, float> _classify;
     private readonly TextWindowSplitter _splitter;
     private readonly PIGuardPromptInjectionOptions _options;
+    private int _disposed;
 
     /// <inheritdoc />
     public string Name => "piguard-prompt-injection";
@@ -50,24 +50,24 @@ public sealed class PIGuardPromptInjectionRule : IGuardrailRule, IDisposable
     /// </summary>
     /// <param name="options">Configuration including model and tokenizer file paths.</param>
     /// <exception cref="ArgumentException">Thrown when model or tokenizer path is invalid.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// Thrown when <see cref="PIGuardPromptInjectionOptions.Threshold"/> is NaN or outside 0.0-1.0,
+    /// <see cref="PIGuardPromptInjectionOptions.MaxTokenLength"/> leaves no room for input tokens, or the
+    /// window settings are invalid.
+    /// </exception>
+    /// <exception cref="FileNotFoundException">Thrown when the model or tokenizer file does not exist.</exception>
     public PIGuardPromptInjectionRule(PIGuardPromptInjectionOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
+        Validate(options);
 
         var modelPath = OnnxFileValidation.RequireFile(options.ModelPath, nameof(options.ModelPath), "PIGuard ONNX model");
         var tokenizerPath = OnnxFileValidation.RequireFile(options.TokenizerPath, nameof(options.TokenizerPath), "tokenizer");
-        if (options.Threshold is < 0f or > 1f)
-            throw new ArgumentOutOfRangeException(nameof(options), "Threshold must be between 0.0 and 1.0.");
-        WindowedClassification.ValidateWindowOptions(
-            options.WindowSize, options.WindowOverlap, options.MaxWindows, nameof(options));
 
         _options = options;
 
-        using var tokenizerStream = File.OpenRead(tokenizerPath);
-        // content ids only - OnnxModelSession adds [CLS]/[SEP] itself. The default Create() would
-        // also prepend a BOS token (id 1 == the CLS id for deberta-v3), producing a double-CLS.
-        var tokenizer = SentencePieceTokenizer.Create(
-            tokenizerStream, addBeginningOfSentence: false, addEndOfSentence: false);
+        // content ids only: the session adds [CLS] and [SEP] itself
+        var tokenizer = SentencePieceContentTokenizer.Load(tokenizerPath);
 
         _splitter = WindowedClassification.CreateSplitter(
             WindowedClassification.CountContentTokens(tokenizer),
@@ -76,31 +76,40 @@ public sealed class PIGuardPromptInjectionRule : IGuardrailRule, IDisposable
             options.WindowOverlap,
             nameof(options));
 
-        _session = new OnnxModelSession(modelPath, tokenizer, options.MaxTokenLength);
-        _classify = Classify;
+        var session = new OnnxModelSession(modelPath, tokenizer, options.MaxTokenLength);
+        _session = session;
+        _classify = text => session.Classify(text).InjectionProbability;
     }
 
     /// <summary>
     /// Internal constructor for testing - classifies with <paramref name="classify"/> (returning the
     /// injection probability) and counts tokens with <paramref name="countTokens"/> instead of loading
-    /// the model.
+    /// the model. <paramref name="session"/>, when given, stands in for the inference session and is
+    /// released by <see cref="Dispose"/>.
     /// </summary>
     internal PIGuardPromptInjectionRule(
-        Func<string, float> classify, TokenCounter countTokens, PIGuardPromptInjectionOptions options)
+        Func<string, float> classify,
+        TokenCounter countTokens,
+        PIGuardPromptInjectionOptions options,
+        IDisposable? session = null)
     {
+        Validate(options);
         _options = options;
         _classify = classify;
-        WindowedClassification.ValidateWindowOptions(
-            options.WindowSize, options.WindowOverlap, options.MaxWindows, nameof(options));
+        _session = session;
         _splitter = WindowedClassification.CreateSplitter(
             countTokens, options.MaxTokenLength - SpecialTokenCount, options.WindowSize, options.WindowOverlap, nameof(options));
     }
 
     /// <inheritdoc />
+    /// <exception cref="ObjectDisposedException">Thrown when the rule has been disposed.</exception>
     public ValueTask<GuardrailResult> EvaluateAsync(
         GuardrailContext context,
         CancellationToken cancellationToken = default)
     {
+        // a disposed rule has released its inference session
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+
         if (string.IsNullOrWhiteSpace(context.Text))
             return ValueTask.FromResult(GuardrailResult.Passed());
 
@@ -145,12 +154,19 @@ public sealed class PIGuardPromptInjectionRule : IGuardrailRule, IDisposable
     }
 
     /// <summary>
-    /// Disposes the underlying ONNX inference session.
+    /// Disposes the underlying ONNX inference session. Calling this again, from any thread, does nothing.
     /// </summary>
     public void Dispose()
     {
-        _session?.Dispose();
+        if (Interlocked.Exchange(ref _disposed, 1) == 0)
+            _session?.Dispose();
     }
 
-    private float Classify(string text) => _session!.Classify(text).InjectionProbability;
+    private static void Validate(PIGuardPromptInjectionOptions options)
+    {
+        OptionValidation.RequireProbability(options.Threshold, nameof(options.Threshold), nameof(options));
+        OptionValidation.RequireMaxTokenLength(options.MaxTokenLength, SpecialTokenCount, nameof(options));
+        WindowedClassification.ValidateWindowOptions(
+            options.WindowSize, options.WindowOverlap, options.MaxWindows, nameof(options));
+    }
 }

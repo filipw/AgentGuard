@@ -24,17 +24,17 @@ public sealed class PIGuardPromptInjectionOptions
     public required string TokenizerPath { get; init; }
 
     /// <summary>
-    /// Confidence threshold (0.0-1.0) above which input is classified as prompt injection.
-    /// Default: <c>0.9</c>. PIGuard's argmax (0.5) over-blocks benign text; 0.9 is the measured
-    /// operating point where benign false positives drop below the bundled Defender model while
+    /// Confidence threshold (0.0-1.0; NaN is rejected) at or above which input is classified as prompt
+    /// injection. Default: <c>0.9</c>. PIGuard's argmax (0.5) over-blocks benign text; 0.9 is the
+    /// measured operating point where benign false positives drop below the bundled Defender model while
     /// retaining its strong indirect/code-injection recall (see the PIGuard evaluation in the Kyoto repo).
     /// </summary>
     public float Threshold { get; init; } = 0.9f;
 
     /// <summary>
     /// Maximum sequence length the model is run with, including the <c>[CLS]</c> and <c>[SEP]</c>
-    /// tokens. It caps <see cref="WindowSize"/>; longer input is split into windows rather than
-    /// truncated. Default: 512 (DeBERTa v3 base max sequence length).
+    /// tokens, so it must be at least 3. It caps <see cref="WindowSize"/>; longer input is split into
+    /// windows rather than truncated. Default: 512 (DeBERTa v3 base max sequence length).
     /// </summary>
     public int MaxTokenLength { get; init; } = 512;
 

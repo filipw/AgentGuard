@@ -6,6 +6,7 @@ using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Rules.ContentSafety;
 using Azure;
 using Azure.AI.ContentSafety;
+using Azure.Core;
 using Azure.Core.Pipeline;
 using FluentAssertions;
 using Xunit;
@@ -24,10 +25,14 @@ public class AzureContentSafetyClassifierChunkingTests
         return builder.ToString(0, length);
     }
 
-    private static AzureContentSafetyClassifier CreateClassifier(FakeContentSafetyHandler handler)
+    private static AzureContentSafetyClassifier CreateClassifier(HttpMessageHandler handler, int maxRetries = 0, TimeSpan? networkTimeout = null)
     {
         var options = new ContentSafetyClientOptions { Transport = new HttpClientTransport(handler) };
-        options.Retry.MaxRetries = 0;
+        options.Retry.MaxRetries = maxRetries;
+        options.Retry.Mode = RetryMode.Fixed;
+        options.Retry.Delay = TimeSpan.FromMilliseconds(1);
+        if (networkTimeout is { } timeout)
+            options.Retry.NetworkTimeout = timeout;
 
         var client = new ContentSafetyClient(new Uri("https://my-resource.cognitiveservices.azure.com"), new AzureKeyCredential("key"), options);
         return new AzureContentSafetyClassifier(client);
@@ -202,6 +207,115 @@ public class AzureContentSafetyClassifierChunkingTests
         var act = async () => await classifier.AnalyzeWithOptionsAsync(Words(30_000), new ContentSafetyOptions(), cts.Token);
 
         await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Fact]
+    public async Task ShouldPropagateCancellationThroughTheRule_WhenTheCallerCancels()
+    {
+        var handler = new FakeContentSafetyHandler();
+        var rule = new ContentSafetyRule(new ContentSafetyOptions { OnError = ErrorBehavior.FailClosed }, CreateClassifier(handler));
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+
+        var act = async () => await rule.EvaluateAsync(Context(FakeContentSafetyHandler.Hateful), cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        handler.Texts.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ShouldPropagateCancellation_WhenTheCallerCancelsTheCategoryOnlyAnalysis()
+    {
+        var classifier = CreateClassifier(new FakeContentSafetyHandler());
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+
+        var act = async () => await classifier.AnalyzeAsync(FakeContentSafetyHandler.Hateful, cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Fact]
+    public async Task ShouldPropagateCancellation_WhenARequestFailsAfterTheCallerCanceled()
+    {
+        // a request torn down by the caller's cancellation can end with a transport failure instead
+        using var cts = new CancellationTokenSource();
+        var rule = new ContentSafetyRule(
+            new ContentSafetyOptions { OnError = ErrorBehavior.FailClosed }, CreateClassifier(LambdaHttpHandler.CancelsThenFails(cts)));
+
+        var act = async () => await rule.EvaluateAsync(Context(FakeContentSafetyHandler.Hateful), cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Fact]
+    public async Task ShouldPropagateCancellation_WhenTheSdkReportsItTogetherWithAnEarlierFailedAttempt()
+    {
+        // the SDK retries the first, failed attempt; the caller cancels during the retry, and the SDK
+        // reports both attempts' exceptions together
+        using var cts = new CancellationTokenSource();
+        var handler = new LambdaHttpHandler(async (call, ct) =>
+        {
+            if (call == 0)
+                throw new HttpRequestException("The connection was reset.");
+
+            await cts.CancelAsync();
+            ct.ThrowIfCancellationRequested();
+            throw new InvalidOperationException("unreachable");
+        });
+        var rule = new ContentSafetyRule(
+            new ContentSafetyOptions { OnError = ErrorBehavior.FailClosed }, CreateClassifier(handler, maxRetries: 1));
+
+        var act = async () => await rule.EvaluateAsync(Context(FakeContentSafetyHandler.Hateful), cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        handler.Calls.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task ShouldPropagateCancellation_WhenTheCallerCancelsBetweenWindows()
+    {
+        using var cts = new CancellationTokenSource();
+        var handler = new LambdaHttpHandler(async (_, _) =>
+        {
+            await cts.CancelAsync();
+            return LambdaHttpHandler.Json("""{"blocklistsMatch": [], "categoriesAnalysis": [{"category": "Hate", "severity": 0}]}""");
+        });
+        var classifier = CreateClassifier(handler);
+
+        var act = async () => await classifier.AnalyzeWithOptionsAsync(Words(30_000), new ContentSafetyOptions(), cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        handler.Calls.Should().Be(1, "no request is sent once the caller has canceled");
+    }
+
+    [Theory]
+    [InlineData(ErrorBehavior.FailOpen, false)]
+    [InlineData(ErrorBehavior.FailClosed, true)]
+    public async Task ShouldApplyOnError_WhenTheRequestTimesOut(ErrorBehavior onError, bool expectBlocked)
+    {
+        // the SDK's network timeout is not the caller's cancellation
+        var rule = new ContentSafetyRule(
+            new ContentSafetyOptions { OnError = onError },
+            CreateClassifier(LambdaHttpHandler.Hanging(), networkTimeout: TimeSpan.FromMilliseconds(100)));
+
+        var result = await rule.EvaluateAsync(Context(FakeContentSafetyHandler.Hateful));
+
+        result.IsError.Should().BeTrue();
+        result.IsBlocked.Should().Be(expectBlocked);
+    }
+
+    [Theory]
+    [InlineData(ErrorBehavior.FailOpen, false)]
+    [InlineData(ErrorBehavior.FailClosed, true)]
+    public async Task ShouldApplyOnError_WhenTheServiceIsUnreachable(ErrorBehavior onError, bool expectBlocked)
+    {
+        var rule = new ContentSafetyRule(new ContentSafetyOptions { OnError = onError }, CreateClassifier(LambdaHttpHandler.Unreachable()));
+
+        var result = await rule.EvaluateAsync(Context(FakeContentSafetyHandler.Hateful));
+
+        result.IsError.Should().BeTrue();
+        result.IsBlocked.Should().Be(expectBlocked);
     }
 
     /// <summary>

@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.RegularExpressions;
 using AgentGuard.Core.Abstractions;
 
@@ -12,22 +13,28 @@ public enum SecretCategory
     /// <summary>No category.</summary>
     None = 0,
 
-    /// <summary>Generic API keys, access tokens, bearer tokens, Slack tokens.</summary>
+    /// <summary>
+    /// Generic API keys, access tokens, bearer tokens, Slack tokens, and quoted secret fields such as
+    /// <c>"password": "..."</c> or <c>'client_secret': '...'</c>.
+    /// </summary>
     ApiKey = 1,
 
     /// <summary>AWS access key IDs and secret access keys.</summary>
     AwsCredential = 2,
 
-    /// <summary>Database connection strings carrying a password.</summary>
+    /// <summary>
+    /// Connection strings carrying a password, and URIs with a password in their user info
+    /// (<c>postgres://user:password@host</c>, <c>mongodb+srv://</c>, <c>redis://:password@</c>, ...).
+    /// </summary>
     ConnectionString = 4,
 
-    /// <summary>PEM-encoded private keys.</summary>
+    /// <summary>PEM, PGP and SSH2 private key blocks.</summary>
     PrivateKey = 8,
 
     /// <summary>JSON Web Tokens.</summary>
     JwtToken = 16,
 
-    /// <summary>GitHub personal access and app tokens.</summary>
+    /// <summary>GitHub personal access (classic and fine-grained), OAuth, user, server and refresh tokens.</summary>
     GitHubToken = 32,
 
     /// <summary>Azure storage account and subscription keys.</summary>
@@ -69,14 +76,28 @@ public sealed class SecretsDetectionOptions
     /// <summary>Action to take when a secret is detected. Default: Block.</summary>
     public SecretAction Action { get; init; } = SecretAction.Block;
 
-    /// <summary>Replacement text when redacting secrets. Default: [SECRET_REDACTED].</summary>
+    /// <summary>
+    /// Replacement text when redacting secrets, inserted literally. Default: [SECRET_REDACTED].
+    /// </summary>
+    /// <remarks>
+    /// Where the secret is a value - a quoted field, the password of a connection string or URI, a
+    /// token assigned to a secret-like key name - only the value is replaced, so
+    /// <c>"password": "..."</c> becomes <c>"password": "[SECRET_REDACTED]"</c> and a connection URI
+    /// keeps its user name and host.
+    /// </remarks>
     public string Replacement { get; init; } = "[SECRET_REDACTED]";
 
-    /// <summary>Custom patterns to match. Key is the label, value is the regex pattern.</summary>
+    /// <summary>
+    /// Custom patterns to match. Key is the label, value is the regex pattern. A pattern with a
+    /// group named <c>secret</c> has only that group replaced when redacting; otherwise the whole
+    /// match is.
+    /// </summary>
     public IDictionary<string, string> CustomPatterns { get; init; } = new Dictionary<string, string>();
 
     /// <summary>
-    /// Minimum length for generic high-entropy string detection. Default: 20.
+    /// Minimum length for generic high-entropy string detection. Default: 20. A value assigned to a
+    /// secret-like key name (<c>db_password=...</c>, <c>"apiKey": "..."</c>) is considered from 12
+    /// characters, or from this length when it is shorter.
     /// Only applies when <see cref="SecretCategory.GenericHighEntropy"/> is enabled.
     /// </summary>
     public int MinHighEntropyLength { get; init; } = 20;
@@ -89,10 +110,25 @@ public sealed class SecretsDetectionOptions
 /// </summary>
 public sealed class SecretsDetectionRule : IGuardrailRule
 {
-    private readonly SecretsDetectionOptions _options;
-    private readonly List<(string Label, Regex Pattern, Regex? RequiredContext)> _patterns;
-    private readonly Regex? _highEntropyPattern;
+    private const RegexOptions Options = RegexOptions.Compiled | RegexOptions.CultureInvariant;
+
+    // the capture group a pattern uses to mark the part of its match that is the secret itself
+    private const string SecretGroup = "secret";
+
+    // a quoted value, as the secret: double or single quotes, backslash escapes allowed
+    private const string QuotedValue =
+        @"(?:""(?<secret>(?:[^""\\\s]|\\.)+)""|'(?<secret>(?:[^'\\\s]|\\.)+)')";
+
+    // the user info of a URI: the user name, a colon, and the password up to the last '@' of the
+    // authority (a raw '@' inside the password is common enough), followed by a host
+    private const string UriUserInfo =
+        @"://(?<user>[^\s:/?#@""'<>`]*):(?<secret>[^\s/?#""'<>`]+)@(?=[^\s/?#@""'<>`])";
+
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(200);
+
+    private readonly SecretsDetectionOptions _options;
+    private readonly List<SecretPattern> _patterns;
+    private readonly HighEntropyDetector? _highEntropy;
 
     /// <summary>Initializes a new instance of the <see cref="SecretsDetectionRule"/> class.</summary>
     /// <param name="options">Categories, action and custom patterns. Defaults when null.</param>
@@ -106,16 +142,12 @@ public sealed class SecretsDetectionRule : IGuardrailRule
 
         _patterns = BuildPatterns();
 
-        // compiled once here rather than per evaluation; RegexOptions.Compiled emits IL, so building
-        // this inside ContainsHighEntropyString cost roughly ten times the rest of the rule.
-        _highEntropyPattern = _options.Categories.HasFlag(SecretCategory.GenericHighEntropy)
-            ? new Regex(@"[A-Za-z0-9_\-/+=]{" + _options.MinHighEntropyLength + @",}", RegexOptions.Compiled, RegexTimeout)
+        _highEntropy = _options.Categories.HasFlag(SecretCategory.GenericHighEntropy)
+            ? new HighEntropyDetector(_options.MinHighEntropyLength, RegexTimeout)
             : null;
 
         // compiled patterns generate IL on first use; pay it here, not on the first request
-        RegexPatterns.Warm(_patterns.Select(p => p.Pattern));
-        if (_highEntropyPattern is not null)
-            RegexPatterns.Warm([_highEntropyPattern]);
+        RegexPatterns.Warm(Patterns);
     }
 
     /// <inheritdoc />
@@ -125,34 +157,38 @@ public sealed class SecretsDetectionRule : IGuardrailRule
     /// <inheritdoc />
     public int Order => 22;
 
+    /// <summary>Every regex the rule runs, including context gates and the high-entropy check.</summary>
+    internal IEnumerable<Regex> Patterns =>
+        _patterns.Select(p => p.Pattern)
+            .Concat(_patterns.Select(p => p.RequiredContext).OfType<Regex>())
+            .Concat(_highEntropy?.Patterns ?? []);
+
     /// <inheritdoc />
     public ValueTask<GuardrailResult> EvaluateAsync(GuardrailContext context, CancellationToken cancellationToken = default)
     {
         var text = context.Text;
         if (string.IsNullOrWhiteSpace(text)) return ValueTask.FromResult(GuardrailResult.Passed());
 
+        var replacement = _options.Action == SecretAction.Redact ? _options.Replacement : null;
         var detected = new List<string>();
         var modified = text;
 
-        foreach (var (label, pattern, requiredContext) in _patterns)
+        foreach (var pattern in _patterns)
         {
-            if (requiredContext is not null && !requiredContext.IsMatch(modified))
+            if (pattern.RequiredContext is not null && !pattern.RequiredContext.IsMatchOrFalse(modified))
                 continue;
 
-            if (pattern.IsMatchOrFalse(modified))
+            if (Scan(pattern, modified, replacement, out var rewritten))
             {
-                detected.Add(label);
-                if (_options.Action == SecretAction.Redact)
-                {
-                    modified = pattern.ReplaceOrOriginal(modified, _options.Replacement);
-                }
+                detected.Add(pattern.Label);
+                modified = rewritten;
             }
         }
 
-        // Check for high-entropy strings if enabled
-        if (_highEntropyPattern is not null && ContainsHighEntropyString(_highEntropyPattern, modified))
+        if (_highEntropy is not null && _highEntropy.Scan(modified, replacement, out var withoutTokens))
         {
             detected.Add("high-entropy-string");
+            modified = withoutTokens;
         }
 
         if (detected.Count == 0)
@@ -173,9 +209,55 @@ public sealed class SecretsDetectionRule : IGuardrailRule
         });
     }
 
-    private List<(string Label, Regex Pattern, Regex? RequiredContext)> BuildPatterns()
+    /// <summary>
+    /// Finds the matches of <paramref name="pattern"/> that its <see cref="SecretPattern.Accept"/>
+    /// check lets through. With a <paramref name="replacement"/>, each one's secret - its
+    /// <c>secret</c> group when the pattern has one, else the whole match - is replaced in
+    /// <paramref name="rewritten"/>; without one the scan stops at the first.
+    /// </summary>
+    /// <remarks>
+    /// A pattern that exceeds its match timeout is skipped from that point on; the other patterns
+    /// still run, and whatever it already found still counts and stays replaced.
+    /// </remarks>
+    private static bool Scan(SecretPattern pattern, string text, string? replacement, out string rewritten)
     {
-        var p = new PatternList();
+        rewritten = text;
+        StringBuilder? builder = null;
+        var copied = 0;
+        var found = false;
+
+        try
+        {
+            for (var match = pattern.Pattern.Match(text); match.Success; match = match.NextMatch())
+            {
+                if (pattern.Accept is not null && !pattern.Accept(match))
+                    continue;
+
+                found = true;
+                if (replacement is null)
+                    break;
+
+                var secret = match.Groups[SecretGroup];
+                var (start, length) = secret.Success ? (secret.Index, secret.Length) : (match.Index, match.Length);
+                builder ??= new StringBuilder(text.Length);
+                builder.Append(text, copied, start - copied).Append(replacement);
+                copied = start + length;
+            }
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            // the scan could not finish inside its budget; keep what it found
+        }
+
+        if (builder is not null)
+            rewritten = builder.Append(text, copied, text.Length - copied).ToString();
+
+        return found;
+    }
+
+    private List<SecretPattern> BuildPatterns()
+    {
+        var p = new List<SecretPattern>();
         var c = _options.Categories;
 
         // AWS access key ID (AKIA...) and secret access key
@@ -183,114 +265,130 @@ public sealed class SecretsDetectionRule : IGuardrailRule
         {
             // the leading lookbehind deliberately omits '=': it is base64 padding, so it only ever
             // trails a value, and the commonest form is KEY=<value>.
-            p.Add(("aws-access-key", new(@"(?<![A-Za-z0-9/+])AKIA[0-9A-Z]{16}(?![A-Za-z0-9/+=])", RegexOptions.Compiled, RegexTimeout)));
+            p.Add(new("aws-access-key", Compile(@"(?<![A-Za-z0-9/+])AKIA[0-9A-Z]{16}(?![A-Za-z0-9/+=])")));
             // A bare 40-character base64 run is far too common to flag on its own, so it is gated
             // on AWS context appearing anywhere in the text, before or after the value.
-            p.Add(("aws-secret-key",
-                new(@"(?<![A-Za-z0-9/+])[A-Za-z0-9/+]{40}(?![A-Za-z0-9/+=])", RegexOptions.Compiled, RegexTimeout),
-                new(@"aws|secret[_\-]?access|secret[_\-]?key", RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout)));
+            p.Add(new("aws-secret-key",
+                Compile(@"(?<![A-Za-z0-9/+])[A-Za-z0-9/+]{40}(?![A-Za-z0-9/+=])"),
+                Compile(@"aws|secret[_\-]?access|secret[_\-]?key", RegexOptions.IgnoreCase)));
         }
 
-        // GitHub tokens (ghp_, gho_, ghu_, ghs_, ghr_)
+        // GitHub tokens: classic (ghp_, gho_, ghu_, ghs_, ghr_) and fine-grained personal access
+        // tokens (github_pat_ and 82 characters)
         if (c.HasFlag(SecretCategory.GitHubToken))
         {
-            p.Add(("github-token", new(@"(?<![A-Za-z0-9_])gh[pousr]_[A-Za-z0-9_]{36,255}(?![A-Za-z0-9_])", RegexOptions.Compiled, RegexTimeout)));
+            p.Add(new("github-token", Compile(
+                @"(?<![A-Za-z0-9_])(?:gh[pousr]_[A-Za-z0-9_]{36,255}|github_pat_[A-Za-z0-9_]{82,255})(?![A-Za-z0-9_])")));
         }
 
         // Azure subscription keys and storage account keys
         if (c.HasFlag(SecretCategory.AzureKey))
         {
-            // An Azure storage account key is 88 base64 characters ending in "==" (64 decoded
-            // bytes). The previous {44}== form could only ever match a 46-character run, which no
-            // real key is, so it never fired.
-            p.Add(("azure-storage-key", new(@"(?<![A-Za-z0-9/+])[A-Za-z0-9/+]{86}==(?![A-Za-z0-9/+=])", RegexOptions.Compiled, RegexTimeout)));
+            // an Azure storage account key is 88 base64 characters ending in "==" (64 decoded bytes).
+            // a SHA-512 digest in Subresource Integrity form ("sha512-" and 88 characters) has the
+            // same shape, so the key cannot follow a '-'.
+            p.Add(new("azure-storage-key", Compile(@"(?<![A-Za-z0-9/+-])[A-Za-z0-9/+]{86}==(?![A-Za-z0-9/+=])")));
             // Cognitive Services / APIM subscription keys are 32 lowercase hex characters.
-            p.Add(("azure-subscription-key",
-                new(@"(?<![A-Za-z0-9])[a-f0-9]{32}(?![A-Za-z0-9])", RegexOptions.Compiled, RegexTimeout),
-                new(@"ocp-apim-subscription-key|azure|cognitiveservices|subscription[_\-]?key", RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout)));
+            p.Add(new("azure-subscription-key",
+                Compile(@"(?<![A-Za-z0-9])[a-f0-9]{32}(?![A-Za-z0-9])"),
+                Compile(@"ocp-apim-subscription-key|azure|cognitiveservices|subscription[_\-]?key", RegexOptions.IgnoreCase)));
         }
 
-        // JWT tokens (eyJ...)
+        // JWT tokens (eyJ...). A token only starts where no base64url character precedes it, so a
+        // long run of them is scanned once rather than once per "eyJ" inside it.
         if (c.HasFlag(SecretCategory.JwtToken))
         {
-            p.Add(("jwt-token", new(@"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}", RegexOptions.Compiled, RegexTimeout)));
+            p.Add(new("jwt-token", Compile(@"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}")));
         }
 
-        // Private keys (PEM format). The whole block matches, not just the header line, so
+        // Private keys (PEM, PGP, SSH2). The whole block matches, not just the header line, so
         // redaction removes the key body too.
         if (c.HasFlag(SecretCategory.PrivateKey))
         {
-            p.Add(("private-key", new(RegexPatterns.PemPrivateKeyBlock, RegexOptions.Compiled, RegexTimeout)));
+            p.Add(new("private-key", Compile(RegexPatterns.PemPrivateKeyBlock)));
         }
 
-        // Generic API key patterns (api_key=..., apikey:..., x-api-key:...)
         if (c.HasFlag(SecretCategory.ApiKey))
         {
-            p.Add(("api-key", new(@"(?i)(?:api[_-]?key|api[_-]?secret|access[_-]?token|auth[_-]?token|bearer)\s*[:=]\s*[""']?([A-Za-z0-9_\-./+=]{20,})[""']?", RegexOptions.Compiled, RegexTimeout)));
-            p.Add(("bearer-token", new(@"(?i)Bearer\s+[A-Za-z0-9_\-./+=]{20,}", RegexOptions.Compiled, RegexTimeout)));
+            // quoted keys with a quoted value, as in JSON, YAML flow maps and Python or JS literals
+            // ("password": "...", 'client_secret': '...'). A key name ending in a secret-like word,
+            // or exactly "token" (so "next_page_token" is not a secret); the name is at most 40
+            // characters, which keeps the scan linear. Only the value is replaced.
+            p.Add(new("secret-field",
+                Compile(
+                    @"(?<q>[""'])(?<name>[A-Za-z0-9_.-]{0,40}?(?:password|passwd|pwd|passphrase|secret"
+                    + @"|(?:api|secret|private|access|signing|encryption|master)[_-]?key"
+                    + @"|(?:access|auth|refresh|api|bearer|session|oauth|bot|id)[_-]?token)|token)\k<q>"
+                    + @"[^\S\r\n]*(?::|=>?)[^\S\r\n]*" + QuotedValue,
+                    RegexOptions.IgnoreCase),
+                Accept: m => IsSecretValue(m.Groups[SecretGroup].ValueSpan, minLength: 6)));
+
+            // Generic API key patterns (api_key=..., apikey:..., x-api-key:...)
+            p.Add(new("api-key", Compile(@"(?i)(?:api[_-]?key|api[_-]?secret|access[_-]?token|auth[_-]?token|bearer)\s*[:=]\s*[""']?([A-Za-z0-9_\-./+=]{20,})[""']?")));
+            p.Add(new("bearer-token", Compile(@"(?i)Bearer\s+[A-Za-z0-9_\-./+=]{20,}")));
             // Slack tokens
-            p.Add(("slack-token", new(@"xox[bprs]-[A-Za-z0-9\-]{10,}", RegexOptions.Compiled, RegexTimeout)));
+            p.Add(new("slack-token", Compile(@"xox[bprs]-[A-Za-z0-9\-]{10,}")));
         }
 
-        // Connection strings (SQL Server, PostgreSQL, MySQL, MongoDB, Redis)
         if (c.HasFlag(SecretCategory.ConnectionString))
         {
-            p.Add(("connection-string", new(@"(?i)(?:Server|Data\s+Source|Host|Hostname)\s*=\s*[^;]+;\s*(?:.*?(?:Password|Pwd)\s*=\s*[^;]+)", RegexOptions.Compiled, RegexTimeout)));
-            p.Add(("mongodb-uri", new(@"mongodb(?:\+srv)?://[^\s""']+:[^\s""']+@[^\s""']+", RegexOptions.Compiled, RegexTimeout)));
-            p.Add(("redis-uri", new(@"redis://:[^\s""']+@[^\s""']+", RegexOptions.Compiled, RegexTimeout)));
+            // key=value connection strings (SQL Server, PostgreSQL, MySQL): a host key, then a
+            // password key after up to 20 further ';'-terminated segments on the same line or the
+            // next. Each segment is scanned once, which keeps the scan linear. Only the password
+            // value is replaced.
+            p.Add(new("connection-string",
+                Compile(
+                    @"(?<![A-Za-z0-9])(?:Server|Data[^\S\r\n]+Source|Host|Hostname)[^\S\r\n]*=[^;\r\n]*;(?:\r?\n)?"
+                    + @"(?:[^;\r\n]*;(?:\r?\n)?){0,20}?[^\S\r\n]*(?:Password|Pwd)[^\S\r\n]*=[^\S\r\n]*"
+                    + @"(?<secret>[^;\r\n""']*[^;\s""'])",
+                    RegexOptions.IgnoreCase),
+                Accept: m => IsSecretValue(m.Groups[SecretGroup].ValueSpan, minLength: 1)));
+
+            // URIs with a password in their user info: mongodb:// and redis:// under their own
+            // labels, then any other scheme (postgres, mysql, amqp, ftp, sqlserver, https, ...).
+            // only the password is replaced; the user name and host stay
+            p.Add(new("mongodb-uri",
+                Compile(@"(?<![A-Za-z0-9+.-])mongodb(?:\+srv)?" + UriUserInfo, RegexOptions.IgnoreCase),
+                Accept: m => IsSecretValue(m.Groups[SecretGroup].ValueSpan, minLength: 1)));
+            p.Add(new("redis-uri",
+                Compile(@"(?<![A-Za-z0-9+.-])rediss?" + UriUserInfo, RegexOptions.IgnoreCase),
+                Accept: m => IsSecretValue(m.Groups[SecretGroup].ValueSpan, minLength: 1)));
+            p.Add(new("connection-uri",
+                Compile(@"(?<![A-Za-z0-9+.-])(?!mongodb(?:\+srv)?://|rediss?://)[A-Za-z][A-Za-z0-9+.-]{0,30}" + UriUserInfo, RegexOptions.IgnoreCase),
+                Accept: m => IsSecretValue(m.Groups[SecretGroup].ValueSpan, minLength: 1)));
         }
 
         // Custom patterns
         foreach (var (label, pattern) in _options.CustomPatterns)
         {
-            p.Add((label, new(pattern, RegexOptions.Compiled, RegexTimeout)));
+            p.Add(new(label, Compile(pattern)));
         }
 
         return p;
     }
 
+    private static Regex Compile(string pattern, RegexOptions extra = RegexOptions.None) =>
+        new(pattern, Options | extra, RegexTimeout);
+
     /// <summary>
-    /// Checks for high-entropy strings that might be secrets (e.g. random tokens not matching specific patterns).
-    /// Uses Shannon entropy calculation on contiguous alphanumeric sequences.
+    /// Whether a value found in a secret's position is a credential: long enough, and not a
+    /// placeholder, a path or a URL.
     /// </summary>
-    internal static bool ContainsHighEntropyString(string text, int minLength) =>
-        ContainsHighEntropyString(
-            new Regex(@"[A-Za-z0-9_\-/+=]{" + minLength + @",}", RegexOptions.None, RegexTimeout), text);
+    private static bool IsSecretValue(ReadOnlySpan<char> value, int minLength) =>
+        value.Length >= minLength
+        && !SecretValues.IsPlaceholder(value)
+        && !SecretValues.LooksLikePath(value)
+        && !value.Contains("://", StringComparison.Ordinal);
 
-    private static bool ContainsHighEntropyString(Regex tokenPattern, string text)
-    {
-        foreach (Match match in tokenPattern.Matches(text))
-        {
-            var token = match.Value;
-            var entropy = CalculateShannonEntropy(token);
-            // High entropy threshold: typical English ~4.0, random secrets ~5.5+
-            if (entropy > 4.5) return true;
-        }
-        return false;
-    }
+    /// <summary>
+    /// The Shannon entropy of <paramref name="s"/>, in bits per character.
+    /// </summary>
+    internal static double CalculateShannonEntropy(string s) => SecretValues.ShannonEntropy(s);
 
-    /// <summary>List of detection patterns where most entries need no context gate.</summary>
-    private sealed class PatternList : List<(string Label, Regex Pattern, Regex? RequiredContext)>
-    {
-        public void Add((string Label, Regex Pattern) entry) => Add((entry.Label, entry.Pattern, null));
-    }
-
-    internal static double CalculateShannonEntropy(string s)
-    {
-        var freq = new Dictionary<char, int>();
-        foreach (var ch in s)
-        {
-            freq.TryGetValue(ch, out var count);
-            freq[ch] = count + 1;
-        }
-
-        double entropy = 0;
-        var len = (double)s.Length;
-        foreach (var count in freq.Values)
-        {
-            var p = count / len;
-            entropy -= p * Math.Log2(p);
-        }
-        return entropy;
-    }
+    /// <summary>A detection pattern.</summary>
+    /// <param name="Label">What a match is reported as.</param>
+    /// <param name="Pattern">The pattern.</param>
+    /// <param name="RequiredContext">When set, the pattern only runs if this also matches somewhere in the text.</param>
+    /// <param name="Accept">When set, the matches it rejects are not secrets.</param>
+    private sealed record SecretPattern(string Label, Regex Pattern, Regex? RequiredContext = null, Func<Match, bool>? Accept = null);
 }

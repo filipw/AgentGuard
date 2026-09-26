@@ -8,11 +8,23 @@ namespace AgentGuard.Core.Guardrails;
 /// </summary>
 public sealed class ReaskOptions
 {
+    private int _maxAttempts = 1;
+
     /// <summary>
     /// Maximum number of re-ask attempts. Each attempt re-prompts the LLM and re-evaluates
-    /// all output guardrails. Default is 1.
+    /// all output guardrails. Zero turns re-asking off: a blocked response is returned as the rules
+    /// produced it, with <see cref="GuardrailPipelineResult.WasReasked"/> false. Default is 1.
     /// </summary>
-    public int MaxAttempts { get; set; } = 1;
+    /// <exception cref="ArgumentOutOfRangeException">The value is negative.</exception>
+    public int MaxAttempts
+    {
+        get => _maxAttempts;
+        set
+        {
+            ArgumentOutOfRangeException.ThrowIfNegative(value, nameof(MaxAttempts));
+            _maxAttempts = value;
+        }
+    }
 
     /// <summary>
     /// System prompt template for the re-ask. Use <c>{violation_reason}</c> as a placeholder

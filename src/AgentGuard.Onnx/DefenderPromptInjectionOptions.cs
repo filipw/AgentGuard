@@ -31,30 +31,30 @@ public sealed class DefenderPromptInjectionOptions
     public string? VocabPath { get; init; }
 
     /// <summary>
-    /// Main-head score threshold (0.0–1.0). A block requires the main score to be at or above this.
-    /// Default: 0.75 (within the F1-optimal plateau on a held-out jailbreak set; raise toward 0.9 to
-    /// cut false positives further at some cost to recall).
+    /// Main-head score threshold (0.0-1.0; NaN is rejected). A block requires the main score to be at
+    /// or above this. Default: 0.75 (within the F1-optimal plateau on a held-out jailbreak set; raise
+    /// toward 0.9 to cut false positives further at some cost to recall).
     /// </summary>
     public float MainThreshold { get; init; } = 0.75f;
 
     /// <summary>
-    /// Aux-head veto threshold (0.0–1.0). A candidate block is rescued (vetoed) when the aux score
-    /// is at or above this value. Default: 0.64 (StackOne's cross-validated value). Lowering this
-    /// over-rescues attacks on broader benchmarks.
+    /// Aux-head veto threshold (0.0-1.0; NaN is rejected). A candidate block is rescued (vetoed) when
+    /// the aux score is at or above this value. Default: 0.64 (StackOne's cross-validated value).
+    /// Lowering this over-rescues attacks on broader benchmarks.
     /// </summary>
     public float AuxThreshold { get; init; } = 0.64f;
 
     /// <summary>
-    /// Temperature for post-hoc calibration. Each raw logit is divided by this before sigmoid:
-    /// <c>sigmoid(logit / T)</c>. T &gt; 1 softens overconfident output. Default: 2.41
-    /// (the value fitted for minilm-multihead-v5).
+    /// Temperature for post-hoc calibration, a positive finite number. Each raw logit is divided by
+    /// this before sigmoid: <c>sigmoid(logit / T)</c>. T &gt; 1 softens overconfident output.
+    /// Default: 2.41 (the value fitted for minilm-multihead-v5).
     /// </summary>
     public float TemperatureT { get; init; } = 2.41f;
 
     /// <summary>
     /// Maximum sequence length the model is run with, including the <c>[CLS]</c> and <c>[SEP]</c>
-    /// tokens. It caps <see cref="WindowSize"/>; longer input is split into windows rather than
-    /// truncated. Default: 256 (MiniLM max sequence length).
+    /// tokens, so it must be at least 3. It caps <see cref="WindowSize"/>; longer input is split into
+    /// windows rather than truncated. Default: 256 (MiniLM max sequence length).
     /// </summary>
     public int MaxTokenLength { get; init; } = 256;
 

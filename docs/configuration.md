@@ -76,14 +76,14 @@ builder.Services.AddAgentGuard(builder.Configuration.GetSection("AgentGuard"));
 
 ### Available Rule Types
 
-Type names and enum values (`Sensitivity`, `Action`, ...) are matched case-insensitively; an unknown type, an invalid value or a missing required property throws when the policies are built (the first time `IAgentGuardFactory` or the registered `GuardrailPipeline` is resolved).
+Type names and enum values (`Sensitivity`, `Action`, ...) are matched case-insensitively. Enum settings take member names only (a comma-separated list of names for `Categories`), not numbers. An unknown type, an invalid or out-of-range value (such as a `Threshold` outside 0-1, `MaxTokens` below 1, or a `WindowOverlap` not smaller than `WindowSize`), or a missing required property throws an `InvalidOperationException` naming the rule type and setting when the policies are built - the first time `IAgentGuardFactory` or the registered `GuardrailPipeline` is resolved.
 
 | Type | Properties | Notes |
 |------|-----------|-------|
 | `InputNormalization` | `DecodeBase64`, `DecodeHex`, `DetectReversedText`, `NormalizeUnicode` (all bool, default true) | Decodes evasion encodings. Leetspeak decoding and invisible-character stripping (including Unicode tag characters) keep their defaults (on) |
 | `PromptInjection` | `Sensitivity` (Low/Medium/High, default Medium) | Regex-based detection |
-| `DefenderPromptInjection` | `Threshold` (float, default 0.75 - the main-head threshold) | Bundled Defender model (`AgentGuard.Onnx`); no download. The aux veto and temperature keep their calibrated defaults |
-| `DebertaPromptInjection` | `ModelPath` (string, required), `TokenizerPath` (string, required), `Threshold` (float, default 0.5) | Bring-your-own DeBERTa v3 model (`AgentGuard.Onnx`). Fetch the model via the Kyoto bootstrap (see `eng/MODELS.md`) |
+| `DefenderPromptInjection` | `Threshold` (float 0-1, default 0.75 - the main-head threshold), `WindowSize` (tokens, default 64), `WindowOverlap` (tokens, default 32), `MaxWindows` (default 512; 0 = no limit) | Bundled Defender model (`AgentGuard.Onnx`); no download. The aux veto and temperature keep their calibrated defaults. Long input is classified in overlapping windows; input needing more than `MaxWindows` windows is blocked |
+| `DebertaPromptInjection` | `ModelPath` (string, required), `TokenizerPath` (string, required), `Threshold` (float 0-1, default 0.5), `WindowSize` (tokens, default 510), `WindowOverlap` (tokens, default 128), `MaxWindows` (default 32; 0 = no limit) | Bring-your-own DeBERTa v3 model (`AgentGuard.Onnx`). Fetch the model via the Kyoto bootstrap (see `eng/MODELS.md`) |
 | `OnnxPromptInjection` | With `ModelPath`: as `DebertaPromptInjection`. Without: as `DefenderPromptInjection` | Uses the bundled Defender model unless `ModelPath` is set |
 | `PiiRedaction` | `Entities` (string[], e.g. EMAIL_ADDRESS/US_SSN/CREDIT_CARD; empty = all), `Replacement` (default `<ENTITY_TYPE>` tags; set e.g. `[REDACTED]` for one flat replacement), `Countries` (string[] of ISO codes: uk/de/in/it/es/nl; `us` is always on, listing it is a harmless no-op; empty = generic + US only) | Offline PII redaction (`AgentGuard.Pii`); regex + checksum recognizers |
 | `Secrets` | `SecretAction` (Block/Redact, default Block) | API keys, tokens, private keys, connection strings |
@@ -110,10 +110,10 @@ dependencies out of applications that only want DI registration.
 
 | Type | Factory | Package | Properties |
 |------|---------|---------|-----------|
-| `RemotePii` | `RemotePiiRuleFactory` | `AgentGuard.RemotePii` | `Endpoint` (required), `Entities` (required), `AuthHeaderName`, `AuthHeaderValue`, `TimeoutSeconds` (default 10), `FailOpen` (default true) |
-| `AzurePii` | `AzurePiiRuleFactory` | `AgentGuard.Azure` | `Endpoint` (required), `Entities` (required), `SubscriptionKey` (required unless `UseManagedIdentity` is true), `UseManagedIdentity` (default false; uses `DefaultAzureCredential`), `Domain` (None/Phi, default None), `TimeoutSeconds` (default 10), `FailOpen` (default true) |
+| `RemotePii` | `RemotePiiRuleFactory` | `AgentGuard.RemotePii` | `Endpoint` (required), `Entities` (required), `AuthHeaderName`, `AuthHeaderValue`, `TimeoutSeconds` (at least 1, default 10), `FailOpen` (default true), `Replacement`, `Countries` |
+| `AzurePii` | `AzurePiiRuleFactory` | `AgentGuard.Azure` | `Endpoint` (required), `Entities` (required), `SubscriptionKey` (required unless `UseManagedIdentity` is true), `UseManagedIdentity` (default false; uses `DefaultAzureCredential`), `Domain` (None/Phi, default None), `TimeoutSeconds` (at least 1, default 10), `FailOpen` (default true), `Replacement`, `Countries` |
 
-Both add a PII rule that runs the offline recognizers plus the remote detector, with the default PII settings (`Countries` and `Replacement` are not read for these types); see [Remote PII Detection](remote-pii.md).
+Both add a PII rule that runs the offline recognizers plus the remote detector. `Entities` is the set the remote detector is asked for; `Replacement` and `Countries` work as for `PiiRedaction` (default `<ENTITY_TYPE>` tags; generic + US recognizers plus the listed country packs). See [Remote PII Detection](remote-pii.md).
 
 Register the ones you use before `AddAgentGuard`:
 

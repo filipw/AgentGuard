@@ -116,7 +116,9 @@ public sealed partial class AzurePromptShieldClient : IDisposable
     /// batches that fit. Requests are sent one at a time, each prompt window paired with a document
     /// batch, and an attack found by any of them is reported. Whitespace-only prompts and documents are
     /// not sent. When a request fails the remaining ones are skipped, and the result is an error unless
-    /// an attack was already detected.
+    /// an attack was already detected. Cancellation of <paramref name="cancellationToken"/> is never a
+    /// failure: it throws <see cref="OperationCanceledException"/>, whatever exception the request
+    /// that was under way ends with.
     /// </remarks>
     public async ValueTask<PromptShieldResult> AnalyzeAsync(
         string userPrompt, IReadOnlyList<string>? documents = null,
@@ -136,6 +138,8 @@ public sealed partial class AzurePromptShieldClient : IDisposable
 
         for (var i = 0; i < requestCount; i++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             var batch = i < documentBatches.Count ? documentBatches[i] : [];
             var request = new ShieldPromptRequest
             {
@@ -163,6 +167,11 @@ public sealed partial class AzurePromptShieldClient : IDisposable
             {
                 // the caller gave up; that is not an analysis failure and must not become a fail-open pass
                 throw;
+            }
+            catch (Exception ex) when (cancellationToken.IsCancellationRequested)
+            {
+                // a request torn down by the caller's cancellation can end with another exception
+                throw new OperationCanceledException("The Prompt Shield analysis was canceled.", ex, cancellationToken);
             }
             catch (Exception ex)
             {

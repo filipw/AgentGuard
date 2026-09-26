@@ -48,7 +48,11 @@ public sealed partial class GuardrailPipeline
             && _policy.ReaskOptions is { } reaskOptions
             && _policy.ReaskChatClient is { } chatClient)
         {
-            return await RunReaskLoopAsync(context, coreResult, reaskOptions, chatClient, cancellationToken);
+            // the options object is mutable and shared by concurrent runs, so the limit is read once.
+            // Zero turns re-asking off: the block comes back exactly as the rules produced it.
+            var maxAttempts = reaskOptions.MaxAttempts;
+            if (maxAttempts > 0)
+                return await RunReaskLoopAsync(context, coreResult, reaskOptions, maxAttempts, chatClient, cancellationToken);
         }
 
         return coreResult;
@@ -80,52 +84,55 @@ public sealed partial class GuardrailPipeline
             .Where(r => r.Phase.HasFlag(context.Phase))
             .OrderBy(r => r.Order);
 
-        foreach (var rule in phaseRules)
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            LogRunningRule(_logger, rule.Name, context.Phase);
-
-            var ruleContext = context with { Text = currentText };
-            var result = await EvaluateRuleWithTelemetry(rule, ruleContext, cancellationToken);
-            var taggedResult = result with { RuleName = rule.Name };
-            results.Add(taggedResult);
-
-            if (result.IsError)
+            foreach (var rule in phaseRules)
             {
-                var errorDetail = result.Metadata?.TryGetValue("errorDetail", out var detail) == true
-                    ? detail?.ToString() : null;
-                LogRuleError(_logger, rule.Name, errorDetail, result.IsBlocked);
-            }
+                cancellationToken.ThrowIfCancellationRequested();
 
-            if (result.IsBlocked)
-            {
-                LogRuleBlocked(_logger, rule.Name, result.Reason);
+                LogRunningRule(_logger, rule.Name, context.Phase);
 
-                var pipelineResult = new GuardrailPipelineResult
+                var ruleContext = context with { Text = currentText };
+                var result = await EvaluateRuleWithTelemetry(rule, ruleContext, cancellationToken);
+                var taggedResult = result with { RuleName = rule.Name };
+                results.Add(taggedResult);
+
+                LogErrorOrWarning(rule.Name, result);
+
+                if (result.IsBlocked)
                 {
-                    IsBlocked = true,
-                    BlockingResult = taggedResult,
-                    AllResults = results,
-                    FinalText = currentText
-                };
+                    LogRuleBlocked(_logger, rule.Name, result.Reason);
 
-                RecordPipelineCompletion(pipelineActivity, stopwatch, context.Phase, AgentGuardTelemetry.Outcomes.Blocked);
-                pipelineActivity?.SetStatus(ActivityStatusCode.Error, result.Reason);
-                EmitDecision(context, currentText, results, AgentGuardTelemetry.Outcomes.Blocked, taggedResult, wasModified: false);
-                return pipelineResult;
-            }
+                    var pipelineResult = new GuardrailPipelineResult
+                    {
+                        IsBlocked = true,
+                        BlockingResult = taggedResult,
+                        AllResults = results,
+                        FinalText = currentText
+                    };
 
-            if (result.IsModified && result.ModifiedText is not null)
-            {
-                LogRuleModified(_logger, rule.Name, result.Reason);
-                currentText = result.ModifiedText;
-            }
+                    RecordPipelineCompletion(pipelineActivity, stopwatch, context.Phase, AgentGuardTelemetry.Outcomes.Blocked);
+                    AgentGuardTelemetry.RecordBlock(pipelineActivity, taggedResult);
+                    EmitDecision(context, currentText, results, AgentGuardTelemetry.Outcomes.Blocked, taggedResult, wasModified: false);
+                    return pipelineResult;
+                }
 
-            if (!result.IsBlocked && !result.IsModified && !result.IsError)
-            {
-                LogRulePassed(_logger, rule.Name);
+                if (result.IsModified && result.ModifiedText is not null)
+                {
+                    LogRuleModified(_logger, rule.Name, result.Reason);
+                    currentText = result.ModifiedText;
+                }
+
+                if (!result.IsBlocked && !result.IsModified && !result.IsError && !result.IsWarning)
+                {
+                    LogRulePassed(_logger, rule.Name);
+                }
             }
+        }
+        catch (Exception ex)
+        {
+            AgentGuardTelemetry.RecordException(pipelineActivity, ex, cancellationToken);
+            throw;
         }
 
         var wasModified = currentText != context.Text;
@@ -154,6 +161,24 @@ public sealed partial class GuardrailPipeline
             FinalText = currentText,
             WasModified = wasModified
         };
+    }
+
+    // an error under FailOpen is logged at Debug; one that blocks (FailClosed) or asked to be surfaced
+    // (Warn) is logged at Warning, as is any other result that passed with a warning
+    private void LogErrorOrWarning(string ruleName, GuardrailResult result)
+    {
+        if (result.IsError)
+        {
+            var errorDetail = AgentGuardTelemetry.ErrorDetail(result);
+            if (result.IsBlocked || result.IsWarning)
+                LogRuleError(_logger, ruleName, errorDetail, result.IsBlocked);
+            else
+                LogRuleErrorFailedOpen(_logger, ruleName, errorDetail);
+        }
+        else if (result.IsWarning && !result.IsBlocked)
+        {
+            LogRuleWarning(_logger, ruleName, result.Reason);
+        }
     }
 
     private void EmitDecision(
@@ -192,38 +217,40 @@ public sealed partial class GuardrailPipeline
         ruleActivity?.SetTag(AgentGuardTelemetry.Tags.RuleOrder, rule.Order);
 
         var stopwatch = ValueStopwatch.StartNew();
-        var result = await rule.EvaluateAsync(context, cancellationToken);
+        GuardrailResult result;
+        try
+        {
+            result = await rule.EvaluateAsync(context, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            AgentGuardTelemetry.RecordException(ruleActivity, ex, cancellationToken);
+            throw;
+        }
+
         var elapsed = stopwatch.GetElapsedMilliseconds();
 
-        var outcome = result.IsBlocked ? AgentGuardTelemetry.Outcomes.Blocked
-            : result.IsModified ? AgentGuardTelemetry.Outcomes.Modified
-            : result.IsError ? AgentGuardTelemetry.Outcomes.Error
-            : AgentGuardTelemetry.Outcomes.Passed;
-
+        var outcome = AgentGuardTelemetry.OutcomeOf(result);
         ruleActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, outcome);
 
         if (result.IsBlocked)
         {
-            ruleActivity?.SetStatus(ActivityStatusCode.Error, result.Reason);
-            ruleActivity?.SetTag(AgentGuardTelemetry.Tags.BlockedReason, result.Reason);
-            ruleActivity?.SetTag(AgentGuardTelemetry.Tags.Severity, result.Severity.ToString().ToLowerInvariant());
+            var severity = AgentGuardTelemetry.SeverityTag(result.Severity);
+            AgentGuardTelemetry.RecordBlock(ruleActivity, result);
             ruleActivity?.AddEvent(new ActivityEvent("agentguard.rule.blocked", tags: new ActivityTagsCollection
             {
                 ["reason"] = result.Reason ?? "",
-                ["severity"] = result.Severity.ToString().ToLowerInvariant()
+                ["severity"] = severity
             }));
 
             AgentGuardTelemetry.RuleBlocks.Add(1,
                 new KeyValuePair<string, object?>(AgentGuardTelemetry.Tags.RuleName, rule.Name),
-                new KeyValuePair<string, object?>(AgentGuardTelemetry.Tags.Severity, result.Severity.ToString().ToLowerInvariant()));
+                new KeyValuePair<string, object?>(AgentGuardTelemetry.Tags.Severity, severity));
         }
 
+        // a rule that could not reach a verdict is a failure, whatever its ErrorBehavior let the text do
         if (result.IsError)
-        {
-            var errorDetail = result.Metadata?.TryGetValue("errorDetail", out var detail) == true
-                ? detail?.ToString() : null;
-            ruleActivity?.SetTag(AgentGuardTelemetry.Tags.ErrorType, errorDetail ?? "unknown");
-        }
+            AgentGuardTelemetry.RecordRuleError(ruleActivity, result);
 
         AgentGuardTelemetry.RuleEvaluations.Add(1,
             new KeyValuePair<string, object?>(AgentGuardTelemetry.Tags.RuleName, rule.Name),
@@ -258,61 +285,73 @@ public sealed partial class GuardrailPipeline
         GuardrailContext originalContext,
         GuardrailPipelineResult blockedResult,
         ReaskOptions options,
+        int maxAttempts,
         IChatClient chatClient,
         CancellationToken cancellationToken)
     {
         using var reaskActivity = AgentGuardTelemetry.ActivitySource.StartActivity(
             AgentGuardTelemetry.Spans.PipelineReask);
 
-        reaskActivity?.SetTag(AgentGuardTelemetry.Tags.ReaskMaxAttempts, options.MaxAttempts);
+        reaskActivity?.SetTag(AgentGuardTelemetry.Tags.ReaskMaxAttempts, maxAttempts);
         reaskActivity?.SetTag(AgentGuardTelemetry.Tags.PolicyName, _policy.Name);
 
         var currentBlockedResult = blockedResult;
 
-        for (var attempt = 0; attempt < options.MaxAttempts; attempt++)
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            var violationReason = currentBlockedResult.BlockingResult?.Reason ?? "Output was blocked by a guardrail.";
-            LogReaskAttempt(_logger, attempt + 1, options.MaxAttempts, violationReason);
-
-            AgentGuardTelemetry.ReaskAttempts.Add(1,
-                new KeyValuePair<string, object?>(AgentGuardTelemetry.Tags.PolicyName, _policy.Name));
-
-            var reaskMessages = BuildReaskMessages(originalContext, currentBlockedResult, options);
-            var response = await chatClient.GetResponseAsync(reaskMessages, options.ChatOptions, cancellationToken);
-            var newText = response.Text ?? "";
-
-            var reaskContext = originalContext with { Text = newText };
-            var reaskResult = await RunCoreAsync(reaskContext, cancellationToken);
-
-            if (!reaskResult.IsBlocked)
+            for (var attempt = 0; attempt < maxAttempts; attempt++)
             {
-                LogReaskSuccess(_logger, attempt + 1);
-                reaskActivity?.SetTag(AgentGuardTelemetry.Tags.ReaskAttemptsUsed, attempt + 1);
-                reaskActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Passed);
+                cancellationToken.ThrowIfCancellationRequested();
 
-                // the core run compared the re-asked text with itself; against the caller's text the answer
-                // changed, and the adapters apply FinalText when WasModified is set
-                return reaskResult with
+                var violationReason = currentBlockedResult.BlockingResult?.Reason ?? "Output was blocked by a guardrail.";
+                LogReaskAttempt(_logger, attempt + 1, maxAttempts, violationReason);
+
+                AgentGuardTelemetry.ReaskAttempts.Add(1,
+                    new KeyValuePair<string, object?>(AgentGuardTelemetry.Tags.PolicyName, _policy.Name));
+
+                var reaskMessages = BuildReaskMessages(originalContext, currentBlockedResult, options);
+                var response = await chatClient.GetResponseAsync(reaskMessages, options.ChatOptions, cancellationToken);
+                var newText = response.Text ?? "";
+
+                var reaskContext = originalContext with { Text = newText };
+                var reaskResult = await RunCoreAsync(reaskContext, cancellationToken);
+
+                if (!reaskResult.IsBlocked)
                 {
-                    WasModified = !string.Equals(reaskResult.FinalText, originalContext.Text, StringComparison.Ordinal),
-                    WasReasked = true,
-                    ReaskAttemptsUsed = attempt + 1
-                };
-            }
+                    LogReaskSuccess(_logger, attempt + 1);
+                    reaskActivity?.SetTag(AgentGuardTelemetry.Tags.ReaskAttemptsUsed, attempt + 1);
+                    reaskActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Passed);
 
-            currentBlockedResult = reaskResult;
+                    // the core run compared the re-asked text with itself; against the caller's text the answer
+                    // changed, and the adapters apply FinalText when WasModified is set
+                    return reaskResult with
+                    {
+                        WasModified = !string.Equals(reaskResult.FinalText, originalContext.Text, StringComparison.Ordinal),
+                        WasReasked = true,
+                        ReaskAttemptsUsed = attempt + 1
+                    };
+                }
+
+                currentBlockedResult = reaskResult;
+            }
+        }
+        catch (Exception ex)
+        {
+            AgentGuardTelemetry.RecordException(reaskActivity, ex, cancellationToken);
+            throw;
         }
 
-        LogReaskExhausted(_logger, options.MaxAttempts);
-        reaskActivity?.SetTag(AgentGuardTelemetry.Tags.ReaskAttemptsUsed, options.MaxAttempts);
+        // running out of attempts is recorded like any other block: an expected outcome, not a failure
+        LogReaskExhausted(_logger, maxAttempts);
+        reaskActivity?.SetTag(AgentGuardTelemetry.Tags.ReaskAttemptsUsed, maxAttempts);
         reaskActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Blocked);
-        reaskActivity?.SetStatus(ActivityStatusCode.Error, "Re-ask exhausted all attempts");
+        if (currentBlockedResult.BlockingResult is { } blockingResult)
+            AgentGuardTelemetry.RecordBlock(reaskActivity, blockingResult);
+
         return currentBlockedResult with
         {
             WasReasked = true,
-            ReaskAttemptsUsed = options.MaxAttempts
+            ReaskAttemptsUsed = maxAttempts
         };
     }
 
@@ -362,6 +401,12 @@ public sealed partial class GuardrailPipeline
     [LoggerMessage(Level = LogLevel.Warning, Message = "Guardrail rule '{RuleName}' encountered an error: {ErrorDetail} (blocked={IsBlocked})")]
     private static partial void LogRuleError(ILogger logger, string ruleName, string? errorDetail, bool isBlocked);
 
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Guardrail rule '{RuleName}' encountered an error and failed open: {ErrorDetail}")]
+    private static partial void LogRuleErrorFailedOpen(ILogger logger, string ruleName, string? errorDetail);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Guardrail rule '{RuleName}' passed with a warning: {Reason}")]
+    private static partial void LogRuleWarning(ILogger logger, string ruleName, string? reason);
+
     [LoggerMessage(Level = LogLevel.Information, Message = "Re-ask attempt {Attempt}/{MaxAttempts} - violation: {Reason}")]
     private static partial void LogReaskAttempt(ILogger logger, int attempt, int maxAttempts, string reason);
 
@@ -392,6 +437,15 @@ public sealed record GuardrailPipelineResult
 
     /// <summary>Every rule result produced, in execution order, up to and including any block.</summary>
     public required IReadOnlyList<GuardrailResult> AllResults { get; init; }
+
+    /// <summary>
+    /// The results in <see cref="AllResults"/> that let the text through but asked to be surfaced
+    /// (<see cref="GuardrailResult.IsWarning"/>), such as a rule that could not reach a verdict under
+    /// <see cref="ErrorBehavior.Warn"/>. Empty when there are none. A rule that failed under
+    /// <see cref="ErrorBehavior.FailOpen"/> is not listed here; it is in <see cref="AllResults"/> with
+    /// <see cref="GuardrailResult.IsError"/> set.
+    /// </summary>
+    public IReadOnlyList<GuardrailResult> Warnings => AllResults.Where(r => r.IsWarning && !r.IsBlocked).ToArray();
 
     /// <summary>The text after every modification. On a block, the text as it stood when blocked.</summary>
     public required string FinalText { get; init; }

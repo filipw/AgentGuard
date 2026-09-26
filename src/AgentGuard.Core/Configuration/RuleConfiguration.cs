@@ -29,11 +29,15 @@ public sealed class RuleConfiguration
     /// (e.g. PERSON, ADDRESS) and is required - there is no "detect everything" default for a remote call.
     /// </summary>
     public List<string>? Entities { get; set; }
-    /// <summary>Replacement text for redacted PII. Default: null, which replaces each entity with its <c>&lt;ENTITY_TYPE&gt;</c> tag.</summary>
+    /// <summary>
+    /// Replacement text for redacted PII (PiiRedaction, RemotePii, AzurePii). Default: null, which
+    /// replaces each entity with its <c>&lt;ENTITY_TYPE&gt;</c> tag.
+    /// </summary>
     public string? Replacement { get; set; }
     /// <summary>
     /// Country packs to enable in addition to the generic recognizers and the always-on US pack, by
-    /// ISO 3166-1 alpha-2 code (e.g. uk, de, in, it, es). When empty, only generic + US run.
+    /// ISO 3166-1 alpha-2 code (e.g. uk, de, in, it, es), for PiiRedaction, RemotePii and AzurePii.
+    /// When empty, only generic + US run.
     /// </summary>
     public List<string>? Countries { get; set; }
 
@@ -42,7 +46,7 @@ public sealed class RuleConfiguration
     public List<string>? AllowedTopics { get; set; }
 
     // --- TokenLimit ---
-    /// <summary>Maximum token count.</summary>
+    /// <summary>Maximum token count, at least 1. Default: 4000.</summary>
     public int? MaxTokens { get; set; }
     /// <summary>Phase: Input or Output. Default: Input.</summary>
     public string? Phase { get; set; }
@@ -84,10 +88,27 @@ public sealed class RuleConfiguration
     /// <summary>Path to the SentencePiece tokenizer file. Required alongside <see cref="ModelPath"/>.</summary>
     public string? TokenizerPath { get; set; }
     /// <summary>
-    /// Confidence threshold (0.0–1.0). Default: 0.75 for the bundled Defender model (its calibrated
-    /// main-head operating point), 0.5 for a bring-your-own DeBERTa model.
+    /// Confidence threshold, a number from 0.0 to 1.0; NaN and values outside that range are rejected.
+    /// Default: 0.75 for the bundled Defender model (its calibrated main-head operating point), 0.5 for
+    /// a bring-your-own DeBERTa model.
     /// </summary>
     public float? Threshold { get; set; }
+    /// <summary>
+    /// Maximum number of tokens per classification window (OnnxPromptInjection, DefenderPromptInjection,
+    /// DebertaPromptInjection), at least 1. Longer input is split into overlapping windows that are
+    /// classified separately. Default: the rule's own (64 for Defender, 510 for DeBERTa).
+    /// </summary>
+    public int? WindowSize { get; set; }
+    /// <summary>
+    /// Number of tokens consecutive windows share, at least 0 and smaller than the window size.
+    /// Default: the rule's own (32 for Defender, 128 for DeBERTa).
+    /// </summary>
+    public int? WindowOverlap { get; set; }
+    /// <summary>
+    /// Maximum number of windows classified for one input; input that needs more is blocked. 0 removes
+    /// the limit. Default: the rule's own (512 for Defender, 32 for DeBERTa).
+    /// </summary>
+    public int? MaxWindows { get; set; }
 
     // --- LlmPromptInjection ---
     /// <summary>Include structured threat classification. Default: true.</summary>
@@ -137,7 +158,7 @@ public sealed class RuleConfiguration
     /// (AzurePii). Required for both.
     /// </summary>
     public string? Endpoint { get; set; }
-    /// <summary>Per-request timeout in seconds (RemotePii / AzurePii). Default: 10.</summary>
+    /// <summary>Per-request timeout in seconds (RemotePii / AzurePii), at least 1. Default: 10.</summary>
     public int? TimeoutSeconds { get; set; }
     /// <summary>
     /// When true (default), a remote/Azure failure is swallowed and local-only recognizers still

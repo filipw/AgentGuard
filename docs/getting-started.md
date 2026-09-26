@@ -68,9 +68,9 @@ var guardedClient = chatClient.UseAgentGuard(g => g
 var response = await guardedClient.GetResponseAsync(conversationHistory);
 ```
 
-Every user message in the request is guarded, not only the last one. The newest is always evaluated; an earlier one reuses the verdict already reached for identical text (from a bounded cache) or, on a miss, is judged against the conversation as it stood. An earlier user message the policy blocks is replaced with `ChatMessageGuard.RemovedMessagePlaceholder`, and only a block of the newest user message blocks the call. Output guardrails evaluate each assistant message of the response (a streamed response as its complete text), and its tool calls and tool results together with the final text. Rewrites keep images, attachments, tool calls and metadata.
+Every user message in the request is guarded, not only the last one. The newest is always evaluated; an earlier one reuses the verdict already reached for identical text (from a bounded cache) or, on a miss, is judged against the conversation as it stood. An earlier user message the policy blocks is replaced with `ChatMessageGuard.RemovedMessagePlaceholder`, and only a block of the newest user message blocks the call. Output guardrails evaluate each assistant message of the response (streamed responses too), and its tool calls and tool results together with the final text. The reasoning of each assistant message goes through the output rules separately: a rewrite replaces it and a block removes it, without blocking the answer. Rewrites keep images, attachments, tool calls, encrypted reasoning and metadata.
 
-Streaming is also supported - input guardrails run before the stream starts. By default output guardrails evaluate the buffered full response before chunks are forwarded to the caller; a policy with `UseProgressiveStreaming()` streams tokens immediately and emits retraction/replacement events instead.
+Streaming is also supported - input guardrails run before the stream starts. By default output guardrails evaluate the buffered full response before chunks are forwarded to the caller; a policy with `UseProgressiveStreaming()` streams answer tokens immediately and emits retraction/replacement events instead, holding tool calls, reasoning and other non-text content back until the final check.
 
 To have tool-call guardrails vet each model turn before its tool calls run, place the decorator inside the `FunctionInvokingChatClient` (add it after `UseFunctionInvocation()` on a `ChatClientBuilder` - see [Tool Call Guardrails](../README.md#tool-call-guardrails)). Wrapped around it, the decorator sees tool calls only after they have run.
 
@@ -96,6 +96,8 @@ var response = await guardedAgent.RunAsync(messages, session, options);
 ```
 
 Supports both `RunAsync` and `RunStreamingAsync`, including progressive streaming with retraction events. Messages are guarded the same way as in the `IChatClient` decorator: every user message of the request, and each assistant message of the response.
+
+`ChatClientAgent` saves its response to the session's chat history before this middleware sees it. With the default in-memory history provider, an output block or rewrite is applied to the stored response too, so the next turn doesn't replay what was blocked or redacted. Other history providers and service-side conversations keep the raw response; if that matters, also add `UseAgentGuard()` to the agent's `IChatClient`, which guards the response before the agent saves it.
 
 When the agent invokes functions through a `FunctionInvokingChatClient` (`ChatClientAgent` has one), `GuardToolCalls()` checks each call's arguments before the tool runs - a blocked call is never executed and the model receives `ToolResultMiddlewareOptions.BlockedToolCallPlaceholder` instead - and `GuardToolResults()` checks each tool result before the model sees it.
 

@@ -11,23 +11,53 @@ namespace AgentGuard.AgentFramework;
 
 /// <summary>
 /// Adds reversible PII protection to a MAF agent: detected PII in every message of the request is
-/// encrypted (AES) into opaque tokens before the inner agent and the model provider ever see it, and those
-/// tokens are decrypted back to the original values in the agent's response. The model reasons over
-/// placeholders, never the raw PII, while the end user still sees the real values.
+/// encrypted (AES-GCM) into opaque tokens before the inner agent and the model provider ever see it, and
+/// the tokens in the agent's response are decrypted back to the original values. The model reasons over
+/// tokens, never the raw PII, while the end user still sees the real values.
 /// <para>
 /// This is the cross-phase round-trip the per-message guardrail rules cannot express on their own:
 /// the input and output guardrail phases run on separate contexts, so a rule pair has no shared place
-/// to carry the encryption tokens. This middleware holds them in the per-invocation closure instead.
+/// to carry the encryption tokens. This middleware keeps each request's tokens for its response, and
+/// the session's tokens in the session.
 /// </para>
 /// </summary>
+/// <remarks>
+/// <para>
+/// Only tokens this middleware minted for the conversation are restored: the current request's and, when the
+/// run has an <see cref="AgentSession"/>, those of earlier turns of the same session, which its chat history
+/// replays to the model. The session keeps them in its <see cref="AgentSession.StateBag"/> under
+/// <c>AgentGuard.PiiReversibleRedaction.Tokens</c>: the ciphertext tokens only, never the values, and the most
+/// recent 4,096, so they survive the session being serialized. Without a session only the current request's
+/// tokens are restored; a caller that sends the whole transcript with each request has it encrypted anew each
+/// time. A token from anywhere else - another session, a log, a tool result, text a user pasted - is left as it
+/// is, even when it was encrypted with the same key, and so is a token the model alters.
+/// </para>
+/// <para>
+/// A token is restored wherever it appears in the response text, including run together with other letters
+/// or digits. Two runs on the same session at the same time may each overwrite the other's addition to the
+/// session's tokens; the tokens of the run that lost are then not restored in later turns.
+/// </para>
+/// <para>
+/// A streamed response is restored the same way, and reads the same as the response without streaming.
+/// Text at the end of an update that could still be the start of a token is held back until that is decided,
+/// which takes at most the length of a token, and then goes out, restored when it is one: with the next update
+/// of its message, or in an update of its own at the end of its message, before an update carrying a
+/// progressive-streaming guardrail event, or at the end of the stream. Every update keeps its non-text content
+/// and metadata.
+/// </para>
+/// <para>
+/// A separate key for each user or tenant whose data must stay apart adds defense in depth: a token minted
+/// for one then can't be decrypted with another's key at all.
+/// </para>
+/// </remarks>
 public static class PiiReversibleRedactionExtensions
 {
     private const string EncryptOperatorName = "encrypt";
 
     /// <summary>
-    /// Wraps the agent so PII in each request is encrypted before the inner agent runs and decrypted
-    /// back in the response. Restoration is by exact token match, so it survives the model echoing the
-    /// tokens at different positions; tokens the model paraphrases or drops are simply not restored.
+    /// Wraps the agent so PII in each request is encrypted before the inner agent runs, and the tokens in the
+    /// response are decrypted back. See <see cref="PiiReversibleRedactionExtensions"/> for which tokens are
+    /// restored; a token the model paraphrases or drops can't be.
     /// </summary>
     /// <param name="builder">The MAF agent builder.</param>
     /// <param name="key">AES key (16, 24, or 32 bytes when UTF-8 encoded - 128/192/256-bit).</param>
@@ -87,11 +117,11 @@ public static class PiiReversibleRedactionExtensions
             runFunc: async (messages, session, runOptions, innerAgent, ct) =>
             {
                 var list = messages as IReadOnlyList<ChatMessage> ?? messages.ToList();
-                var (processed, restore) = await ProtectAsync(engine, keyBytes, list, ct).ConfigureAwait(false);
+                var (processed, restorer) = await ProtectAsync(engine, keyBytes, list, session, ct).ConfigureAwait(false);
 
                 var response = await innerAgent.RunAsync(processed, session, runOptions, ct).ConfigureAwait(false);
 
-                return restore.Count == 0 ? response : RestoreResponse(response, restore);
+                return restorer.Restore(response);
             },
             runStreamingFunc: (messages, session, runOptions, innerAgent, ct) =>
                 ProtectAndStreamAsync(engine, keyBytes, messages, session, runOptions, innerAgent, ct));
@@ -107,27 +137,28 @@ public static class PiiReversibleRedactionExtensions
         [EnumeratorCancellation] CancellationToken ct)
     {
         var list = messages as IReadOnlyList<ChatMessage> ?? messages.ToList();
-        var (processed, restore) = await ProtectAsync(engine, keyBytes, list, ct).ConfigureAwait(false);
+        var (processed, restorer) = await ProtectAsync(engine, keyBytes, list, session, ct).ConfigureAwait(false);
 
-        await foreach (var update in RestoreStream(innerAgent.RunStreamingAsync(processed, session, runOptions, ct), restore)
-            .WithCancellation(ct).ConfigureAwait(false))
+        await foreach (var update in restorer.RestoreAsync(innerAgent.RunStreamingAsync(processed, session, runOptions, ct), ct)
+            .ConfigureAwait(false))
         {
             yield return update;
         }
     }
 
     // anonymizes PII in every text-bearing message of the request, including history a client sends
-    // back and context-provider messages, and returns the token -> original map used to restore the
-    // response. Detection runs on the engine's asynchronous path, which is what runs remote and
-    // Azure detectors.
-    private static async Task<(IReadOnlyList<ChatMessage> Messages, IReadOnlyDictionary<string, string> Restore)> ProtectAsync(
+    // back and context-provider messages, records the tokens it mints in the session, and returns the
+    // restorer for the response, which knows them and the session's earlier ones. Detection runs on the
+    // engine's asynchronous path, which is what runs remote and Azure detectors.
+    private static async Task<(IReadOnlyList<ChatMessage> Messages, PiiTokenRestorer Restorer)> ProtectAsync(
         PiiEngine engine,
         byte[] keyBytes,
         IReadOnlyList<ChatMessage> messages,
+        AgentSession? session,
         CancellationToken ct)
     {
         List<ChatMessage>? rewritten = null;
-        Dictionary<string, string>? restore = null;
+        var tokens = new Dictionary<string, string>(StringComparer.Ordinal);
 
         for (var i = 0; i < messages.Count; i++)
         {
@@ -142,104 +173,27 @@ public static class PiiReversibleRedactionExtensions
             // the anonymized text always goes on, even for spans an engine's non-reversible operator
             // produced: only encrypt tokens can be restored, but nothing detected may reach the model
             (rewritten ??= [.. messages])[i] = GuardrailChatContent.WithText(messages[i], deid.AnonymizedText);
-            AddRestoreEntries(restore ??= new Dictionary<string, string>(StringComparer.Ordinal), deid.Items, keyBytes);
+            AddTokens(tokens, deid.Items, keyBytes);
         }
 
-        return (rewritten ?? messages, restore ?? EmptyRestore);
+        // the session's history can bring back tokens minted in its earlier turns
+        var recorded = PiiTokenRegistry.Read(session);
+        if (session is not null && tokens.Count > 0)
+            PiiTokenRegistry.Record(session, tokens.Keys);
+
+        return (rewritten ?? messages, new PiiTokenRestorer(keyBytes, tokens, recorded));
     }
 
-    private static readonly IReadOnlyDictionary<string, string> EmptyRestore =
-        new Dictionary<string, string>(StringComparer.Ordinal);
-
     // maps each distinct ciphertext token back to its decrypted original value.
-    private static void AddRestoreEntries(Dictionary<string, string> map, IReadOnlyList<OperatorResult> items, byte[] keyBytes)
+    private static void AddTokens(Dictionary<string, string> tokens, IReadOnlyList<OperatorResult> items, byte[] keyBytes)
     {
         foreach (var item in items)
         {
             if (!string.Equals(item.Operator, EncryptOperatorName, StringComparison.Ordinal))
                 continue;
-            if (!map.ContainsKey(item.Text))
-                map[item.Text] = AesCipher.Decrypt(keyBytes, item.Text);
+            if (!tokens.ContainsKey(item.Text))
+                tokens[item.Text] = AesCipher.Decrypt(keyBytes, item.Text);
         }
-    }
-
-    private static AgentResponse RestoreResponse(AgentResponse response, IReadOnlyDictionary<string, string> restore)
-    {
-        var restored = new List<ChatMessage>(response.Messages.Count);
-        var changed = false;
-
-        foreach (var message in response.Messages)
-        {
-            var text = message.Text;
-            if (!string.IsNullOrEmpty(text))
-            {
-                var newText = ApplyRestore(text, restore);
-                if (!string.Equals(newText, text, StringComparison.Ordinal))
-                {
-                    restored.Add(GuardrailChatContent.WithText(message, newText));
-                    changed = true;
-                    continue;
-                }
-            }
-
-            restored.Add(message);
-        }
-
-        if (!changed)
-            return response;
-
-        return new AgentResponse(restored)
-        {
-            ResponseId = response.ResponseId,
-            AgentId = response.AgentId,
-            CreatedAt = response.CreatedAt,
-            Usage = response.Usage,
-            FinishReason = response.FinishReason,
-            AdditionalProperties = response.AdditionalProperties
-        };
-    }
-
-    private static async IAsyncEnumerable<AgentResponseUpdate> RestoreStream(
-        IAsyncEnumerable<AgentResponseUpdate> updates,
-        IReadOnlyDictionary<string, string> restore)
-    {
-        await foreach (var update in updates)
-        {
-            // best-effort: tokens are restored per update, so a token split across two chunks is
-            // not restored. Use the non-streaming path when guaranteed restoration matters.
-            var text = update.Text;
-            if (restore.Count == 0 || string.IsNullOrEmpty(text))
-            {
-                yield return update;
-                continue;
-            }
-
-            var newText = ApplyRestore(text, restore);
-            yield return string.Equals(newText, text, StringComparison.Ordinal)
-                ? update
-                : new AgentResponseUpdate(update.Role ?? ChatRole.Assistant, GuardrailChatContent.ReplaceText(update.Contents, newText))
-                {
-                    AuthorName = update.AuthorName,
-                    AgentId = update.AgentId,
-                    MessageId = update.MessageId,
-                    ResponseId = update.ResponseId,
-                    CreatedAt = update.CreatedAt,
-                    FinishReason = update.FinishReason,
-                    ContinuationToken = update.ContinuationToken,
-                    AdditionalProperties = update.AdditionalProperties
-                };
-        }
-    }
-
-    private static string ApplyRestore(string text, IReadOnlyDictionary<string, string> restore)
-    {
-        foreach (var (token, original) in restore)
-        {
-            if (text.Contains(token, StringComparison.Ordinal))
-                text = text.Replace(token, original, StringComparison.Ordinal);
-        }
-
-        return text;
     }
 
     // clones the detection-relevant options and forces the reversible encrypt operator.

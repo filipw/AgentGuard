@@ -21,8 +21,8 @@ public static class GuardrailChatContent
 
     /// <summary>
     /// Returns a copy of <paramref name="message"/> whose text is <paramref name="text"/>. Only the
-    /// text content is replaced: images, files, function calls and other non-text content stay, as do
-    /// the role, author, message id, timestamp and additional properties.
+    /// text content is replaced: images, files, function calls, reasoning and other non-text content
+    /// stay, as do the role, author, message id, timestamp and additional properties.
     /// </summary>
     /// <remarks>
     /// The raw provider representation is deliberately not carried over - it still holds the original
@@ -79,6 +79,229 @@ public static class GuardrailChatContent
             result.Insert(0, new TextContent(text));
 
         return result;
+    }
+
+    /// <summary>
+    /// Returns a copy of <paramref name="update"/> whose text is <paramref name="text"/>. Only the text
+    /// content is replaced: function calls, usage and other non-text content stay, as do the role,
+    /// author, ids, timestamp, model, finish reason, continuation token and additional properties.
+    /// </summary>
+    /// <remarks>
+    /// The raw provider representation is not carried over, since it still holds the original text. An
+    /// empty <paramref name="text"/> removes the text content altogether.
+    /// </remarks>
+    /// <param name="update">The update to copy.</param>
+    /// <param name="text">The new text.</param>
+    /// <returns>The rewritten update.</returns>
+    public static ChatResponseUpdate WithText(ChatResponseUpdate update, string text)
+    {
+        ArgumentNullException.ThrowIfNull(update);
+
+        return new ChatResponseUpdate(update.Role, ReplaceText(update.Contents, text))
+        {
+            AuthorName = update.AuthorName,
+            MessageId = update.MessageId,
+            ResponseId = update.ResponseId,
+            ConversationId = update.ConversationId,
+            CreatedAt = update.CreatedAt,
+            ModelId = update.ModelId,
+            FinishReason = update.FinishReason,
+            ContinuationToken = update.ContinuationToken,
+            AdditionalProperties = update.AdditionalProperties
+        };
+    }
+
+    /// <summary>
+    /// Returns the reasoning text in <paramref name="contents"/>: the text of every
+    /// <see cref="TextReasoningContent"/>, concatenated. <see cref="ChatMessage.Text"/> does not include it.
+    /// </summary>
+    /// <param name="contents">The content items of a message or update.</param>
+    /// <returns>The reasoning text, or an empty string when there is none.</returns>
+    public static string GetReasoningText(IEnumerable<AIContent> contents)
+    {
+        ArgumentNullException.ThrowIfNull(contents);
+
+        return string.Concat(contents.OfType<TextReasoningContent>().Select(reasoning => reasoning.Text));
+    }
+
+    /// <summary>
+    /// Returns a copy of <paramref name="message"/> whose reasoning text is <paramref name="reasoningText"/>
+    /// (see <see cref="ReplaceReasoningText"/>). The answer text, every other content, the role, author,
+    /// message id, timestamp and additional properties stay.
+    /// </summary>
+    /// <param name="message">The message to copy.</param>
+    /// <param name="reasoningText">The new reasoning text; empty removes it.</param>
+    /// <returns>The rewritten message.</returns>
+    public static ChatMessage WithReasoningText(ChatMessage message, string reasoningText)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+
+        return new ChatMessage(message.Role, ReplaceReasoningText(message.Contents, reasoningText))
+        {
+            AuthorName = message.AuthorName,
+            MessageId = message.MessageId,
+            CreatedAt = message.CreatedAt,
+            AdditionalProperties = message.AdditionalProperties
+        };
+    }
+
+    /// <summary>
+    /// Replaces the reasoning text in <paramref name="contents"/> with <paramref name="reasoningText"/>,
+    /// placed where the first <see cref="TextReasoningContent"/> was. Every other content item keeps its
+    /// position.
+    /// </summary>
+    /// <remarks>
+    /// Encrypted reasoning (<see cref="TextReasoningContent.ProtectedData"/>) stays on the item that carried
+    /// it, with only its text replaced or removed: providers such as the OpenAI Responses API need it
+    /// back to continue a tool-calling turn. A reasoning item left with neither text nor protected data is
+    /// dropped.
+    /// </remarks>
+    /// <param name="contents">The original content items.</param>
+    /// <param name="reasoningText">The new reasoning text; empty removes the reasoning text.</param>
+    /// <returns>A new content list.</returns>
+    public static IList<AIContent> ReplaceReasoningText(IEnumerable<AIContent> contents, string reasoningText)
+    {
+        ArgumentNullException.ThrowIfNull(contents);
+
+        var result = new List<AIContent>();
+        var placed = string.IsNullOrEmpty(reasoningText);
+
+        foreach (var content in contents)
+        {
+            if (content is not TextReasoningContent reasoning)
+            {
+                result.Add(content);
+                continue;
+            }
+
+            var text = placed ? "" : reasoningText;
+            placed = true;
+
+            if (text.Length == 0 && reasoning.ProtectedData is null)
+                continue;
+
+            result.Add(new TextReasoningContent(text)
+            {
+                ProtectedData = reasoning.ProtectedData,
+                AdditionalProperties = reasoning.AdditionalProperties
+            });
+        }
+
+        if (!placed)
+            result.Insert(0, new TextReasoningContent(reasoningText));
+
+        return result;
+    }
+
+    /// <summary>
+    /// Makes <paramref name="answer"/> the whole text of a response: it goes into the last assistant
+    /// message that has text, the other assistant messages lose their text, and a message left with no
+    /// content is dropped. Non-text content and the other messages stay as they are.
+    /// </summary>
+    /// <remarks>
+    /// Use it when one piece of text replaces everything the response said, such as a re-asked answer or
+    /// the rewritten text of a progressively streamed response. When no assistant message has text, the
+    /// answer is added as a new assistant message.
+    /// </remarks>
+    /// <param name="messages">The response's messages.</param>
+    /// <param name="answer">The text that replaces the response's text.</param>
+    /// <returns>A new message list.</returns>
+    public static List<ChatMessage> ReplaceAnswer(IReadOnlyList<ChatMessage> messages, string answer)
+    {
+        ArgumentNullException.ThrowIfNull(messages);
+        ArgumentNullException.ThrowIfNull(answer);
+
+        var last = -1;
+        for (var i = messages.Count - 1; i >= 0; i--)
+        {
+            if (IsAnswer(messages[i]))
+            {
+                last = i;
+                break;
+            }
+        }
+
+        var result = new List<ChatMessage>(messages.Count + 1);
+
+        for (var i = 0; i < messages.Count; i++)
+        {
+            if (!IsAnswer(messages[i]))
+            {
+                result.Add(messages[i]);
+                continue;
+            }
+
+            var rewritten = WithText(messages[i], i == last ? answer : "");
+            if (rewritten.Contents.Count > 0)
+                result.Add(rewritten);
+        }
+
+        if (last < 0 && answer.Length > 0)
+            result.Add(new ChatMessage(ChatRole.Assistant, answer));
+
+        return result;
+
+        static bool IsAnswer(ChatMessage message) =>
+            message.Role == ChatRole.Assistant && !string.IsNullOrEmpty(message.Text);
+    }
+
+    /// <summary>
+    /// Builds the streaming updates that deliver <paramref name="messages"/> as <paramref name="response"/>:
+    /// one update per message with its role, author, message id, timestamp, contents and additional
+    /// properties, each carrying the response id, conversation id and model; then, when the response has
+    /// any, one closing update with its usage, finish reason, continuation token and additional properties.
+    /// </summary>
+    /// <remarks>
+    /// Combined with <c>ToChatResponse()</c>, the updates give back the messages (consecutive messages are
+    /// told apart by their role, author or message id, as when the response was first combined from
+    /// updates), the usage and the finish reason. The raw provider representations are not carried over.
+    /// </remarks>
+    /// <param name="response">The response whose metadata the updates carry.</param>
+    /// <param name="messages">The messages to deliver, usually a rewritten form of the response's own.</param>
+    /// <returns>The updates, in order.</returns>
+    public static List<ChatResponseUpdate> ToUpdates(ChatResponse response, IEnumerable<ChatMessage> messages)
+    {
+        ArgumentNullException.ThrowIfNull(response);
+        ArgumentNullException.ThrowIfNull(messages);
+
+        var updates = new List<ChatResponseUpdate>();
+
+        foreach (var message in messages)
+        {
+            updates.Add(new ChatResponseUpdate(message.Role, [.. message.Contents])
+            {
+                AuthorName = message.AuthorName,
+                MessageId = message.MessageId,
+                CreatedAt = message.CreatedAt ?? response.CreatedAt,
+                AdditionalProperties = message.AdditionalProperties,
+                ResponseId = response.ResponseId,
+                ConversationId = response.ConversationId,
+                ModelId = response.ModelId
+            });
+        }
+
+        if (response.Usage is not null || response.FinishReason is not null ||
+            response.ContinuationToken is not null || response.AdditionalProperties is { Count: > 0 })
+        {
+            // no role or message id, so it closes the last message rather than starting a new one
+            var closing = new ChatResponseUpdate
+            {
+                ResponseId = response.ResponseId,
+                ConversationId = response.ConversationId,
+                ModelId = response.ModelId,
+                CreatedAt = response.CreatedAt,
+                FinishReason = response.FinishReason,
+                ContinuationToken = response.ContinuationToken,
+                AdditionalProperties = response.AdditionalProperties
+            };
+
+            if (response.Usage is { } usage)
+                closing.Contents.Add(new UsageContent(usage));
+
+            updates.Add(closing);
+        }
+
+        return updates;
     }
 
     /// <summary>

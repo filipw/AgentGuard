@@ -8,6 +8,7 @@ using AgentGuard.Core.Rules;
 using AgentGuard.Core.Rules.LLM;
 using AgentGuard.Core.Telemetry;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace AgentGuard.Core.Streaming;
 
@@ -44,7 +45,7 @@ public sealed partial class StreamingGuardrailPipeline
     {
         _policy = policy ?? throw new ArgumentNullException(nameof(policy));
         _options = options ?? new ProgressiveStreamingOptions();
-        _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<StreamingGuardrailPipeline>.Instance;
+        _logger = logger ?? NullLogger<StreamingGuardrailPipeline>.Instance;
         _ledger = ledger;
     }
 
@@ -68,6 +69,42 @@ public sealed partial class StreamingGuardrailPipeline
 
         streamingActivity?.SetTag(AgentGuardTelemetry.Tags.PolicyName, _policy.Name);
 
+        // an exception from anywhere in the stream - the incoming chunks, a rule, the violation
+        // handler - marks the span as failed; blocks and rewrites are outcomes and only tag it
+        var outputs = ProcessStreamCoreAsync(textChunks, baseContext, violationHandler, streamingActivity, cancellationToken)
+            .GetAsyncEnumerator(cancellationToken);
+        try
+        {
+            while (await MoveNextRecordingFailureAsync(outputs, streamingActivity, cancellationToken))
+                yield return outputs.Current;
+        }
+        finally
+        {
+            await outputs.DisposeAsync();
+        }
+    }
+
+    private static async ValueTask<bool> MoveNextRecordingFailureAsync(
+        IAsyncEnumerator<StreamingPipelineOutput> outputs, Activity? streamingActivity, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await outputs.MoveNextAsync();
+        }
+        catch (Exception ex)
+        {
+            AgentGuardTelemetry.RecordException(streamingActivity, ex, cancellationToken);
+            throw;
+        }
+    }
+
+    private async IAsyncEnumerable<StreamingPipelineOutput> ProcessStreamCoreAsync(
+        IAsyncEnumerable<string> textChunks,
+        GuardrailContext baseContext,
+        IViolationHandler? violationHandler,
+        Activity? streamingActivity,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
         var handler = violationHandler ?? _policy.ViolationHandler;
         var accumulatedText = new StringBuilder();
         var charsSinceLastCheck = 0;
@@ -127,7 +164,7 @@ public sealed partial class StreamingGuardrailPipeline
                             result.BlockingResult!, baseContext, cancellationToken);
 
                         streamingActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Blocked);
-                        streamingActivity?.SetStatus(ActivityStatusCode.Error, result.BlockingResult!.Reason);
+                        AgentGuardTelemetry.RecordBlock(streamingActivity, result.BlockingResult!);
 
                         yield return StreamingPipelineOutput.Event(
                             StreamingGuardrailEvent.Retract(result.BlockingResult!, totalYieldedChars));
@@ -201,7 +238,7 @@ public sealed partial class StreamingGuardrailPipeline
                     finalResult.BlockingResult!, baseContext, cancellationToken);
 
                 streamingActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Blocked);
-                streamingActivity?.SetStatus(ActivityStatusCode.Error, finalResult.BlockingResult!.Reason);
+                AgentGuardTelemetry.RecordBlock(streamingActivity, finalResult.BlockingResult!);
 
                 yield return StreamingPipelineOutput.Event(
                     StreamingGuardrailEvent.Retract(finalResult.BlockingResult!, totalYieldedChars));
@@ -375,14 +412,20 @@ public sealed partial class StreamingGuardrailPipeline
             ruleActivity?.SetTag(AgentGuardTelemetry.Tags.StreamingStrategy, "progressive");
 
             var stopwatch = ValueStopwatch.StartNew();
-            var result = await rule.EvaluateAsync(context, cancellationToken);
+            GuardrailResult result;
+            try
+            {
+                result = await rule.EvaluateAsync(context, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                AgentGuardTelemetry.RecordException(ruleActivity, ex, cancellationToken);
+                throw;
+            }
+
             var elapsed = stopwatch.GetElapsedMilliseconds();
 
-            var outcome = result.IsBlocked ? AgentGuardTelemetry.Outcomes.Blocked
-                : result.IsModified ? AgentGuardTelemetry.Outcomes.Modified
-                : result.IsError ? AgentGuardTelemetry.Outcomes.Error
-                : AgentGuardTelemetry.Outcomes.Passed;
-
+            var outcome = AgentGuardTelemetry.OutcomeOf(result);
             ruleActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, outcome);
 
             AgentGuardTelemetry.RuleEvaluations.Add(1,
@@ -397,20 +440,30 @@ public sealed partial class StreamingGuardrailPipeline
             var taggedResult = result with { RuleName = rule.Name };
             results.Add(taggedResult);
 
+            // an error under FailOpen is logged at Debug; one that blocks (FailClosed) or asked to be
+            // surfaced (Warn) is logged at Warning, as is any other result that passed with a warning
             if (result.IsError)
             {
-                var errorDetail = result.Metadata?.TryGetValue("errorDetail", out var detail) == true
-                    ? detail?.ToString() : null;
-                LogRuleError(_logger, rule.Name, errorDetail, result.IsBlocked);
+                AgentGuardTelemetry.RecordRuleError(ruleActivity, result);
+
+                var errorDetail = AgentGuardTelemetry.ErrorDetail(result);
+                if (result.IsBlocked || result.IsWarning)
+                    LogRuleError(_logger, rule.Name, errorDetail, result.IsBlocked);
+                else
+                    LogRuleErrorFailedOpen(_logger, rule.Name, errorDetail);
+            }
+            else if (result.IsWarning && !result.IsBlocked)
+            {
+                LogRuleWarning(_logger, rule.Name, result.Reason);
             }
 
             if (result.IsBlocked)
             {
-                ruleActivity?.SetStatus(ActivityStatusCode.Error, result.Reason);
+                AgentGuardTelemetry.RecordBlock(ruleActivity, result);
 
                 AgentGuardTelemetry.RuleBlocks.Add(1,
                     new KeyValuePair<string, object?>(AgentGuardTelemetry.Tags.RuleName, rule.Name),
-                    new KeyValuePair<string, object?>(AgentGuardTelemetry.Tags.Severity, result.Severity.ToString().ToLowerInvariant()));
+                    new KeyValuePair<string, object?>(AgentGuardTelemetry.Tags.Severity, AgentGuardTelemetry.SeverityTag(result.Severity)));
 
                 return new GuardrailPipelineResult
                 {
@@ -426,7 +479,7 @@ public sealed partial class StreamingGuardrailPipeline
                 currentText = result.ModifiedText;
             }
 
-            if (!result.IsBlocked && !result.IsModified && !result.IsError)
+            if (!result.IsBlocked && !result.IsModified && !result.IsError && !result.IsWarning)
             {
                 LogRulePassed(_logger, rule.Name);
             }
@@ -488,6 +541,12 @@ public sealed partial class StreamingGuardrailPipeline
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Streaming guardrail rule '{RuleName}' encountered an error: {ErrorDetail} (blocked={IsBlocked})")]
     private static partial void LogRuleError(ILogger logger, string ruleName, string? errorDetail, bool isBlocked);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Streaming guardrail rule '{RuleName}' encountered an error and failed open: {ErrorDetail}")]
+    private static partial void LogRuleErrorFailedOpen(ILogger logger, string ruleName, string? errorDetail);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Streaming guardrail rule '{RuleName}' passed with a warning: {Reason}")]
+    private static partial void LogRuleWarning(ILogger logger, string ruleName, string? reason);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to record streaming guardrail decision to the ledger; continuing (audit side-channel)")]
     private static partial void LogLedgerError(ILogger logger, Exception exception);

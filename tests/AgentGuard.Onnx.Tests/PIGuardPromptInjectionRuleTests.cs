@@ -119,6 +119,89 @@ public class PIGuardPromptInjectionRuleTests
         }
     }
 
+    [Theory]
+    [InlineData(-0.1f)]
+    [InlineData(float.NaN)]
+    [InlineData(float.PositiveInfinity)]
+    public void ShouldThrow_WhenThresholdIsNotANumberBetweenZeroAndOne(float threshold)
+    {
+        // checked before any model file is opened
+        var act = () => new PIGuardPromptInjectionRule(new PIGuardPromptInjectionOptions
+        {
+            ModelPath = "/nonexistent/model.onnx",
+            TokenizerPath = "/nonexistent/spm.model",
+            Threshold = threshold
+        });
+
+        act.Should().Throw<ArgumentOutOfRangeException>().WithMessage("*Threshold*");
+    }
+
+    [Theory]
+    [InlineData(2)]
+    [InlineData(0)]
+    public void ShouldThrow_WhenMaxTokenLengthLeavesNoRoomForInput(int maxTokenLength)
+    {
+        var act = () => new PIGuardPromptInjectionRule(new PIGuardPromptInjectionOptions
+        {
+            ModelPath = "/nonexistent/model.onnx",
+            TokenizerPath = "/nonexistent/spm.model",
+            MaxTokenLength = maxTokenLength
+        });
+
+        act.Should().Throw<ArgumentOutOfRangeException>().WithMessage("*MaxTokenLength*");
+    }
+
+    [Fact]
+    public async Task ShouldScanEveryWindow_WhenMaxWindowsIsZero()
+    {
+        // 0 means no limit
+        var calls = new List<string>();
+        var rule = new PIGuardPromptInjectionRule(
+            text =>
+            {
+                calls.Add(text);
+                return 0.02f;
+            },
+            WindowingTestHelpers.CountWords,
+            new PIGuardPromptInjectionOptions { ModelPath = "m", TokenizerPath = "t", MaxWindows = 0 });
+
+        var result = await rule.EvaluateAsync(new GuardrailContext { Text = WindowingTestHelpers.Words(40_000), Phase = GuardrailPhase.Input });
+
+        result.IsBlocked.Should().BeFalse();
+        calls.Should().HaveCountGreaterThan(32, "the default limit does not apply when MaxWindows is 0");
+    }
+
+    [Fact]
+    public void ShouldReleaseTheSessionOnce_WhenDisposedTwice()
+    {
+        var session = new CountingDisposable();
+        var rule = CreateRuleWithSession(session);
+
+        rule.Dispose();
+        rule.Dispose();
+
+        session.DisposeCount.Should().Be(1);
+    }
+
+    [Fact]
+    public void ShouldReleaseTheSessionOnce_WhenDisposedFromSeveralThreadsAtOnce()
+    {
+        var counts = CountingDisposable.DisposeConcurrently(CreateRuleWithSession);
+
+        counts.Should().OnlyContain(count => count == 1);
+    }
+
+    [Fact]
+    public async Task ShouldThrowObjectDisposed_WhenEvaluatedAfterDispose()
+    {
+        var rule = CreateRuleWithSession(new CountingDisposable());
+        rule.Dispose();
+
+        var act = async () => await rule.EvaluateAsync(new GuardrailContext { Text = "hello", Phase = GuardrailPhase.Input });
+
+        await act.Should().ThrowAsync<ObjectDisposedException>();
+    }
+
     [Fact]
     public async Task ShouldReturnPassed_WhenTextIsEmpty()
     {
@@ -194,6 +277,10 @@ public class PIGuardPromptInjectionRuleTests
         result.IsBlocked.Should().BeFalse();
         calls.SelectMany(window => window.Split(' ')).Distinct().Should().HaveCount(3000, "no word may go unclassified");
     }
+
+    private static PIGuardPromptInjectionRule CreateRuleWithSession(IDisposable session) =>
+        new(WindowingTestHelpers.NotCalled<float>, WindowingTestHelpers.CountWords,
+            new PIGuardPromptInjectionOptions { ModelPath = "m", TokenizerPath = "t" }, session);
 
     private static PIGuardPromptInjectionRule CreateWindowedRule(List<string> calls) =>
         new(

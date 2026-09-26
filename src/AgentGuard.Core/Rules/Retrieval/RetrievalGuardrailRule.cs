@@ -127,6 +127,10 @@ public sealed class RetrievalGuardrailRule : IGuardrailRule
 
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(200);
 
+    // the (?i) patterns match case-insensitively; CultureInvariant keeps that independent of the
+    // process culture (under tr-TR, "I" is not the upper case of "i")
+    private const RegexOptions PatternOptions = RegexOptions.Compiled | RegexOptions.CultureInvariant;
+
     /// <summary>Initializes a new instance of the <see cref="RetrievalGuardrailRule"/> class.</summary>
     /// <param name="options">Which filters to run, the action to take and any limits. Defaults when null.</param>
     public RetrievalGuardrailRule(RetrievalGuardrailOptions? options = null)
@@ -348,12 +352,14 @@ public sealed class RetrievalGuardrailRule : IGuardrailRule
 
     private static readonly Regex[] SecretPatterns =
     [
-        new(@"(?<![A-Za-z0-9/+=])AKIA[0-9A-Z]{16}(?![A-Za-z0-9/+=])", RegexOptions.Compiled, TimeSpan.FromMilliseconds(200)),
-        new(@"(?<![A-Za-z0-9_])gh[pousr]_[A-Za-z0-9_]{36,255}(?![A-Za-z0-9_])", RegexOptions.Compiled, TimeSpan.FromMilliseconds(200)),
+        new(@"(?<![A-Za-z0-9/+=])AKIA[0-9A-Z]{16}(?![A-Za-z0-9/+=])", PatternOptions, RegexTimeout),
+        new(@"(?<![A-Za-z0-9_])gh[pousr]_[A-Za-z0-9_]{36,255}(?![A-Za-z0-9_])", PatternOptions, RegexTimeout),
         // the whole PEM block, so sanitizing removes the key body and not just its header line
-        new(RegexPatterns.PemPrivateKeyBlock, RegexOptions.Compiled, TimeSpan.FromMilliseconds(200)),
-        new(@"(?i)(?:api[_-]?key|api[_-]?secret|access[_-]?token|auth[_-]?token)\s*[:=]\s*[""']?([A-Za-z0-9_\-./+=]{20,})[""']?", RegexOptions.Compiled, TimeSpan.FromMilliseconds(200)),
-        new(@"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}", RegexOptions.Compiled, TimeSpan.FromMilliseconds(200)),
+        new(RegexPatterns.PemPrivateKeyBlock, PatternOptions, RegexTimeout),
+        new(@"(?i)(?:api[_-]?key|api[_-]?secret|access[_-]?token|auth[_-]?token)\s*[:=]\s*[""']?([A-Za-z0-9_\-./+=]{20,})[""']?", PatternOptions, RegexTimeout),
+        // a token only starts where no base64url character precedes it, so a long run of them is scanned
+        // once rather than once per "eyJ" inside it
+        new(@"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}", PatternOptions, RegexTimeout),
     ];
 
     private static bool ContainsSecretPatterns(string text)
@@ -377,9 +383,9 @@ public sealed class RetrievalGuardrailRule : IGuardrailRule
 
     private static readonly Regex[] PiiPatterns =
     [
-        new(@"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", RegexOptions.Compiled, TimeSpan.FromMilliseconds(200)),
-        new(@"(?<!\d)(\+?1[\s\-.]?)?\(?\d{3}\)?[\s\-.]?\d{3}[\s\-.]?\d{4}(?!\d)", RegexOptions.Compiled, TimeSpan.FromMilliseconds(200)),
-        new(@"(?<!\d)\d{3}[\s\-]?\d{2}[\s\-]?\d{4}(?!\d)", RegexOptions.Compiled, TimeSpan.FromMilliseconds(200)),
+        new(@"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", PatternOptions, RegexTimeout),
+        new(@"(?<!\d)(\+?1[\s\-.]?)?\(?\d{3}\)?[\s\-.]?\d{3}[\s\-.]?\d{4}(?!\d)", PatternOptions, RegexTimeout),
+        new(@"(?<!\d)\d{3}[\s\-]?\d{2}[\s\-]?\d{4}(?!\d)", PatternOptions, RegexTimeout),
     ];
 
     private static bool ContainsPiiPatterns(string text)
@@ -406,20 +412,20 @@ public sealed class RetrievalGuardrailRule : IGuardrailRule
         return
         [
             // Indirect injection: instructions hidden in retrieved content
-            new(@"(?i)(?:ignore|disregard|forget|override)\s+(?:all\s+)?(?:previous|prior|above|earlier)\s+(?:instructions|rules|guidelines|prompts)", RegexOptions.Compiled, RegexTimeout),
-            new(@"(?i)(?:you\s+(?:are|must|should)\s+now|new\s+instructions?|system\s+(?:prompt|override))\s*:", RegexOptions.Compiled, RegexTimeout),
-            new(@"(?i)(?:act|behave|respond)\s+as\s+(?:if\s+)?(?:you\s+are|a\s+)", RegexOptions.Compiled, RegexTimeout),
+            new(@"(?i)(?:ignore|disregard|forget|override)\s+(?:all\s+)?(?:previous|prior|above|earlier)\s+(?:instructions|rules|guidelines|prompts)", PatternOptions, RegexTimeout),
+            new(@"(?i)(?:you\s+(?:are|must|should)\s+now|new\s+instructions?|system\s+(?:prompt|override))\s*:", PatternOptions, RegexTimeout),
+            new(@"(?i)(?:act|behave|respond)\s+as\s+(?:if\s+)?(?:you\s+are|a\s+)", PatternOptions, RegexTimeout),
 
             // End sequence / role hijacking in documents
-            new(@"<\|(?:system|user|assistant|im_start|im_end|eot_id|endoftext)\|>", RegexOptions.Compiled, RegexTimeout),
-            new(@"(?i)\[(?:INST|/INST|SYSTEM|/SYSTEM)\]", RegexOptions.Compiled, RegexTimeout),
-            new(@"(?i)<<\s*SYS\s*>>", RegexOptions.Compiled, RegexTimeout),
+            new(@"<\|(?:system|user|assistant|im_start|im_end|eot_id|endoftext)\|>", PatternOptions, RegexTimeout),
+            new(@"(?i)\[(?:INST|/INST|SYSTEM|/SYSTEM)\]", PatternOptions, RegexTimeout),
+            new(@"(?i)<<\s*SYS\s*>>", PatternOptions, RegexTimeout),
 
             // Hidden instructions in HTML/markdown comments
-            new(@"<!--\s*(?:ignore|system|instructions?|prompt)\b", RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout),
+            new(@"<!--\s*(?:ignore|system|instructions?|prompt)\b", PatternOptions | RegexOptions.IgnoreCase, RegexTimeout),
 
             // Data exfiltration via injected URLs
-            new(@"(?i)(?:fetch|load|visit|navigate|request|open)\s+(?:this\s+)?(?:url|link|page)\s*:", RegexOptions.Compiled, RegexTimeout),
+            new(@"(?i)(?:fetch|load|visit|navigate|request|open)\s+(?:this\s+)?(?:url|link|page)\s*:", PatternOptions, RegexTimeout),
         ];
     }
 }

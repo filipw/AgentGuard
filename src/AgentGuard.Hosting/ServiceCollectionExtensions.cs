@@ -42,13 +42,22 @@ public sealed class AgentGuardOptions
     /// Enables a <see cref="HashChainLedger"/> decision ledger, optionally mirroring entries
     /// to an append-only JSONL file.
     /// </summary>
-    /// <param name="jsonlFilePath">When set, each entry is also written to this JSONL file.</param>
+    /// <param name="jsonlFilePath">
+    /// When set, each entry is also written to this JSONL file. A file that already holds entries,
+    /// such as one written before the process restarted, is continued rather than restarted, so it
+    /// stays one verifiable chain.
+    /// </param>
     /// <param name="maxInMemoryEntries">
     /// Caps the in-memory chain, evicting the oldest entries past the cap. Null (the default)
     /// retains every decision for the life of the process, which only suits a bounded run; set a
     /// cap for a long-lived service and mirror to <paramref name="jsonlFilePath"/> to keep the
     /// full chain on disk.
     /// </param>
+    /// <returns>These options, for chaining.</returns>
+    /// <exception cref="InvalidDataException">
+    /// The last line of <paramref name="jsonlFilePath"/> is not an intact ledger entry, so its chain
+    /// cannot be continued.
+    /// </exception>
     public AgentGuardOptions UseDecisionLedger(string? jsonlFilePath = null, int? maxInMemoryEntries = null)
     {
         Ledger = new HashChainLedger(jsonlFilePath, maxInMemoryEntries);

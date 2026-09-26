@@ -1,7 +1,6 @@
 using System.Text.Json;
 using AgentGuard.Core.Abstractions;
 using Kyoto;
-using Microsoft.ML.Tokenizers;
 
 namespace AgentGuard.Onnx;
 
@@ -32,11 +31,15 @@ public sealed class OpirSafetyRule : IGuardrailRule, IDisposable
 {
     private const string ModelName = "opir-multilang-mdeberta-v3";
 
-    private readonly OpirModelSession? _session;
+    // the session surrounds the text with at least a one-token label prefix and a trailing [SEP]
+    private const int MinSpecialTokenCount = 2;
+
+    private readonly IDisposable? _session;
     private readonly Func<string, OpirScore> _classify;
     private readonly IReadOnlyList<string> _labels;
     private readonly TextWindowSplitter _splitter;
     private readonly OpirSafetyOptions _options;
+    private int _disposed;
 
     /// <inheritdoc />
     public string Name => "opir-content-safety";
@@ -52,31 +55,27 @@ public sealed class OpirSafetyRule : IGuardrailRule, IDisposable
     /// mDeBERTa SentencePiece tokenizer, and the frozen-taxonomy prefix from disk.
     /// </summary>
     /// <param name="options">Configuration including model, tokenizer, and prefix file paths.</param>
-    /// <exception cref="ArgumentException">Thrown when a required path is missing or the threshold is out of range.</exception>
+    /// <exception cref="ArgumentException">Thrown when a required path is missing.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// Thrown when <see cref="OpirSafetyOptions.Threshold"/> is NaN or outside 0.0-1.0,
+    /// <see cref="OpirSafetyOptions.MaxTokenLength"/> leaves no room for input tokens after the label
+    /// prefix, or the window settings are invalid.
+    /// </exception>
     /// <exception cref="FileNotFoundException">Thrown when a configured file does not exist.</exception>
     public OpirSafetyRule(OpirSafetyOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
+        Validate(options);
 
         var modelPath = OnnxFileValidation.RequireFile(options.ModelPath, nameof(options.ModelPath), "Opir ONNX model");
         var tokenizerPath = OnnxFileValidation.RequireFile(options.TokenizerPath, nameof(options.TokenizerPath), "mDeBERTa SentencePiece tokenizer");
         var prefixPath = OnnxFileValidation.RequireFile(options.PrefixPath, nameof(options.PrefixPath), "Opir prefix.json");
 
-        if (options.Threshold is < 0f or > 1f)
-            throw new ArgumentOutOfRangeException(nameof(options), "Threshold must be between 0.0 and 1.0.");
-        WindowedClassification.ValidateWindowOptions(
-            options.WindowSize, options.WindowOverlap, options.MaxWindows, nameof(options));
-
         _options = options;
 
         // counts tokens exactly like the session's own tokenizer (content ids only, no BOS/EOS), so that
         // input which fits in one window is recognised as such and classified in a single call
-        SentencePieceTokenizer tokenizer;
-        using (var tokenizerStream = File.OpenRead(tokenizerPath))
-        {
-            tokenizer = SentencePieceTokenizer.Create(
-                tokenizerStream, addBeginningOfSentence: false, addEndOfSentence: false);
-        }
+        var tokenizer = SentencePieceContentTokenizer.Load(tokenizerPath);
 
         _splitter = WindowedClassification.CreateSplitter(
             WindowedClassification.CountContentTokens(tokenizer),
@@ -85,38 +84,45 @@ public sealed class OpirSafetyRule : IGuardrailRule, IDisposable
             options.WindowOverlap,
             nameof(options));
 
-        _session = OpirModelSession.Acquire(modelPath, tokenizerPath, prefixPath, options.MaxTokenLength);
-        _classify = _session.Classify;
-        _labels = _session.Labels;
+        var session = OpirModelSession.Acquire(modelPath, tokenizerPath, prefixPath, options.MaxTokenLength);
+        _session = session;
+        _classify = session.Classify;
+        _labels = session.Labels;
     }
 
     /// <summary>
     /// Internal constructor for testing - classifies with <paramref name="classify"/> and counts tokens
     /// with <paramref name="countTokens"/> instead of loading the model. <paramref name="labels"/> are
     /// the harm labels the scores are aligned with; <paramref name="prefixTokenCount"/> stands in for
-    /// the length of the frozen label prefix.
+    /// the length of the frozen label prefix. <paramref name="session"/>, when given, stands in for the
+    /// pooled session and is released by <see cref="Dispose"/>.
     /// </summary>
     internal OpirSafetyRule(
         Func<string, OpirScore> classify,
         IReadOnlyList<string> labels,
         TokenCounter countTokens,
         int prefixTokenCount,
-        OpirSafetyOptions options)
+        OpirSafetyOptions options,
+        IDisposable? session = null)
     {
+        Validate(options);
         _options = options;
         _classify = classify;
         _labels = labels;
-        WindowedClassification.ValidateWindowOptions(
-            options.WindowSize, options.WindowOverlap, options.MaxWindows, nameof(options));
+        _session = session;
         _splitter = WindowedClassification.CreateSplitter(
             countTokens, TextTokenBudget(options.MaxTokenLength, prefixTokenCount), options.WindowSize, options.WindowOverlap, nameof(options));
     }
 
     /// <inheritdoc />
+    /// <exception cref="ObjectDisposedException">Thrown when the rule has been disposed.</exception>
     public ValueTask<GuardrailResult> EvaluateAsync(
         GuardrailContext context,
         CancellationToken cancellationToken = default)
     {
+        // a disposed rule no longer holds a reference to the pooled session, which may already be freed
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+
         if (string.IsNullOrWhiteSpace(context.Text))
             return ValueTask.FromResult(GuardrailResult.Passed());
 
@@ -167,11 +173,22 @@ public sealed class OpirSafetyRule : IGuardrailRule, IDisposable
     }
 
     /// <summary>
-    /// Releases this rule's reference to the pooled ONNX inference session.
+    /// Releases this rule's reference to the pooled ONNX inference session. The session is shared
+    /// process-wide and freed when its last holder releases it, so the reference is released exactly
+    /// once: calling this again, from any thread, does nothing.
     /// </summary>
     public void Dispose()
     {
-        _session?.Dispose();
+        if (Interlocked.Exchange(ref _disposed, 1) == 0)
+            _session?.Dispose();
+    }
+
+    private static void Validate(OpirSafetyOptions options)
+    {
+        OptionValidation.RequireProbability(options.Threshold, nameof(options.Threshold), nameof(options));
+        OptionValidation.RequireMaxTokenLength(options.MaxTokenLength, MinSpecialTokenCount, nameof(options));
+        WindowedClassification.ValidateWindowOptions(
+            options.WindowSize, options.WindowOverlap, options.MaxWindows, nameof(options));
     }
 
     // text tokens the session classifies without truncating: the rest after the label prefix and [SEP]

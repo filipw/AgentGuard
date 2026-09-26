@@ -139,12 +139,46 @@ public class ChunkingEntityRecognizerTests
         await act.Should().ThrowAsync<OperationCanceledException>();
     }
 
+    [Theory]
+    [InlineData(500)]
+    [InlineData(5_000)]
+    public async Task ShouldPropagateCancellation_WhenAFailOpenInnerRecognizerAnswersACanceledRequestWithNothing(int length)
+    {
+        // a fail-open recognizer can turn the failure of a request the caller's cancellation tore down
+        // into an empty answer; the chunker must not hand that back as the result
+        using var cts = new CancellationTokenSource();
+        var recognizer = new ChunkingEntityRecognizer(new CancelingFailOpenRecognizer(cts), MaxLength, Overlap);
+
+        var act = async () => await recognizer.AnalyzeAsync("John Smith " + Words(length), Person, cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
     [Fact]
     public void ShouldThrow_WhenTheWindowSettingsCannotMakeProgress()
     {
         var act = () => new ChunkingEntityRecognizer(new NameRecognizer(MaxLength), maxChunkLength: 100, chunkOverlap: 60);
 
         act.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
+    /// <summary>
+    /// Cancels the caller on its first call and answers with no entities, like a fail-open detector
+    /// whose request failed as the cancellation tore it down.
+    /// </summary>
+    private sealed class CancelingFailOpenRecognizer(CancellationTokenSource caller)
+        : EntityRecognizer(["PERSON"], supportedLanguage: "en")
+    {
+        public override bool RequiresAsync => true;
+
+        public override IReadOnlyList<RecognizerResult> Analyze(string text, IReadOnlyList<string> entities) => [];
+
+        public override async ValueTask<IReadOnlyList<RecognizerResult>> AnalyzeAsync(
+            string text, IReadOnlyList<string> entities, CancellationToken ct = default)
+        {
+            await caller.CancelAsync();
+            return [];
+        }
     }
 
     /// <summary>

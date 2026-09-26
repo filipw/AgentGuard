@@ -3,9 +3,12 @@ using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Guardrails;
+using AgentGuard.Core.Streaming;
 using AgentGuard.Core.Telemetry;
 using FluentAssertions;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
+using Moq;
 using Xunit;
 
 namespace AgentGuard.Core.Tests.Telemetry;
@@ -14,7 +17,8 @@ namespace AgentGuard.Core.Tests.Telemetry;
 [Collection("Telemetry")]
 public class AgentGuardTelemetryTests : IDisposable
 {
-    private readonly List<Activity> _activities = [];
+    // other test classes run pipelines concurrently, so spans stop on other threads too
+    private readonly ConcurrentQueue<Activity> _activities = new();
     private readonly ActivityListener _activityListener;
     private readonly MeterListener _meterListener;
     private readonly ConcurrentDictionary<string, ConcurrentQueue<long>> _counterValues = new();
@@ -27,7 +31,7 @@ public class AgentGuardTelemetryTests : IDisposable
             ShouldListenTo = source => source.Name == AgentGuardTelemetry.SourceName,
             Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
             // use ActivityStopped so tags are guaranteed to be set (using block completed)
-            ActivityStopped = activity => _activities.Add(activity)
+            ActivityStopped = activity => _activities.Enqueue(activity)
         };
         ActivitySource.AddActivityListener(_activityListener);
 
@@ -53,6 +57,16 @@ public class AgentGuardTelemetryTests : IDisposable
 
     private static GuardrailContext Ctx(string text, GuardrailPhase phase = GuardrailPhase.Input) =>
         new() { Text = text, Phase = phase };
+
+    // names unique to one test, so spans from pipelines other test classes run at the same time never match
+    private static string UniqueName(string prefix) => $"{prefix}-{Guid.NewGuid():N}";
+
+    private Activity PolicySpan(string operationName, string policyName) =>
+        _activities.Last(a => a.OperationName == operationName
+            && Equals(a.GetTagItem(AgentGuardTelemetry.Tags.PolicyName), policyName));
+
+    private Activity RuleSpan(string ruleName) =>
+        _activities.Last(a => a.OperationName == $"{AgentGuardTelemetry.Spans.RuleEvaluate} {ruleName}");
 
     [Fact]
     public async Task ShouldEmitPipelineSpan_WhenRunningPipeline()
@@ -92,26 +106,28 @@ public class AgentGuardTelemetryTests : IDisposable
     [Fact]
     public async Task ShouldRecordBlockOutcome_WhenRuleBlocks()
     {
-        var rule = new TestRule("blocker", GuardrailPhase.Input,
-            _ => ValueTask.FromResult(GuardrailResult.Blocked("forbidden content")));
+        var policyName = UniqueName("block-policy");
+        var ruleName = UniqueName("blocker");
+        var rule = new TestRule(ruleName, GuardrailPhase.Input,
+            _ => ValueTask.FromResult(GuardrailResult.Blocked("forbidden content", GuardrailSeverity.Medium)));
         var pipeline = new GuardrailPipeline(
-            new GuardrailPolicy("test", [rule]),
+            new GuardrailPolicy(policyName, [rule]),
             NullLogger<GuardrailPipeline>.Instance);
 
         await pipeline.RunAsync(Ctx("bad input"));
 
-        // verify pipeline span has blocked outcome and error status
-        var pipelineSpan = _activities.Last(a =>
-            a.OperationName == AgentGuardTelemetry.Spans.PipelineRun);
+        // a block is an expected outcome: it is recorded through tags, and the span status stays unset
+        var pipelineSpan = PolicySpan(AgentGuardTelemetry.Spans.PipelineRun, policyName);
         pipelineSpan.GetTagItem(AgentGuardTelemetry.Tags.Outcome).Should().Be("blocked");
-        pipelineSpan.Status.Should().Be(ActivityStatusCode.Error);
+        pipelineSpan.GetTagItem(AgentGuardTelemetry.Tags.BlockedReason).Should().Be("forbidden content");
+        pipelineSpan.GetTagItem(AgentGuardTelemetry.Tags.Severity).Should().Be("medium");
+        pipelineSpan.Status.Should().Be(ActivityStatusCode.Unset);
 
-        // verify rule span has blocked outcome
-        var ruleSpan = _activities.Last(a =>
-            a.OperationName.Contains("blocker", StringComparison.Ordinal));
+        var ruleSpan = RuleSpan(ruleName);
         ruleSpan.GetTagItem(AgentGuardTelemetry.Tags.Outcome).Should().Be("blocked");
         ruleSpan.GetTagItem(AgentGuardTelemetry.Tags.BlockedReason).Should().Be("forbidden content");
-        ruleSpan.Status.Should().Be(ActivityStatusCode.Error);
+        ruleSpan.GetTagItem(AgentGuardTelemetry.Tags.Severity).Should().Be("medium");
+        ruleSpan.Status.Should().Be(ActivityStatusCode.Unset);
     }
 
     [Fact]
@@ -165,20 +181,214 @@ public class AgentGuardTelemetryTests : IDisposable
     }
 
     [Fact]
-    public async Task ShouldSetErrorStatus_WhenPipelineBlocks()
+    public async Task ShouldNotSetErrorStatus_WhenPipelineBlocks()
     {
-        var rule = new TestRule("err-rule", GuardrailPhase.Input,
+        var policyName = UniqueName("no-error-policy");
+        var rule = new TestRule(UniqueName("block-rule"), GuardrailPhase.Input,
             _ => ValueTask.FromResult(GuardrailResult.Blocked("blocked")));
         var pipeline = new GuardrailPipeline(
-            new GuardrailPolicy("test", [rule]),
+            new GuardrailPolicy(policyName, [rule]),
             NullLogger<GuardrailPipeline>.Instance);
 
         await pipeline.RunAsync(Ctx("hello"));
 
-        var pipelineSpan = _activities.Last(a =>
-            a.OperationName == AgentGuardTelemetry.Spans.PipelineRun);
+        var pipelineSpan = PolicySpan(AgentGuardTelemetry.Spans.PipelineRun, policyName);
+        pipelineSpan.Status.Should().Be(ActivityStatusCode.Unset);
+        pipelineSpan.StatusDescription.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task ShouldSetErrorStatusOnRuleSpan_WhenRuleCannotReachAVerdict()
+    {
+        var policyName = UniqueName("rule-error-policy");
+        var ruleName = UniqueName("failing-rule");
+        var rule = new TestRule(ruleName, GuardrailPhase.Input,
+            _ => ValueTask.FromResult(GuardrailResult.Error(ruleName, ErrorBehavior.FailOpen, "classifier timed out")));
+        var pipeline = new GuardrailPipeline(
+            new GuardrailPolicy(policyName, [rule]),
+            NullLogger<GuardrailPipeline>.Instance);
+
+        var result = await pipeline.RunAsync(Ctx("hello"));
+
+        result.IsBlocked.Should().BeFalse();
+        var ruleSpan = RuleSpan(ruleName);
+        ruleSpan.Status.Should().Be(ActivityStatusCode.Error);
+        ruleSpan.StatusDescription.Should().Be("classifier timed out");
+        ruleSpan.GetTagItem(AgentGuardTelemetry.Tags.ErrorType).Should().Be("classifier timed out");
+        ruleSpan.GetTagItem(AgentGuardTelemetry.Tags.Outcome).Should().Be("error");
+    }
+
+    [Fact]
+    public async Task ShouldSetErrorStatus_WhenRuleThrows()
+    {
+        var policyName = UniqueName("throwing-policy");
+        var ruleName = UniqueName("throwing-rule");
+        var rule = new TestRule(ruleName, GuardrailPhase.Input,
+            _ => throw new InvalidOperationException("model unavailable"));
+        var pipeline = new GuardrailPipeline(
+            new GuardrailPolicy(policyName, [rule]),
+            NullLogger<GuardrailPipeline>.Instance);
+
+        var act = async () => await pipeline.RunAsync(Ctx("hello"));
+
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        var ruleSpan = RuleSpan(ruleName);
+        ruleSpan.Status.Should().Be(ActivityStatusCode.Error);
+        ruleSpan.GetTagItem(AgentGuardTelemetry.Tags.ErrorType).Should().Be(typeof(InvalidOperationException).FullName);
+        var pipelineSpan = PolicySpan(AgentGuardTelemetry.Spans.PipelineRun, policyName);
         pipelineSpan.Status.Should().Be(ActivityStatusCode.Error);
-        pipelineSpan.StatusDescription.Should().Be("blocked");
+        pipelineSpan.StatusDescription.Should().Be("model unavailable");
+    }
+
+    [Fact]
+    public async Task ShouldNotSetErrorStatus_WhenTheCallerCancels()
+    {
+        var policyName = UniqueName("cancelled-policy");
+        var ruleName = UniqueName("cancelled-rule");
+        using var cts = new CancellationTokenSource();
+        var rule = new TestRule(ruleName, GuardrailPhase.Input, _ =>
+        {
+            cts.Cancel();
+            cts.Token.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(GuardrailResult.Passed());
+        });
+        var pipeline = new GuardrailPipeline(
+            new GuardrailPolicy(policyName, [rule]),
+            NullLogger<GuardrailPipeline>.Instance);
+
+        var act = async () => await pipeline.RunAsync(Ctx("hello"), cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        RuleSpan(ruleName).Status.Should().Be(ActivityStatusCode.Unset);
+        PolicySpan(AgentGuardTelemetry.Spans.PipelineRun, policyName).Status.Should().Be(ActivityStatusCode.Unset);
+    }
+
+    [Fact]
+    public async Task ShouldRecordReaskExhaustionAsABlock_WhenEveryAttemptIsBlocked()
+    {
+        var policyName = UniqueName("reask-policy");
+        var rule = new TestRule(UniqueName("strict"), GuardrailPhase.Output,
+            _ => ValueTask.FromResult(GuardrailResult.Blocked("still off-topic", GuardrailSeverity.Low)));
+        var chatClient = new Mock<IChatClient>();
+        chatClient.Setup(c => c.GetResponseAsync(It.IsAny<IEnumerable<ChatMessage>>(), It.IsAny<ChatOptions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ChatResponse(new ChatMessage(ChatRole.Assistant, "another attempt")));
+        var pipeline = new GuardrailPipeline(
+            new GuardrailPolicy(policyName, [rule], reaskOptions: new ReaskOptions { MaxAttempts = 2 }, reaskChatClient: chatClient.Object),
+            NullLogger<GuardrailPipeline>.Instance);
+
+        var result = await pipeline.RunAsync(Ctx("off-topic answer", GuardrailPhase.Output));
+
+        result.IsBlocked.Should().BeTrue();
+        var reaskSpan = PolicySpan(AgentGuardTelemetry.Spans.PipelineReask, policyName);
+        reaskSpan.GetTagItem(AgentGuardTelemetry.Tags.Outcome).Should().Be("blocked");
+        reaskSpan.GetTagItem(AgentGuardTelemetry.Tags.BlockedReason).Should().Be("still off-topic");
+        reaskSpan.GetTagItem(AgentGuardTelemetry.Tags.Severity).Should().Be("low");
+        reaskSpan.Status.Should().Be(ActivityStatusCode.Unset);
+    }
+
+    [Fact]
+    public async Task ShouldSetErrorStatusOnReaskSpan_WhenTheReaskCallFails()
+    {
+        var policyName = UniqueName("reask-failure-policy");
+        var rule = new TestRule(UniqueName("strict"), GuardrailPhase.Output,
+            _ => ValueTask.FromResult(GuardrailResult.Blocked("blocked")));
+        var chatClient = new Mock<IChatClient>();
+        chatClient.Setup(c => c.GetResponseAsync(It.IsAny<IEnumerable<ChatMessage>>(), It.IsAny<ChatOptions>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new HttpRequestException("LLM endpoint down"));
+        var pipeline = new GuardrailPipeline(
+            new GuardrailPolicy(policyName, [rule], reaskOptions: new ReaskOptions(), reaskChatClient: chatClient.Object),
+            NullLogger<GuardrailPipeline>.Instance);
+
+        var act = async () => await pipeline.RunAsync(Ctx("bad", GuardrailPhase.Output));
+
+        await act.Should().ThrowAsync<HttpRequestException>();
+        var reaskSpan = PolicySpan(AgentGuardTelemetry.Spans.PipelineReask, policyName);
+        reaskSpan.Status.Should().Be(ActivityStatusCode.Error);
+        reaskSpan.GetTagItem(AgentGuardTelemetry.Tags.ErrorType).Should().Be(typeof(HttpRequestException).FullName);
+    }
+
+    [Fact]
+    public async Task ShouldRecordTheBlockThroughTags_WhenAStreamIsBlocked()
+    {
+        var policyName = UniqueName("streaming-block-policy");
+        var ruleName = UniqueName("streaming-blocker");
+        var rule = new TestRule(ruleName, GuardrailPhase.Output, ctx =>
+            ValueTask.FromResult(ctx.Text.Contains("secret", StringComparison.Ordinal)
+                ? GuardrailResult.Blocked("leaked a secret", GuardrailSeverity.Critical)
+                : GuardrailResult.Passed()));
+        var pipeline = new StreamingGuardrailPipeline(
+            new GuardrailPolicy(policyName, [rule]),
+            new ProgressiveStreamingOptions { MinCharsBeforeFirstCheck = 0, EvaluationIntervalChars = 1 });
+
+        await foreach (var _ in pipeline.ProcessStreamAsync(Chunks("the ", "secret ", "is 42"), Ctx("", GuardrailPhase.Output)))
+        {
+        }
+
+        var streamingSpan = PolicySpan(AgentGuardTelemetry.Spans.StreamingPipeline, policyName);
+        streamingSpan.GetTagItem(AgentGuardTelemetry.Tags.Outcome).Should().Be("blocked");
+        streamingSpan.GetTagItem(AgentGuardTelemetry.Tags.BlockedReason).Should().Be("leaked a secret");
+        streamingSpan.GetTagItem(AgentGuardTelemetry.Tags.Severity).Should().Be("critical");
+        streamingSpan.Status.Should().Be(ActivityStatusCode.Unset);
+
+        var ruleSpan = RuleSpan(ruleName);
+        ruleSpan.GetTagItem(AgentGuardTelemetry.Tags.BlockedReason).Should().Be("leaked a secret");
+        ruleSpan.Status.Should().Be(ActivityStatusCode.Unset);
+    }
+
+    [Fact]
+    public async Task ShouldSetErrorStatusOnStreamingSpans_WhenRuleCannotReachAVerdict()
+    {
+        var policyName = UniqueName("streaming-error-policy");
+        var ruleName = UniqueName("streaming-failing-rule");
+        var rule = new TestRule(ruleName, GuardrailPhase.Output,
+            _ => ValueTask.FromResult(GuardrailResult.Error(ruleName, ErrorBehavior.Warn, "judge unreachable")));
+        var pipeline = new StreamingGuardrailPipeline(
+            new GuardrailPolicy(policyName, [rule]),
+            new ProgressiveStreamingOptions { MinCharsBeforeFirstCheck = 0, EvaluationIntervalChars = 1 });
+
+        await foreach (var _ in pipeline.ProcessStreamAsync(Chunks("hello"), Ctx("", GuardrailPhase.Output)))
+        {
+        }
+
+        var ruleSpan = RuleSpan(ruleName);
+        ruleSpan.Status.Should().Be(ActivityStatusCode.Error);
+        ruleSpan.GetTagItem(AgentGuardTelemetry.Tags.ErrorType).Should().Be("judge unreachable");
+        PolicySpan(AgentGuardTelemetry.Spans.StreamingPipeline, policyName).Status.Should().Be(ActivityStatusCode.Unset);
+    }
+
+    [Fact]
+    public async Task ShouldSetErrorStatusOnStreamingSpan_WhenTheIncomingStreamFails()
+    {
+        var policyName = UniqueName("streaming-source-failure");
+        var pipeline = new StreamingGuardrailPipeline(new GuardrailPolicy(policyName, []));
+
+        var act = async () =>
+        {
+            await foreach (var _ in pipeline.ProcessStreamAsync(FailingChunks(), Ctx("", GuardrailPhase.Output)))
+            {
+            }
+        };
+
+        await act.Should().ThrowAsync<IOException>();
+        var streamingSpan = PolicySpan(AgentGuardTelemetry.Spans.StreamingPipeline, policyName);
+        streamingSpan.Status.Should().Be(ActivityStatusCode.Error);
+        streamingSpan.GetTagItem(AgentGuardTelemetry.Tags.ErrorType).Should().Be(typeof(IOException).FullName);
+    }
+
+    private static async IAsyncEnumerable<string> Chunks(params string[] chunks)
+    {
+        foreach (var chunk in chunks)
+        {
+            await Task.Yield();
+            yield return chunk;
+        }
+    }
+
+    private static async IAsyncEnumerable<string> FailingChunks()
+    {
+        await Task.Yield();
+        yield return "partial answer";
+        throw new IOException("connection reset");
     }
 
     [Fact]

@@ -1,3 +1,4 @@
+using System.Globalization;
 using AgentGuard.Core.Abstractions;
 using AgentGuard.RemoteClassifier;
 using FluentAssertions;
@@ -259,6 +260,190 @@ public class RemotePromptInjectionRuleTests
         result.Metadata["model_version"].Should().Be("2.0");
     }
 
+    [Fact]
+    public async Task ShouldBlockOnTheInjectionLabelsOwnScore_WhenAnotherLabelScoresHigher()
+    {
+        var rule = new RemotePromptInjectionRule(
+            ClassifierReturning(new ClassificationResult
+            {
+                Label = "SAFE",
+                Score = 0.6f,
+                Scores = [new LabelScore("SAFE", 0.6f), new LabelScore("INJECTION", 0.4f)]
+            }),
+            new RemotePromptInjectionOptions { Threshold = 0.3f });
+
+        var result = await rule.EvaluateAsync(CreateContext("test"));
+
+        result.IsBlocked.Should().BeTrue();
+        result.Metadata!["label"].Should().Be("INJECTION");
+        result.Metadata["confidence"].Should().Be(0.4f);
+    }
+
+    [Fact]
+    public async Task ShouldPass_WhenTheInjectionLabelsOwnScoreIsBelowTheThreshold()
+    {
+        var rule = new RemotePromptInjectionRule(ClassifierReturning(new ClassificationResult
+        {
+            Label = "SAFE",
+            Score = 0.6f,
+            Scores = [new LabelScore("SAFE", 0.6f), new LabelScore("INJECTION", 0.4f)]
+        }));
+
+        var result = await rule.EvaluateAsync(CreateContext("test"));
+
+        result.IsBlocked.Should().BeFalse();
+        result.IsError.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ShouldReportTheHighestScoringInjectionLabel_WhenSeveralInjectionLabelsAreScored()
+    {
+        var rule = new RemotePromptInjectionRule(ClassifierReturning(new ClassificationResult
+        {
+            Label = "benign",
+            Score = 0.4f,
+            Scores = [new LabelScore("benign", 0.4f), new LabelScore("injection", 0.25f), new LabelScore("jailbreak", 0.35f)]
+        }), new RemotePromptInjectionOptions { Threshold = 0.3f });
+
+        var result = await rule.EvaluateAsync(CreateContext("test"));
+
+        result.IsBlocked.Should().BeTrue();
+        result.Metadata!["label"].Should().Be("jailbreak");
+    }
+
+    [Theory]
+    [InlineData("", 0.9f)]
+    [InlineData("jailbreak", float.NaN)]
+    [InlineData("jailbreak", float.PositiveInfinity)]
+    public async Task ShouldApplyOnError_WhenTheClassifierReturnsNoUsableLabelAndScore(string label, float score)
+    {
+        var rule = new RemotePromptInjectionRule(
+            ClassifierReturning(new ClassificationResult { Label = label, Score = score }),
+            new RemotePromptInjectionOptions { OnError = ErrorBehavior.FailClosed });
+
+        var result = await rule.EvaluateAsync(CreateContext("test"));
+
+        result.IsError.Should().BeTrue();
+        result.IsBlocked.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ShouldApplyOnError_WhenALabelScoreIsNaN()
+    {
+        var rule = new RemotePromptInjectionRule(ClassifierReturning(new ClassificationResult
+        {
+            Label = "SAFE",
+            Score = 0.9f,
+            Scores = [new LabelScore("SAFE", 0.9f), new LabelScore("INJECTION", float.NaN)]
+        }));
+
+        var result = await rule.EvaluateAsync(CreateContext("test"));
+
+        result.IsError.Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData(ErrorBehavior.FailOpen, false)]
+    [InlineData(ErrorBehavior.FailClosed, true)]
+    public async Task ShouldApplyOnError_WhenTheClassifierTimesOut(ErrorBehavior onError, bool expectBlocked)
+    {
+        var mock = new Mock<IRemoteClassifier>();
+        mock.Setup(c => c.ClassifyAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns(async (string _, CancellationToken ct) =>
+            {
+                await Task.Delay(Timeout.Infinite, ct);
+                return new ClassificationResult { Label = "clean", Score = 1f };
+            });
+        var rule = new RemotePromptInjectionRule(mock.Object, new RemotePromptInjectionOptions
+        {
+            Timeout = TimeSpan.FromMilliseconds(50),
+            OnError = onError
+        });
+
+        var result = await rule.EvaluateAsync(CreateContext("test"));
+
+        result.IsError.Should().BeTrue();
+        result.IsBlocked.Should().Be(expectBlocked);
+    }
+
+    [Fact]
+    public async Task ShouldPropagateCancellation_WhenTheCallerCancels()
+    {
+        var mock = new Mock<IRemoteClassifier>();
+        mock.Setup(c => c.ClassifyAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns(async (string _, CancellationToken ct) =>
+            {
+                await Task.Delay(Timeout.Infinite, ct);
+                return new ClassificationResult { Label = "clean", Score = 1f };
+            });
+        var rule = new RemotePromptInjectionRule(mock.Object, new RemotePromptInjectionOptions { OnError = ErrorBehavior.FailClosed });
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
+
+        var act = async () => await rule.EvaluateAsync(CreateContext("test"), cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Fact]
+    public async Task ShouldPropagateCancellation_WhenTheCallFailsAfterTheCallerCancelled()
+    {
+        // a request torn down by the caller's cancellation can surface as a transport failure
+        using var cts = new CancellationTokenSource();
+        var mock = new Mock<IRemoteClassifier>();
+        mock.Setup(c => c.ClassifyAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns(async (string _, CancellationToken _) =>
+            {
+                await cts.CancelAsync();
+                throw new HttpRequestException("The request was aborted.");
+            });
+        var rule = new RemotePromptInjectionRule(mock.Object, new RemotePromptInjectionOptions { OnError = ErrorBehavior.FailClosed });
+
+        var act = async () => await rule.EvaluateAsync(CreateContext("test"), cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Fact]
+    public async Task ShouldMatchLabelsIgnoringCase_WhenTheConfiguredSetIsCaseSensitive()
+    {
+        var rule = new RemotePromptInjectionRule(
+            ClassifierReturning(new ClassificationResult { Label = "JAILBREAK", Score = 0.9f }),
+            new RemotePromptInjectionOptions { InjectionLabels = new HashSet<string> { "jailbreak" } });
+
+        var result = await rule.EvaluateAsync(CreateContext("test"));
+
+        result.IsBlocked.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ShouldMatchLabelsIndependentlyOfTheCulture_WhenTheCurrentCultureIsTurkish()
+    {
+        // in Turkish, culture-aware case-insensitive matching does not pair "I" with "i"
+        var culture = CultureInfo.CurrentCulture;
+        var uiCulture = CultureInfo.CurrentUICulture;
+        try
+        {
+            CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("tr-TR");
+            CultureInfo.CurrentUICulture = CultureInfo.GetCultureInfo("tr-TR");
+
+            var rule = new RemotePromptInjectionRule(
+                ClassifierReturning(new ClassificationResult { Label = "injection", Score = 0.9f }),
+                new RemotePromptInjectionOptions
+                {
+                    InjectionLabels = new HashSet<string>(StringComparer.CurrentCultureIgnoreCase) { "INJECTION" }
+                });
+
+            var result = await rule.EvaluateAsync(CreateContext("test"));
+
+            result.IsBlocked.Should().BeTrue();
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = culture;
+            CultureInfo.CurrentUICulture = uiCulture;
+        }
+    }
+
     // === Constructor Validation ===
 
     [Fact]
@@ -266,5 +451,51 @@ public class RemotePromptInjectionRuleTests
     {
         var act = () => new RemotePromptInjectionRule(null!);
         act.Should().Throw<ArgumentNullException>();
+    }
+
+    [Theory]
+    [InlineData(float.NaN)]
+    [InlineData(-0.1f)]
+    [InlineData(1.1f)]
+    [InlineData(float.PositiveInfinity)]
+    public void ShouldThrow_WhenThresholdIsNotANumberBetweenZeroAndOne(float threshold)
+    {
+        var act = () => new RemotePromptInjectionRule(Mock.Of<IRemoteClassifier>(), new RemotePromptInjectionOptions { Threshold = threshold });
+
+        act.Should().Throw<ArgumentOutOfRangeException>().WithMessage("*Threshold*");
+    }
+
+    public static TheoryData<TimeSpan> InvalidTimeouts() => new() { TimeSpan.Zero, TimeSpan.FromSeconds(-5), TimeSpan.MaxValue };
+
+    [Theory]
+    [MemberData(nameof(InvalidTimeouts))]
+    public void ShouldThrow_WhenTimeoutIsNotPositive(TimeSpan timeout)
+    {
+        var act = () => new RemotePromptInjectionRule(Mock.Of<IRemoteClassifier>(), new RemotePromptInjectionOptions { Timeout = timeout });
+
+        act.Should().Throw<ArgumentOutOfRangeException>().WithMessage("*Timeout*");
+    }
+
+    [Fact]
+    public void ShouldAcceptAnInfiniteTimeout_WhenNoTimeoutIsWanted()
+    {
+        var act = () => new RemotePromptInjectionRule(Mock.Of<IRemoteClassifier>(), new RemotePromptInjectionOptions { Timeout = Timeout.InfiniteTimeSpan });
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void ShouldThrow_WhenInjectionLabelsIsEmpty()
+    {
+        var act = () => new RemotePromptInjectionRule(Mock.Of<IRemoteClassifier>(), new RemotePromptInjectionOptions { InjectionLabels = new HashSet<string>() });
+
+        act.Should().Throw<ArgumentException>().WithMessage("*InjectionLabels*");
+    }
+
+    private static IRemoteClassifier ClassifierReturning(ClassificationResult result)
+    {
+        var mock = new Mock<IRemoteClassifier>();
+        mock.Setup(c => c.ClassifyAsync(It.IsAny<string>(), It.IsAny<CancellationToken>())).ReturnsAsync(result);
+        return mock.Object;
     }
 }

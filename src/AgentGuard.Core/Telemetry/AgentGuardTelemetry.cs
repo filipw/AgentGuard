@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
+using AgentGuard.Core.Abstractions;
 
 namespace AgentGuard.Core.Telemetry;
 
@@ -43,7 +44,52 @@ public static class AgentGuardTelemetry
             "true",
             StringComparison.OrdinalIgnoreCase);
 
-    // -- metric instruments --
+    /// <summary>The <see cref="Outcomes"/> value for a single rule result.</summary>
+    internal static string OutcomeOf(GuardrailResult result) =>
+        result.IsBlocked ? Outcomes.Blocked
+        : result.IsModified ? Outcomes.Modified
+        : result.IsError ? Outcomes.Error
+        : Outcomes.Passed;
+
+    /// <summary>The <c>errorDetail</c> an error result carries in its metadata, if any.</summary>
+    internal static string? ErrorDetail(GuardrailResult result) =>
+        result.Metadata?.TryGetValue("errorDetail", out var detail) == true ? detail?.ToString() : null;
+
+    /// <summary>The value of the <see cref="Tags.Severity"/> tag.</summary>
+    internal static string SeverityTag(GuardrailSeverity severity) => severity.ToString().ToLowerInvariant();
+
+    /// <summary>
+    /// Records a block on a span through its reason and severity tags. A block is an expected outcome
+    /// of a policy rather than a failure, so the span status is left unset.
+    /// </summary>
+    internal static void RecordBlock(Activity? activity, GuardrailResult blockingResult)
+    {
+        activity?.SetTag(Tags.BlockedReason, blockingResult.Reason);
+        activity?.SetTag(Tags.Severity, SeverityTag(blockingResult.Severity));
+    }
+
+    /// <summary>Marks a rule span as failed because the rule could not reach a verdict.</summary>
+    internal static void RecordRuleError(Activity? activity, GuardrailResult result)
+    {
+        var detail = ErrorDetail(result);
+        activity?.SetTag(Tags.ErrorType, detail ?? "unknown");
+        activity?.SetStatus(ActivityStatusCode.Error, detail);
+    }
+
+    /// <summary>
+    /// Marks a span as failed because <paramref name="exception"/> escaped it. Cancellation requested
+    /// through <paramref name="cancellationToken"/> is the caller's decision, not a failure, and is not recorded.
+    /// </summary>
+    internal static void RecordException(Activity? activity, Exception exception, CancellationToken cancellationToken)
+    {
+        if (activity is null || (exception is OperationCanceledException && cancellationToken.IsCancellationRequested))
+            return;
+
+        activity.SetTag(Tags.ErrorType, exception.GetType().FullName);
+        activity.SetStatus(ActivityStatusCode.Error, exception.Message);
+    }
+
+    // metric instruments
 
     internal static readonly Counter<long> PipelineEvaluations =
         Meter.CreateCounter<long>(

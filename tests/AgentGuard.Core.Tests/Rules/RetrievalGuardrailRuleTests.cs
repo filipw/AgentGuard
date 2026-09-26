@@ -97,6 +97,21 @@ public class RetrievalGuardrailRuleTests
     }
 
     [Fact]
+    public async Task ShouldFilter_WhenJwtTokenFollowsALongRunOfTokenCharacters()
+    {
+        var rule = new RetrievalGuardrailRule();
+        var jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U";
+        var chunks = new List<RetrievedChunk>
+        {
+            new() { Content = "x " + string.Concat(Enumerable.Repeat("eyJ", 100_000)) + " token " + jwt, Source = "dump.txt" },
+        };
+
+        var result = await rule.EvaluateAsync(CreateContext("What is in the dump?", chunks));
+
+        result.IsModified.Should().BeTrue("the token after the padding is still found");
+    }
+
+    [Fact]
     public async Task ShouldFilter_WhenChunkContainsJwtToken()
     {
         var rule = new RetrievalGuardrailRule();

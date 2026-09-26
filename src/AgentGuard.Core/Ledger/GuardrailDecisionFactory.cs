@@ -22,13 +22,7 @@ internal static class GuardrailDecisionFactory
 
         var ruleOutcomes = new List<RuleOutcome>(results.Count);
         foreach (var r in results)
-        {
-            var ruleOutcome = r.IsBlocked ? AgentGuardTelemetry.Outcomes.Blocked
-                : r.IsModified ? AgentGuardTelemetry.Outcomes.Modified
-                : r.IsError ? AgentGuardTelemetry.Outcomes.Error
-                : AgentGuardTelemetry.Outcomes.Passed;
-            ruleOutcomes.Add(new RuleOutcome(r.RuleName, ruleOutcome));
-        }
+            ruleOutcomes.Add(new RuleOutcome(r.RuleName, AgentGuardTelemetry.OutcomeOf(r)));
 
         return new GuardrailDecision
         {

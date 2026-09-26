@@ -34,9 +34,9 @@ public sealed class OpirSafetyOptions
     public required string PrefixPath { get; init; }
 
     /// <summary>
-    /// Probability threshold (0.0-1.0) above which content is blocked. The decision is
-    /// <c>block iff max-over-harm-labels sigmoid(logit) &gt;= Threshold</c>. Default: <c>0.5</c>.
-    /// Tunable per deployment: raising it trades recall for fewer false positives.
+    /// Probability threshold (0.0-1.0; NaN is rejected) at or above which content is blocked. The
+    /// decision is <c>block iff max-over-harm-labels sigmoid(logit) &gt;= Threshold</c>. Default:
+    /// <c>0.5</c>. Tunable per deployment: raising it trades recall for fewer false positives.
     /// </summary>
     public float Threshold { get; init; } = 0.5f;
 

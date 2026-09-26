@@ -42,12 +42,14 @@ public static class AzurePiiGuardrailBuilderExtensions
     /// <param name="azureOptions">Azure PII detector configuration (endpoint, auth, supported entities, domain, timeout, fail-open).</param>
     /// <param name="piiOptions">Optional PII detection/anonymization configuration (entities, countries, operators).</param>
     /// <returns>The builder for chaining.</returns>
+    /// <exception cref="ArgumentOutOfRangeException">Thrown when <see cref="AzurePiiOptions.ConfidenceThreshold"/> is NaN or outside 0.0-1.0.</exception>
     public static GuardrailPolicyBuilder RedactPiiWithAzure(
         this GuardrailPolicyBuilder builder,
         AzurePiiOptions azureOptions,
         PiiOptions? piiOptions = null)
     {
         ArgumentNullException.ThrowIfNull(azureOptions);
+        ValidateConfidenceThreshold(azureOptions);
         return builder.RedactPiiWithAzure(new AzurePiiClient(azureOptions), azureOptions, piiOptions);
     }
 
@@ -61,6 +63,7 @@ public static class AzurePiiGuardrailBuilderExtensions
     /// <param name="azureOptions">Azure PII detector configuration (supported entities, timeout, fail-open, category map).</param>
     /// <param name="piiOptions">Optional PII detection/anonymization configuration.</param>
     /// <returns>The builder for chaining.</returns>
+    /// <exception cref="ArgumentOutOfRangeException">Thrown when <see cref="AzurePiiOptions.ConfidenceThreshold"/> is NaN or outside 0.0-1.0.</exception>
     public static GuardrailPolicyBuilder RedactPiiWithAzure(
         this GuardrailPolicyBuilder builder,
         AzurePiiClient client,
@@ -70,6 +73,7 @@ public static class AzurePiiGuardrailBuilderExtensions
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(client);
         ArgumentNullException.ThrowIfNull(azureOptions);
+        ValidateConfidenceThreshold(azureOptions);
 
         // resolve the analysis language the same way PiiRule will (piiOptions?.Language ?? "en") and pin
         // the recognizer to it, so the registry never filters the Azure recognizer out on a mismatch.
@@ -155,6 +159,18 @@ public static class AzurePiiGuardrailBuilderExtensions
             new AzurePiiOptions { Endpoint = endpoint, SubscriptionKey = subscriptionKey, SupportedEntities = entities },
             piiOptions);
     }
+
+    // a threshold above 1.0 would drop every entity the service returns, and a NaN one would filter
+    // nothing, both without a word
+    private static void ValidateConfidenceThreshold(AzurePiiOptions azureOptions)
+    {
+        if (azureOptions.ConfidenceThreshold is { } threshold && threshold is not (>= 0d and <= 1d))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(azureOptions), threshold, "ConfidenceThreshold must be between 0.0 and 1.0.");
+        }
+    }
+
     /// <summary>
     /// Collects whichever of the supplied objects implement <see cref="IDisposable"/>, so the
     /// handover survives the engine package gaining (or losing) disposability between versions.

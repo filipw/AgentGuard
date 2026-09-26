@@ -1,4 +1,3 @@
-using System.Runtime.CompilerServices;
 using AgentGuard.AgentFramework;
 using AgentGuard.Core.Builders;
 using AgentGuard.Core.Guardrails;
@@ -255,31 +254,5 @@ public class ToolAndConversationGuardTests
         await foreach (var update in updates)
             list.Add(update.Text);
         return list;
-    }
-
-    private sealed class ScriptedChatClient(Func<IReadOnlyList<ChatMessage>, int, ChatResponse> script) : IChatClient
-    {
-        public List<List<ChatMessage>> Calls { get; } = [];
-
-        public Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default)
-        {
-            var list = messages.ToList();
-            Calls.Add(list);
-            return Task.FromResult(script(list, Calls.Count - 1));
-        }
-
-        public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
-            IEnumerable<ChatMessage> messages, ChatOptions? options = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
-        {
-            var response = await GetResponseAsync(messages, options, cancellationToken);
-            foreach (var update in response.ToChatResponseUpdates())
-                yield return update;
-        }
-
-        public object? GetService(Type serviceType, object? serviceKey = null) => null;
-
-        public void Dispose()
-        {
-        }
     }
 }

@@ -152,6 +152,108 @@ public class OpirSafetyRuleTests
         }
     }
 
+    [Theory]
+    [InlineData(-0.1f)]
+    [InlineData(float.NaN)]
+    [InlineData(float.PositiveInfinity)]
+    public void ShouldThrow_WhenThresholdIsNotANumberBetweenZeroAndOne(float threshold)
+    {
+        // checked before any model file is opened
+        var act = () => new OpirSafetyRule(new OpirSafetyOptions
+        {
+            ModelPath = "/nonexistent/model.onnx",
+            TokenizerPath = "/nonexistent/spm.model",
+            PrefixPath = "/nonexistent/prefix.json",
+            Threshold = threshold
+        });
+
+        act.Should().Throw<ArgumentOutOfRangeException>().WithMessage("*Threshold*");
+    }
+
+    [Theory]
+    [InlineData(2)]
+    [InlineData(0)]
+    public void ShouldThrow_WhenMaxTokenLengthLeavesNoRoomForInput(int maxTokenLength)
+    {
+        var act = () => new OpirSafetyRule(new OpirSafetyOptions
+        {
+            ModelPath = "/nonexistent/model.onnx",
+            TokenizerPath = "/nonexistent/spm.model",
+            PrefixPath = "/nonexistent/prefix.json",
+            MaxTokenLength = maxTokenLength
+        });
+
+        act.Should().Throw<ArgumentOutOfRangeException>().WithMessage("*MaxTokenLength*");
+    }
+
+    [Fact]
+    public void ShouldThrow_WhenTheTestConstructorGetsANaNThreshold()
+    {
+        var act = () => new OpirSafetyRule(
+            WindowingTestHelpers.NotCalled<OpirScore>,
+            Labels,
+            WindowingTestHelpers.CountWords,
+            prefixTokenCount: 30,
+            new OpirSafetyOptions { ModelPath = "m", TokenizerPath = "t", PrefixPath = "p", Threshold = float.NaN });
+
+        act.Should().Throw<ArgumentOutOfRangeException>().WithMessage("*Threshold*");
+    }
+
+    [Fact]
+    public async Task ShouldScanEveryWindow_WhenMaxWindowsIsZero()
+    {
+        // 0 means no limit
+        var calls = new List<string>();
+        var rule = new OpirSafetyRule(
+            text =>
+            {
+                calls.Add(text);
+                return new OpirScore(0.05f, "toxicity", [0.05f, 0.01f, 0.01f, 0.01f, 0.01f, 0.01f]);
+            },
+            Labels,
+            WindowingTestHelpers.CountWords,
+            prefixTokenCount: 30,
+            new OpirSafetyOptions { ModelPath = "m", TokenizerPath = "t", PrefixPath = "p", MaxWindows = 0 });
+
+        var result = await rule.EvaluateAsync(new GuardrailContext { Text = WindowingTestHelpers.Words(40_000), Phase = GuardrailPhase.Input });
+
+        result.IsBlocked.Should().BeFalse();
+        calls.Should().HaveCountGreaterThan(32, "the default limit does not apply when MaxWindows is 0");
+    }
+
+    [Fact]
+    public void ShouldReleaseThePooledSessionOnce_WhenDisposedTwice()
+    {
+        // the session is shared process-wide and reference-counted, so a second release would free it
+        // under other rules still holding it
+        var session = new CountingDisposable();
+        var rule = CreateRuleWithSession(session);
+
+        rule.Dispose();
+        rule.Dispose();
+
+        session.DisposeCount.Should().Be(1);
+    }
+
+    [Fact]
+    public void ShouldReleaseThePooledSessionOnce_WhenDisposedFromSeveralThreadsAtOnce()
+    {
+        var counts = CountingDisposable.DisposeConcurrently(CreateRuleWithSession);
+
+        counts.Should().OnlyContain(count => count == 1);
+    }
+
+    [Fact]
+    public async Task ShouldThrowObjectDisposed_WhenEvaluatedAfterDispose()
+    {
+        var rule = CreateRuleWithSession(new CountingDisposable());
+        rule.Dispose();
+
+        var act = async () => await rule.EvaluateAsync(new GuardrailContext { Text = "hello", Phase = GuardrailPhase.Input });
+
+        await act.Should().ThrowAsync<ObjectDisposedException>();
+    }
+
     [Fact]
     public async Task ShouldReturnPassed_WhenTextIsEmpty()
     {
@@ -265,6 +367,10 @@ public class OpirSafetyRuleTests
             File.Delete(prefixTemp);
         }
     }
+
+    private static OpirSafetyRule CreateRuleWithSession(IDisposable session) =>
+        new(WindowingTestHelpers.NotCalled<OpirScore>, Labels, WindowingTestHelpers.CountWords, prefixTokenCount: 30,
+            new OpirSafetyOptions { ModelPath = "m", TokenizerPath = "t", PrefixPath = "p" }, session);
 
     private static OpirSafetyRule CreateWindowedRule(List<string> calls) =>
         new(

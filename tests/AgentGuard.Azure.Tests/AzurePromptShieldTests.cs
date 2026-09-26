@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json.Nodes;
 using AgentGuard.Azure.PromptShield;
@@ -238,6 +239,98 @@ public class AzurePromptShieldTests
 
         await act.Should().ThrowAsync<OperationCanceledException>();
     }
+
+    [Fact]
+    public async Task ShouldPropagateCancellation_WhenTheCallerCancelsDocumentAnalysis()
+    {
+        var (rule, handler) = CreateRule(options: new AzurePromptShieldOptions { AnalyzeDocuments = true, OnError = ErrorBehavior.FailClosed });
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+
+        var act = async () => await rule.EvaluateAsync(Context("summarize these", "a note", FakePromptShieldHandler.Injection), cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        handler.Calls.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ShouldPropagateCancellation_WhenARequestFailsAfterTheCallerCanceled()
+    {
+        // a request torn down by the caller's cancellation can end with a transport failure instead
+        using var cts = new CancellationTokenSource();
+        var rule = RuleOver(LambdaHttpHandler.CancelsThenFails(cts), ErrorBehavior.FailClosed);
+
+        var act = async () => await rule.EvaluateAsync(Context(FakePromptShieldHandler.Jailbreak), cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Fact]
+    public async Task ShouldPropagateCancellation_WhenTheCallerCancelsBetweenRequests()
+    {
+        using var cts = new CancellationTokenSource();
+        var handler = new LambdaHttpHandler(async (_, _) =>
+        {
+            await cts.CancelAsync();
+            return LambdaHttpHandler.Json("""{"userPromptAnalysis": {"attackDetected": false}, "documentsAnalysis": []}""");
+        });
+        using var client = new AzurePromptShieldClient(Endpoint, "key", new HttpClient(handler));
+
+        var act = async () => await client.AnalyzeUserPromptAsync(Words(30_000), cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        handler.Calls.Should().Be(1, "no request is sent once the caller has canceled");
+    }
+
+    [Fact]
+    public async Task ShouldPropagateCancellation_WhenTheCallerCancelsDuringTheRateLimitBackOff()
+    {
+        var handler = new LambdaHttpHandler((_, _) =>
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+            response.Headers.RetryAfter = new RetryConditionHeaderValue(TimeSpan.FromSeconds(10));
+            return Task.FromResult(response);
+        });
+        var rule = RuleOver(handler, ErrorBehavior.FailClosed);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+
+        var act = async () => await rule.EvaluateAsync(Context(FakePromptShieldHandler.Jailbreak), cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        handler.Calls.Should().Be(1);
+    }
+
+    [Theory]
+    [InlineData(ErrorBehavior.FailOpen, false)]
+    [InlineData(ErrorBehavior.FailClosed, true)]
+    public async Task ShouldApplyOnError_WhenTheRequestTimesOut(ErrorBehavior onError, bool expectBlocked)
+    {
+        // the HttpClient's own timeout is not the caller's cancellation
+        var client = new AzurePromptShieldClient(
+            Endpoint, "key", new HttpClient(LambdaHttpHandler.Hanging()) { Timeout = TimeSpan.FromMilliseconds(100) });
+        var rule = new AzurePromptShieldRule(client, new AzurePromptShieldOptions { OnError = onError });
+
+        var result = await rule.EvaluateAsync(Context(FakePromptShieldHandler.Jailbreak));
+
+        result.IsError.Should().BeTrue();
+        result.IsBlocked.Should().Be(expectBlocked);
+    }
+
+    [Theory]
+    [InlineData(ErrorBehavior.FailOpen, false)]
+    [InlineData(ErrorBehavior.FailClosed, true)]
+    public async Task ShouldApplyOnError_WhenTheServiceIsUnreachable(ErrorBehavior onError, bool expectBlocked)
+    {
+        var rule = RuleOver(LambdaHttpHandler.Unreachable(), onError);
+
+        var result = await rule.EvaluateAsync(Context(FakePromptShieldHandler.Jailbreak));
+
+        result.IsError.Should().BeTrue();
+        result.IsBlocked.Should().Be(expectBlocked);
+    }
+
+    private static AzurePromptShieldRule RuleOver(HttpMessageHandler handler, ErrorBehavior onError) =>
+        new(new AzurePromptShieldClient(Endpoint, "key", new HttpClient(handler)), new AzurePromptShieldOptions { OnError = onError });
 
     /// <summary>
     /// Emulates <c>text:shieldPrompt</c>, including its documented limits: a request whose prompt is over

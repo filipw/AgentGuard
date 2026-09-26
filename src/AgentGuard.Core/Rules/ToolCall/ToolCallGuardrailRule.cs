@@ -12,19 +12,28 @@ public enum ToolCallInjectionCategory
     /// <summary>No category.</summary>
     None = 0,
 
-    /// <summary>SQL injection patterns (UNION SELECT, DROP TABLE, OR 1=1, etc.).</summary>
+    /// <summary>SQL injection patterns (UNION SELECT, DROP TABLE, quoted and unquoted tautologies such as OR 1=1, etc.).</summary>
     SqlInjection = 1,
 
     /// <summary>Code injection patterns (eval, exec, subprocess, os.system, etc.).</summary>
     CodeInjection = 2,
 
-    /// <summary>Path traversal patterns (../, %2e%2e, etc.).</summary>
+    /// <summary>
+    /// Path traversal patterns: ../ and ..\ in any mix, their percent-encoded, double-encoded and
+    /// overlong UTF-8 forms, absolute paths to sensitive files, and NUL bytes.
+    /// </summary>
     PathTraversal = 4,
 
-    /// <summary>Command injection patterns (;, |, $(), backticks, etc.).</summary>
+    /// <summary>
+    /// Command injection patterns: commands chained with ;, &amp;, &amp;&amp;, ||, | or a line break
+    /// (also percent-encoded), $() and backtick substitution, pipes to a shell, reverse shells.
+    /// </summary>
     CommandInjection = 8,
 
-    /// <summary>SSRF patterns (internal IPs, localhost, metadata endpoints).</summary>
+    /// <summary>
+    /// SSRF targets: loopback, unspecified, private, link-local and cloud metadata addresses in any
+    /// IPv4 or IPv6 notation, and internal host names (localhost, .internal, .local, ...).
+    /// </summary>
     Ssrf = 16,
 
     /// <summary>Template injection patterns (Jinja2, Handlebars, etc.).</summary>
@@ -111,10 +120,17 @@ public sealed class ToolCallGuardrailOptions
 ///
 /// Order 45 - runs after content rules but before content safety (order 50).
 /// </summary>
+/// <remarks>
+/// Each argument is checked as written and in each percent-decoded form of it (up to three layers),
+/// so an encoded payload such as <c>%2e%2e%2f</c> or <c>%0a</c> is judged the way the tool that
+/// decodes it will see it. SSRF targets are found by parsing hosts rather than by pattern (see
+/// <see cref="ToolCallInjectionCategory.Ssrf"/>). Case-insensitive patterns match the same way under
+/// every culture.
+/// </remarks>
 public sealed class ToolCallGuardrailRule : IGuardrailRule
 {
     private readonly ToolCallGuardrailOptions _options;
-    private readonly Dictionary<ToolCallInjectionCategory, List<(string Description, Regex Pattern)>> _patterns;
+    private readonly List<ArgumentCheck> _checks;
 
     /// <summary>Well-known property key for tool calls in GuardrailContext.Properties.</summary>
     public const string ToolCallsKey = "ToolCalls";
@@ -124,15 +140,42 @@ public sealed class ToolCallGuardrailRule : IGuardrailRule
 
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(200);
 
+    // culture-invariant, so "i" and "I" are the same letter under every culture (tr-TR included)
+    private const RegexOptions PatternOptions =
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant;
+
+    // commands flagged right after a chaining operator, whatever follows them
+    private const string ChainedCommands =
+        "cat|ls|id|whoami|uname|curl|wget|nc|ncat|netcat|bash|sh|zsh|ksh|cmd|powershell|pwsh|printenv|nslookup|"
+        + "telnet|tftp|xxd|socat|mkfifo|nohup|sudo|chmod|chown|useradd|crontab|certutil|bitsadmin|wmic|rundll32|"
+        + "regsvr32|mshta|cscript|wscript|ifconfig|ipconfig|systeminfo|tasklist|taskkill";
+
+    // commands flagged at the start of a line whatever follows them: none of them starts a sentence
+    private const string LineStartCommands =
+        "whoami|uname|wget|ncat|netcat|printenv|nslookup|telnet|tftp|xxd|socat|mkfifo|nohup|useradd|crontab|"
+        + "certutil|bitsadmin|wmic|rundll32|regsvr32|mshta|cscript|wscript|ifconfig|ipconfig|systeminfo|tasklist|taskkill";
+
+    // commands that double as words ("Cat videos", "Find attached"), flagged after an operator or at
+    // the start of a line only when a command-shaped argument follows
+    private const string WordCommands =
+        "rm|cp|mv|echo|find|head|tail|env|touch|source|eval|exec|sed|awk|grep|python3?|perl|ruby|php|node|ssh|scp|"
+        + "base64|dd|cat|ls|id|sh|nc|cmd|bash|zsh|curl|chmod|chown|sudo|powershell|pwsh";
+
+    // what follows a command rather than a word: an option, a path, a variable, a quoted argument or a
+    // URL - or nothing, when the command ends the line
+    private const string CommandArgument =
+        @"(?=[ \t]+(?:-{1,2}[a-z]|[/\\~$]|\.{1,2}/|['""`]|[a-z]:\\|https?://)|[ \t]*(?:[;&|<>\r\n]|$))";
+
     /// <summary>Initializes a new instance of the <see cref="ToolCallGuardrailRule"/> class.</summary>
     /// <param name="options">Categories and allowlists. Defaults when null.</param>
     public ToolCallGuardrailRule(ToolCallGuardrailOptions? options = null)
     {
         _options = options ?? new();
-        _patterns = BuildPatterns();
+        _checks = BuildChecks();
 
         // compiled patterns generate IL on first use; pay it here, not on the first request
-        RegexPatterns.Warm(_patterns.SelectMany(p => p.Value).Select(p => p.Pattern));
+        RegexPatterns.Warm(_checks.Where(c => c.Pattern is not null).Select(c => c.Pattern!));
+        RegexPatterns.Warm(SsrfDetector.Patterns.Concat(PathTraversalDetector.Patterns));
     }
 
     /// <inheritdoc />
@@ -175,55 +218,21 @@ public sealed class ToolCallGuardrailRule : IGuardrailRule
                 if (string.IsNullOrWhiteSpace(argValue))
                     continue;
 
-                // Check each enabled category
-                foreach (var (category, patterns) in _patterns)
-                {
-                    foreach (var (description, pattern) in patterns)
-                    {
-                        if (pattern.IsMatchOrFalse(argValue))
-                        {
-                            violations.Add(new ToolCallViolation
-                            {
-                                ToolName = call.ToolName,
-                                ArgumentName = argName,
-                                Category = category,
-                                Description = description
-                            });
-                            goto nextArg; // One violation per argument is enough
-                        }
-                    }
-                }
-                nextArg:;
+                // one violation per argument is enough
+                if (FindViolation(argValue) is { } found)
+                    violations.Add(CreateViolation(call.ToolName, argName, found));
             }
 
-            // Also check raw content if available - but only when nothing on this call was
-            // allow-listed. RawContent is the serialized form of the same arguments, so scanning it
-            // re-flags exactly the values the allowlist just excluded, which made
-            // AllowedArguments and PerToolAllowedArguments unreachable for any caller that
-            // populates it.
+            // RawContent is the serialized form of the same arguments, so it is only scanned when
+            // nothing on this call was allow-listed; otherwise it would re-flag exactly the values
+            // the allowlist excludes.
             var hasAllowedArguments = call.Arguments.Keys.Any(
                 a => _options.AllowedArguments.Contains(a) || perToolAllowed?.Contains(a) == true);
 
-            if (!hasAllowedArguments && call.RawContent is { Length: > 0 } rawContent)
+            if (!hasAllowedArguments && call.RawContent is { Length: > 0 } rawContent
+                && FindViolation(rawContent) is { } rawFound)
             {
-                foreach (var (category, patterns) in _patterns)
-                {
-                    foreach (var (description, pattern) in patterns)
-                    {
-                        if (pattern.IsMatchOrFalse(rawContent))
-                        {
-                            violations.Add(new ToolCallViolation
-                            {
-                                ToolName = call.ToolName,
-                                ArgumentName = "_raw",
-                                Category = category,
-                                Description = description
-                            });
-                            goto nextCall;
-                        }
-                    }
-                }
-                nextCall:;
+                violations.Add(CreateViolation(call.ToolName, "_raw", rawFound));
             }
         }
 
@@ -251,93 +260,139 @@ public sealed class ToolCallGuardrailRule : IGuardrailRule
         return ValueTask.FromResult(GuardrailResult.Passed());
     }
 
-    private Dictionary<ToolCallInjectionCategory, List<(string, Regex)>> BuildPatterns()
+    /// <summary>Runs the checks in order and returns the first one that fires.</summary>
+    private (ToolCallInjectionCategory Category, string Description)? FindViolation(string value)
     {
-        var result = new Dictionary<ToolCallInjectionCategory, List<(string, Regex)>>();
+        var argument = new ArgumentText(value);
+
+        foreach (var check in _checks)
+        {
+            if (check.Find(argument) is { } description)
+                return (check.Category, description);
+        }
+
+        return null;
+    }
+
+    private static ToolCallViolation CreateViolation(
+        string toolName, string argumentName, (ToolCallInjectionCategory Category, string Description) found) =>
+        new()
+        {
+            ToolName = toolName,
+            ArgumentName = argumentName,
+            Category = found.Category,
+            Description = found.Description
+        };
+
+    private List<ArgumentCheck> BuildChecks()
+    {
+        var checks = new List<ArgumentCheck>();
         var c = _options.Categories;
 
         if (c.HasFlag(ToolCallInjectionCategory.SqlInjection))
         {
-            result[ToolCallInjectionCategory.SqlInjection] =
-            [
-                ("SQL UNION injection", new(@"(?i)\bUNION\s+(ALL\s+)?SELECT\b", RegexOptions.Compiled, RegexTimeout)),
-                ("SQL DROP injection", new(@"(?i)\bDROP\s+(TABLE|DATABASE|INDEX)\b", RegexOptions.Compiled, RegexTimeout)),
-                ("SQL tautology injection", new(@"(?i)(?:'\s*OR\s+['""]?[^'""]+'?\s*=\s*['""]?|'\s*OR\s+1\s*=\s*1|'\s*OR\s+TRUE)", RegexOptions.Compiled, RegexTimeout)),
-                ("SQL comment injection", new(@"(?:--|#|/\*)\s*$", RegexOptions.Compiled | RegexOptions.Multiline, RegexTimeout)),
-                ("SQL INSERT/UPDATE injection", new(@"(?i)\b(?:INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM)\b", RegexOptions.Compiled, RegexTimeout)),
-                ("SQL EXEC injection", new(@"(?i)\b(?:EXEC(?:UTE)?|xp_cmdshell|sp_executesql)\b", RegexOptions.Compiled, RegexTimeout)),
-                ("SQL batch terminator", new(@";\s*(?i)(?:SELECT|DROP|INSERT|UPDATE|DELETE|EXEC|UNION|ALTER|CREATE)\b", RegexOptions.Compiled, RegexTimeout)),
-            ];
+            const ToolCallInjectionCategory sql = ToolCallInjectionCategory.SqlInjection;
+            AddPattern(checks, sql, "SQL UNION injection", @"\bUNION\s+(?:ALL\s+)?SELECT\b");
+            AddPattern(checks, sql, "SQL DROP injection", @"\bDROP\s+(?:TABLE|DATABASE|INDEX)\b");
+            // quoted: ' OR 'x'='x, ' OR 1=1, ' OR TRUE. The operand is bounded, which keeps the scan linear.
+            AddPattern(checks, sql, "SQL tautology injection",
+                @"'\s*OR\s+['""]?[^'""\r\n]{1,64}'?\s*=\s*['""]?|'\s*OR\s+TRUE\b");
+            // equal operands without a quote in front: 1 OR 1=1, x OR 'a'='a (the query supplies the
+            // closing quote)
+            AddPattern(checks, sql, "SQL tautology injection",
+                @"\bOR\s+(?:(?<n>\d{1,10})\s*=\s*\k<n>(?!\d)|(?<q>['""])(?<v>[^'""\r\n]{0,32})\k<q>\s*=\s*\k<q>\k<v>(?:\k<q>|(?![^\s)#;\-])))");
+            // a value followed by an operand that is always true: 1 OR TRUE, ') OR NOT FALSE, 1 OR 1 --
+            AddPattern(checks, sql, "SQL tautology injection",
+                @"(?:\d|['"")])\s*\bOR\s+(?:TRUE\b|NOT\s+FALSE\b|\d{1,10}\s*(?:--|#|/\*))");
+            // a comment that ends the statement right after a closing quote: admin'--, admin' #,
+            // admin'/*. A comment marker on its own is left alone - "C#", or "-- " opening an email
+            // signature, is not SQL.
+            AddPattern(checks, sql, "SQL comment injection", @"['""][ \t]*(?:--|#|/\*)[ \t\r\-]*$", RegexOptions.Multiline);
+            AddPattern(checks, sql, "SQL INSERT/UPDATE injection", @"\b(?:INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM)\b");
+            // EXEC or EXECUTE only with what can only be a call - the bare verb is ordinary English
+            AddPattern(checks, sql, "SQL EXEC injection",
+                @"\bEXEC(?:UTE)?\s*\(|\bEXEC(?:UTE)?\s+(?:@|(?:sp|xp)_\w|master\.|msdb\.)|\b(?:xp_cmdshell|sp_executesql|sp_oacreate|sp_configure)\b");
+            AddPattern(checks, sql, "SQL batch terminator", @";\s*(?:SELECT|DROP|INSERT|UPDATE|DELETE|EXEC|UNION|ALTER|CREATE)\b");
         }
 
         if (c.HasFlag(ToolCallInjectionCategory.CodeInjection))
         {
-            result[ToolCallInjectionCategory.CodeInjection] =
-            [
-                ("Python code injection", new(@"(?i)\b(?:eval|exec|compile|__import__|os\.system|subprocess\.(?:call|run|Popen)|importlib)\s*\(", RegexOptions.Compiled, RegexTimeout)),
-                ("JavaScript code injection", new(@"(?i)\b(?:eval|Function|setTimeout|setInterval)\s*\(", RegexOptions.Compiled, RegexTimeout)),
-                ("Shell code injection via Python", new(@"(?i)\bos\.(?:system|popen|exec[lv]?[pe]?)\s*\(", RegexOptions.Compiled, RegexTimeout)),
-                ("Pickle deserialization", new(@"(?i)\b(?:pickle\.loads|yaml\.(?:load|unsafe_load)|marshal\.loads)\s*\(", RegexOptions.Compiled, RegexTimeout)),
-                (".NET code injection", new(@"(?i)\b(?:Process\.Start|Assembly\.Load|Activator\.CreateInstance|Type\.InvokeMember)\s*\(", RegexOptions.Compiled, RegexTimeout)),
-            ];
+            const ToolCallInjectionCategory code = ToolCallInjectionCategory.CodeInjection;
+            AddPattern(checks, code, "Python code injection", @"\b(?:eval|exec|compile|__import__|os\.system|subprocess\.(?:call|run|Popen)|importlib)\s*\(");
+            AddPattern(checks, code, "JavaScript code injection", @"\b(?:eval|Function|setTimeout|setInterval)\s*\(");
+            AddPattern(checks, code, "Shell code injection via Python", @"\bos\.(?:system|popen|exec[lv]?[pe]?)\s*\(");
+            AddPattern(checks, code, "Pickle deserialization", @"\b(?:pickle\.loads|yaml\.(?:load|unsafe_load)|marshal\.loads)\s*\(");
+            AddPattern(checks, code, ".NET code injection", @"\b(?:Process\.Start|Assembly\.Load|Activator\.CreateInstance|Type\.InvokeMember)\s*\(");
         }
 
         if (c.HasFlag(ToolCallInjectionCategory.PathTraversal))
         {
-            result[ToolCallInjectionCategory.PathTraversal] =
-            [
-                ("Directory traversal (../)", new(@"(?:\.\.[\\/]){2,}", RegexOptions.Compiled, RegexTimeout)),
-                ("Encoded directory traversal", new(@"(?:%2[eE]){2}[\\/]", RegexOptions.Compiled, RegexTimeout)),
-                ("Absolute path to sensitive files", new(@"(?i)(?:/etc/(?:passwd|shadow|hosts)|/proc/self/|C:\\Windows\\System32)", RegexOptions.Compiled, RegexTimeout)),
-                ("Null byte injection", new(@"%00|\\x00|\\0", RegexOptions.Compiled, RegexTimeout)),
-            ];
+            const ToolCallInjectionCategory path = ToolCallInjectionCategory.PathTraversal;
+            checks.Add(new(path, a => PathTraversalDetector.HasTraversal(a) ? PathTraversalDetector.Traversal : null));
+            checks.Add(new(path, a => PathTraversalDetector.HasEncodedTraversal(a) ? PathTraversalDetector.EncodedTraversal : null));
+            checks.Add(new(path, a => PathTraversalDetector.HasSensitivePath(a) ? PathTraversalDetector.SensitiveFile : null));
+            checks.Add(new(path, a => PathTraversalDetector.HasNulByte(a) ? PathTraversalDetector.NulByte : null));
         }
 
         if (c.HasFlag(ToolCallInjectionCategory.CommandInjection))
         {
-            result[ToolCallInjectionCategory.CommandInjection] =
-            [
-                ("Shell command chaining", new(@"[;&|]{1,2}\s*(?:cat|ls|whoami|id|curl|wget|nc|ncat|bash|sh|powershell|cmd)\b", RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout)),
-                ("Command substitution", new(@"\$\([^)]+\)|`[^`]+`", RegexOptions.Compiled, RegexTimeout)),
-                ("Pipe to shell", new(@"\|\s*(?:bash|sh|zsh|cmd|powershell)\b", RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout)),
-                ("Reverse shell patterns", new(@"(?i)(?:bash\s+-i\s+>&|/dev/tcp/|nc\s+-[elp]|mkfifo|ncat\s.*?-e)", RegexOptions.Compiled, RegexTimeout)),
-            ];
+            const ToolCallInjectionCategory command = ToolCallInjectionCategory.CommandInjection;
+            AddPattern(checks, command, "Shell command chaining", @"[;&|]{1,2}\s*(?:" + ChainedCommands + @")\b");
+            AddPattern(checks, command, "Shell command chaining", @"(?:[;&|]{1,2}|[\r\n])[ \t]*(?:" + WordCommands + ")" + CommandArgument);
+            AddPattern(checks, command, "Shell command chaining", @"[\r\n][ \t]*(?:" + LineStartCommands + @")\b");
+            // time- and network-based probes take a number or an option: ;sleep 10, |ping -n 5
+            AddPattern(checks, command, "Shell command chaining", @"[;&|]{1,2}[ \t]*(?:sleep|ping|timeout)[ \t]+(?:-{1,2}[a-z]|\d)");
+            // bounded, so an unclosed "$(" or backtick cannot drive a quadratic scan
+            AddPattern(checks, command, "Command substitution", @"\$\([^)]{1,256}\)|`[^`]{1,256}`");
+            AddPattern(checks, command, "Pipe to shell", @"\|\s*(?:bash|sh|zsh|ksh|cmd|powershell|pwsh)\b");
+            AddPattern(checks, command, "Reverse shell patterns", @"bash\s+-i\s+>&|/dev/tcp/|\bnc\s+-[elp]|mkfifo|\bncat\s[^\r\n]{0,128}?-e");
         }
 
         if (c.HasFlag(ToolCallInjectionCategory.Ssrf))
         {
-            result[ToolCallInjectionCategory.Ssrf] =
-            [
-                ("Localhost SSRF", new(@"(?i)(?:https?://)?(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?:[:/]|$)", RegexOptions.Compiled, RegexTimeout)),
-                ("Internal network SSRF", new(@"(?i)(?:https?://)?(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})(?:[:/]|$)", RegexOptions.Compiled, RegexTimeout)),
-                ("Cloud metadata SSRF", new(@"(?i)(?:169\.254\.169\.254|metadata\.google\.internal|100\.100\.100\.200)", RegexOptions.Compiled, RegexTimeout)),
-                ("DNS rebinding via special TLDs", new(@"(?i)(?:https?://)?[a-z0-9.-]*\.(?:internal|local|localhost|corp)(?:[:/]|$)", RegexOptions.Compiled, RegexTimeout)),
-            ];
+            checks.Add(new(ToolCallInjectionCategory.Ssrf, a => a.FirstFound(SsrfDetector.Find)));
         }
 
         if (c.HasFlag(ToolCallInjectionCategory.TemplateInjection))
         {
-            result[ToolCallInjectionCategory.TemplateInjection] =
-            [
-                ("Jinja2/Python template injection", new(@"\{\{.*?(?:config|self|request|lipsum|cycler|joiner|namespace|__class__|__mro__|__subclasses__).*?\}\}", RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout)),
-                ("Server-side template injection", new(@"\$\{.*?(?:Runtime|getClass|forName|exec|ProcessBuilder).*?\}", RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout)),
-                ("Handlebars injection", new(@"\{\{(?:#each|#if|#with|lookup|helper)\b", RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout)),
-                ("Expression language injection", new(@"#\{.*?\}", RegexOptions.Compiled, RegexTimeout)),
-            ];
+            const ToolCallInjectionCategory template = ToolCallInjectionCategory.TemplateInjection;
+            // the keyword search is atomic - only the first keyword in reach is tried - which keeps
+            // the scan linear
+            AddPattern(checks, template, "Jinja2/Python template injection",
+                @"\{\{(?>[^\r\n]{0,256}?(?:config|self|request|lipsum|cycler|joiner|namespace|__class__|__mro__|__subclasses__))[^\r\n]{0,256}?\}\}");
+            AddPattern(checks, template, "Server-side template injection",
+                @"\$\{(?>[^\r\n]{0,256}?(?:Runtime|getClass|forName|exec|ProcessBuilder))[^\r\n]{0,256}?\}");
+            AddPattern(checks, template, "Handlebars injection", @"\{\{(?:#each|#if|#with|lookup|helper)\b");
+            AddPattern(checks, template, "Expression language injection", @"#\{[^\r\n]{0,256}?\}");
         }
 
         if (c.HasFlag(ToolCallInjectionCategory.Xss))
         {
-            result[ToolCallInjectionCategory.Xss] =
-            [
-                ("Script tag XSS", new(@"<\s*script\b[^>]*>", RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout)),
-                ("Event handler XSS", new(@"(?i)\bon(?:error|load|click|mouseover|focus|blur|submit|change|input|keyup|keydown)\s*=", RegexOptions.Compiled, RegexTimeout)),
-                ("JavaScript protocol XSS", new(@"(?i)javascript\s*:", RegexOptions.Compiled, RegexTimeout)),
-                ("Data URI XSS", new(@"(?i)data\s*:\s*text/html", RegexOptions.Compiled, RegexTimeout)),
-                ("SVG XSS", new(@"<\s*svg\b[^>]*\bon\w+\s*=", RegexOptions.Compiled | RegexOptions.IgnoreCase, RegexTimeout)),
-            ];
+            const ToolCallInjectionCategory xss = ToolCallInjectionCategory.Xss;
+            AddPattern(checks, xss, "Script tag XSS", @"<\s*script\b[^>]{0,1024}>");
+            AddPattern(checks, xss, "Event handler XSS", @"\bon(?:error|load|click|mouseover|focus|blur|submit|change|input|keyup|keydown)\s*=");
+            AddPattern(checks, xss, "JavaScript protocol XSS", @"javascript\s*:");
+            AddPattern(checks, xss, "Data URI XSS", @"data\s*:\s*text/html");
+            AddPattern(checks, xss, "SVG XSS", @"<\s*svg\b[^>]{0,1024}?\bon\w{1,32}\s*=");
         }
 
-        return result;
+        return checks;
     }
+
+    private static void AddPattern(
+        List<ArgumentCheck> checks,
+        ToolCallInjectionCategory category,
+        string description,
+        string pattern,
+        RegexOptions extraOptions = RegexOptions.None)
+    {
+        var regex = new Regex(pattern, PatternOptions | extraOptions, RegexTimeout);
+        checks.Add(new(category, a => a.AnyForm(regex.IsMatchOrFalse) ? description : null, regex));
+    }
+
+    /// <summary>
+    /// One detection: the category it reports, and a test that returns the violation description
+    /// for an argument, or <c>null</c>.
+    /// </summary>
+    private sealed record ArgumentCheck(ToolCallInjectionCategory Category, Func<ArgumentText, string?> Find, Regex? Pattern = null);
 }

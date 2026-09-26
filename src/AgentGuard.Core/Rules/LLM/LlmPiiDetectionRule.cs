@@ -110,18 +110,12 @@ public sealed partial class LlmPiiDetectionRule : LlmGuardrailRule
     {
         // Redact mode carries the rewritten message after the verdict marker, so it is read from
         // the raw response rather than reduced to a token. The message can span several lines, and
-        // the judge may put it on the lines below the marker.
+        // the judge may put it on the lines below the marker. CLEAN, and the PII / CLEAN verdict of
+        // Block mode, are read like every other judge verdict.
         if (_options.Action == PiiAction.Redact)
         {
-            var reply = UnwrapFence(LeadingReasoningBlocks().Replace(responseText, ""));
-
-            if (reply.StartsWith("CLEAN", StringComparison.OrdinalIgnoreCase))
-                return GuardrailResult.Passed();
-
-            if (reply.StartsWith(RedactedPrefix, StringComparison.OrdinalIgnoreCase))
+            if (TryReadRedactedMessage(responseText, out var redacted))
             {
-                var redacted = reply[RedactedPrefix.Length..].Trim();
-
                 // a judge that fences the message it returns is unwrapped, unless the message it
                 // was given was itself a fenced block
                 if (!IsFenced(context.Text))
@@ -129,7 +123,12 @@ public sealed partial class LlmPiiDetectionRule : LlmGuardrailRule
 
                 if (redacted.Length > 0)
                     return GuardrailResult.Modified(redacted, "LLM classifier redacted personally identifiable information.");
+
+                return UnparseableVerdict(responseText);
             }
+
+            if (ClassifyVerdict(responseText, "PII", "CLEAN", out _) == LlmVerdict.Negative)
+                return GuardrailResult.Passed();
 
             // a rule configured to redact must never silently turn into a block because the word
             // "REDACTED" appeared somewhere in an off-format reply.
@@ -147,37 +146,70 @@ public sealed partial class LlmPiiDetectionRule : LlmGuardrailRule
         };
     }
 
-    private const string RedactedPrefix = "REDACTED:";
-
-    private const string Fence = "```";
+    private const string RedactedMarker = "REDACTED";
 
     /// <summary>
-    /// Trims <paramref name="text"/> and, when it opens with a markdown fence line, drops that line
-    /// and the closing fence line if there is one.
+    /// Reads the message after a <c>REDACTED:</c> marker that opens the reply. Only the reasoning in
+    /// front of the marker is dropped: the message after it is the user's text, returned as the
+    /// judge wrote it.
     /// </summary>
-    private static string UnwrapFence(string text)
+    private static bool TryReadRedactedMessage(string responseText, out string message)
     {
-        var trimmed = text.Trim();
-        if (!trimmed.StartsWith(Fence, StringComparison.Ordinal))
-            return trimmed;
+        message = "";
 
-        var firstBreak = trimmed.IndexOf('\n');
-        if (firstBreak < 0)
-            return "";
+        var reply = LeadingReasoningBlocks().Replace(responseText, "");
 
-        var inner = trimmed[(firstBreak + 1)..].TrimEnd();
-        var lastBreak = inner.LastIndexOf('\n');
-        var lastLine = lastBreak < 0 ? inner : inner[(lastBreak + 1)..];
-        if (lastLine.Trim() == Fence)
-            inner = lastBreak < 0 ? "" : inner[..lastBreak];
+        // a closing tag in front of the marker means the provider dropped the opening tag; the
+        // reasoning ends at the first one, so a closing tag inside the message is left alone
+        if (!OpensWithMarker(reply) && ReasoningCloseTag().Match(reply) is { Success: true } closing)
+            reply = reply[(closing.Index + closing.Length)..];
 
-        return inner.Trim();
+        var head = MarkerHead(reply);
+        if (!head.StartsWith(RedactedMarker, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var rest = SkipClosingEmphasis(head[RedactedMarker.Length..]);
+        if (rest.StartsWith(':'))
+        {
+            rest = SkipClosingEmphasis(rest[1..]);
+        }
+        else
+        {
+            // without the colon the message must start on the next line ("REDACTED" alone on its line)
+            var lineEnd = rest.IndexOf('\n');
+            if (!string.IsNullOrWhiteSpace(lineEnd < 0 ? rest : rest[..lineEnd]))
+                return false;
+        }
+
+        message = rest.Trim();
+        return true;
     }
 
-    private static bool IsFenced(string text) => text.TrimStart().StartsWith(Fence, StringComparison.Ordinal);
+    private static bool OpensWithMarker(string reply)
+    {
+        var head = MarkerHead(reply);
+        return head.StartsWith(RedactedMarker, StringComparison.OrdinalIgnoreCase) || MatchesToken(head, "CLEAN", out _);
+    }
 
-    // only the reasoning in front of the verdict is dropped: the redacted message after the marker
-    // is the user's text and is returned as the judge wrote it
-    [GeneratedRegex(@"\A\s*(?:<(think|thinking|reasoning)>.*?</\1>\s*)+", RegexOptions.Singleline | RegexOptions.IgnoreCase)]
+    // the start of the reply with a fence, leading emphasis or quoting and a "Verdict:" prefix removed
+    private static string MarkerHead(string reply) =>
+        TrimLeadingDecoration(TrimVerdictPrefix(TrimLeadingDecoration(UnwrapFence(reply)), out _));
+
+    // emphasis closing the marker ("**REDACTED:**") is skipped; a run that opens the message's own
+    // emphasis ("*important*") is part of the message
+    private static string SkipClosingEmphasis(string text)
+    {
+        var end = 0;
+        while (end < text.Length && text[end] is '*' or '_' or '`')
+            end++;
+
+        return end > 0 && (end == text.Length || text[end] == ':' || char.IsWhiteSpace(text[end]))
+            ? text[end..]
+            : text;
+    }
+
+    private static bool IsFenced(string text) => IsFenceLine(text.TrimStart());
+
+    [GeneratedRegex(@"\A\s*(?:<(think|thinking|reasoning)\b[^>]*>.*?</\1\s*>\s*)+", RegexOptions.Singleline | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex LeadingReasoningBlocks();
 }

@@ -1,291 +1,256 @@
-using System.Diagnostics;
 using AgentGuard.Core.Abstractions;
-using Microsoft.Extensions.Logging;
 using AgentGuard.Core.Guardrails;
 using AgentGuard.Core.Telemetry;
+using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.Workflows;
+using Microsoft.Agents.AI.Workflows.Checkpointing;
 using Microsoft.Extensions.AI;
 
 namespace AgentGuard.AgentFramework.Workflows;
 
 /// <summary>
 /// Wraps a void-return executor with input guardrails.
-/// If a guardrail blocks, a <see cref="GuardrailViolationException"/> is thrown.
-/// If a guardrail modifies text and TInput is string or ChatMessage, the modified value is passed to the inner executor.
+/// If a guardrail blocks, a <see cref="GuardrailViolationException"/> is thrown and the inner executor does not run.
+/// If a guardrail rewrites the text, the rewritten message is passed to the inner executor.
 /// </summary>
-public sealed class GuardedExecutor<TInput> : Executor<TInput>
+/// <remarks>
+/// <para>
+/// The guarded executor has the id <c>guarded-{inner id}</c> and takes the inner executor's place in the workflow.
+/// It declares the inner executor's protocol - the message types it handles, sends and yields - and uses its
+/// <see cref="ExecutorOptions"/> and cross-run sharing, so whatever the inner executor sends or yields through the
+/// <see cref="IWorkflowContext"/> goes through as it would without the guard. It forwards the inner executor's
+/// lifecycle: initialization, the message delivery hooks, checkpoint save and restore,
+/// <see cref="IResettableExecutor.ResetAsync"/> (it is resettable exactly when the inner executor is) and disposal.
+/// </para>
+/// <para>
+/// Chat messages are guarded as chat. A <see cref="ChatMessage"/> has its text checked, and a rewrite replaces only
+/// that text: attachments and other non-text content, the role, author, message id, timestamp and additional
+/// properties stay.
+/// A message collection (<see cref="List{T}"/> or array of <see cref="ChatMessage"/>, or an interface a list
+/// implements) or an <see cref="AgentResponse"/> is guarded like a request to an agent (see
+/// <see cref="ChatMessageGuard.GuardInputAsync"/>): every user message is checked, an earlier one the policy blocks is
+/// replaced with <see cref="ChatMessageGuard.RemovedMessagePlaceholder"/>, and a block of the newest one blocks. The
+/// newest message with text is checked whatever its role, since an executor's input is often another agent's
+/// response. The rewritten messages arrive in the collection type the executor declares.
+/// </para>
+/// <para>
+/// Any other message goes through the configured <see cref="ITextExtractor"/>. A rewrite is applied to
+/// <see cref="string"/> messages and to any type the extractor rebuilds (<see cref="ITextExtractor.TryRebuild"/>);
+/// otherwise the original message goes on and a warning is logged.
+/// </para>
+/// <para>
+/// Messages of the other types the inner executor handles are guarded the same way, then handed to it through
+/// <see cref="Executor.ExecuteCoreAsync(object, TypeId, IWorkflowContext, CancellationToken)"/>, which routes them to
+/// its own handlers.
+/// </para>
+/// </remarks>
+/// <typeparam name="TInput">The type of message the inner executor handles.</typeparam>
+public class GuardedExecutor<TInput> : Executor<TInput>, IAsyncDisposable
 {
-    private readonly Executor<TInput> _inner;
-    private readonly GuardrailPipeline _pipeline;
-    private readonly ITextExtractor _textExtractor;
-    private readonly ILogger? _log;
+    private const string InputSpan = AgentGuardTelemetry.Spans.ExecutorGuard;
+
+    private readonly ExecutorGuard _guard;
 
     internal GuardedExecutor(
         Executor<TInput> inner,
         IGuardrailPolicy policy,
         GuardedExecutorOptions? options = null)
-        : base($"guarded-{inner.Id}")
+        : base($"guarded-{inner.Id}", InnerExecutor.GetOptions(inner), InnerExecutor.IsCrossRunShareable(inner))
     {
-        _inner = inner;
-        _textExtractor = options?.TextExtractor ?? DefaultTextExtractor.Instance;
-
-        Microsoft.Extensions.Logging.ILogger<GuardrailPipeline> logger = options?.Logger is not null
-            ? new LoggerWrapper(options.Logger)
-            : Microsoft.Extensions.Logging.Abstractions.NullLogger<GuardrailPipeline>.Instance;
-        _pipeline = new GuardrailPipeline(policy, logger, options?.Ledger);
-        _log = options?.Logger;
+        Inner = inner;
+        _guard = new ExecutorGuard(inner.Id, policy, options);
     }
+
+    internal Executor<TInput> Inner { get; }
+
+    internal static GuardedExecutor<TInput> Create(
+        Executor<TInput> inner, IGuardrailPolicy policy, GuardedExecutorOptions? options) =>
+        inner is IResettableExecutor
+            ? new ResettableGuardedExecutor<TInput>(inner, policy, options)
+            : new GuardedExecutor<TInput>(inner, policy, options);
 
     /// <inheritdoc />
     public override async ValueTask HandleAsync(TInput message, IWorkflowContext context, CancellationToken cancellationToken = default)
     {
-        using var guardActivity = AgentGuardTelemetry.ActivitySource.StartActivity(
-            AgentGuardTelemetry.Spans.ExecutorGuard);
+        var guarded = await _guard.GuardAsync(message, typeof(TInput), GuardrailPhase.Input, InputSpan, cancellationToken)
+            .ConfigureAwait(false);
 
-        guardActivity?.SetTag(AgentGuardTelemetry.Tags.ExecutorId, _inner.Id);
-        guardActivity?.SetTag(AgentGuardTelemetry.Tags.Phase, "input");
-        guardActivity?.SetTag(AgentGuardTelemetry.Tags.MessageType, typeof(TInput).Name);
-
-        var text = _textExtractor.ExtractText(message);
-
-        if (!string.IsNullOrEmpty(text))
-        {
-            var guardrailContext = new GuardrailContext
-            {
-                Text = text,
-                Phase = GuardrailPhase.Input,
-                Properties = new Dictionary<string, object>
-                {
-                    ["ExecutorId"] = _inner.Id,
-                    ["MessageType"] = typeof(TInput).Name
-                }
-            };
-
-            var result = await _pipeline.RunAsync(guardrailContext, cancellationToken);
-
-            if (result.IsBlocked)
-            {
-                guardActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Blocked);
-                guardActivity?.SetStatus(ActivityStatusCode.Error, result.BlockingResult?.Reason);
-                throw new GuardrailViolationException(result.BlockingResult!, GuardrailPhase.Input, _inner.Id);
-            }
-
-            if (result.WasModified)
-            {
-                guardActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Modified);
-                message = ReconstructInput(message, result.FinalText, _log, _inner.Id);
-            }
-            else
-            {
-                guardActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Passed);
-            }
-        }
-        else
-        {
-            guardActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Passed);
-        }
-
-        await _inner.HandleAsync(message, context, cancellationToken);
+        await Inner.HandleAsync((TInput)guarded!, context, cancellationToken).ConfigureAwait(false);
     }
 
-    private static TInput ReconstructInput(TInput original, string modifiedText, ILogger? log, string executorId)
+    /// <inheritdoc />
+    protected override ProtocolBuilder ConfigureProtocol(ProtocolBuilder protocolBuilder) =>
+        InnerExecutor.MirrorProtocol(base.ConfigureProtocol(protocolBuilder), Inner, typeof(TInput), ForwardAsync);
+
+    /// <inheritdoc />
+    protected override ValueTask InitializeAsync(IWorkflowContext context, CancellationToken cancellationToken = default) =>
+        InnerExecutor.InitializeAsync(Inner, context, cancellationToken);
+
+    /// <inheritdoc />
+    protected override ValueTask OnMessageDeliveryStartingAsync(IWorkflowContext context, CancellationToken cancellationToken = default) =>
+        InnerExecutor.OnMessageDeliveryStartingAsync(Inner, context, cancellationToken);
+
+    /// <inheritdoc />
+    protected override ValueTask OnMessageDeliveryFinishedAsync(IWorkflowContext context, CancellationToken cancellationToken = default) =>
+        InnerExecutor.OnMessageDeliveryFinishedAsync(Inner, context, cancellationToken);
+
+    /// <inheritdoc />
+    protected override ValueTask OnCheckpointingAsync(IWorkflowContext context, CancellationToken cancellationToken = default) =>
+        InnerExecutor.OnCheckpointingAsync(Inner, context, cancellationToken);
+
+    /// <inheritdoc />
+    protected override ValueTask OnCheckpointRestoredAsync(IWorkflowContext context, CancellationToken cancellationToken = default) =>
+        InnerExecutor.OnCheckpointRestoredAsync(Inner, context, cancellationToken);
+
+    /// <summary>
+    /// Disposes the inner executor when it is disposable - the workflow runtime disposes a run's executors when
+    /// the run ends. The guardrail policy is not disposed, since a reused workflow runs this executor again.
+    /// </summary>
+    /// <returns>A task that completes when the inner executor is disposed.</returns>
+    public async ValueTask DisposeAsync()
     {
-        if (original is string)
-            return (TInput)(object)modifiedText;
-
-        if (original is ChatMessage chatMessage)
-            return (TInput)(object)new ChatMessage(chatMessage.Role, modifiedText);
-
-        // An arbitrary type cannot be rebuilt from text, so the original goes through unchanged -
-        // while the pipeline has already reported Modified. Silently dropping a redaction that was
-        // reported as applied is the dangerous half, so say so loudly.
-        GuardedExecutorLog.ModificationDropped(log, executorId, typeof(TInput).Name);
-        return original;
+        await InnerExecutor.DisposeAsync(Inner).ConfigureAwait(false);
+        GC.SuppressFinalize(this);
     }
+
+    private ValueTask ForwardAsync(object message, Type? handledType, IWorkflowContext context, CancellationToken cancellationToken) =>
+        _guard.ForwardAsync(Inner, message, handledType, InputSpan, context, cancellationToken);
 }
 
 /// <summary>
 /// Wraps a typed-return executor with input and output guardrails.
 /// If a guardrail blocks on either side, a <see cref="GuardrailViolationException"/> is thrown.
+/// If a guardrail rewrites the text, the rewritten input is passed to the inner executor, and the rewritten
+/// result is what the executor returns.
 /// </summary>
-public sealed class GuardedExecutor<TInput, TOutput> : Executor<TInput, TOutput>
+/// <remarks>
+/// <para>
+/// The guarded executor has the id <c>guarded-{inner id}</c> and takes the inner executor's place in the workflow.
+/// It declares the inner executor's protocol - the message types it handles, sends and yields - and uses its
+/// <see cref="ExecutorOptions"/> and cross-run sharing, so whatever the inner executor sends or yields through the
+/// <see cref="IWorkflowContext"/> goes through as it would without the guard, and the guarded result is sent and
+/// yielded as the inner executor's options specify. It forwards the inner executor's lifecycle: initialization,
+/// the message delivery hooks, checkpoint save and restore, <see cref="IResettableExecutor.ResetAsync"/> (it is
+/// resettable exactly when the inner executor is) and disposal.
+/// </para>
+/// <para>
+/// Chat messages are guarded as chat. A <see cref="ChatMessage"/> has its text checked, and a rewrite replaces only
+/// that text: attachments and other non-text content, the role, author, message id, timestamp and additional
+/// properties stay.
+/// On the way in, a message collection (<see cref="List{T}"/> or array of <see cref="ChatMessage"/>, or an interface
+/// a list implements) or an <see cref="AgentResponse"/> is guarded like a request to an agent (see
+/// <see cref="ChatMessageGuard.GuardInputAsync"/>): every user message is checked, an earlier one the policy blocks
+/// is replaced with <see cref="ChatMessageGuard.RemovedMessagePlaceholder"/>, and a block of the newest one blocks.
+/// On the way out, one is guarded like an agent's response (see <see cref="ChatMessageGuard.GuardOutputAsync"/>):
+/// its assistant messages, their reasoning, and its tool calls and results. Either way the newest message with
+/// text is checked whatever its role, since an executor's input is often another agent's response and its result
+/// a prompt for the next one. The rewritten messages come back in the type the executor declares; an
+/// <see cref="AgentResponse"/> keeps its ids, timestamp, usage, finish reason, continuation token and additional
+/// properties.
+/// </para>
+/// <para>
+/// Any other value goes through the configured <see cref="ITextExtractor"/>. A rewrite is applied to
+/// <see cref="string"/> values and to any type the extractor rebuilds (<see cref="ITextExtractor.TryRebuild"/>);
+/// otherwise the original value goes on and a warning is logged.
+/// </para>
+/// <para>
+/// Messages of the other types the inner executor handles are guarded on input, then handed to it through
+/// <see cref="Executor.ExecuteCoreAsync(object, TypeId, IWorkflowContext, CancellationToken)"/>, which routes them to
+/// its own handlers and sends or yields their results itself, without an output check.
+/// </para>
+/// </remarks>
+/// <typeparam name="TInput">The type of message the inner executor handles.</typeparam>
+/// <typeparam name="TOutput">The type of result the inner executor returns.</typeparam>
+public class GuardedExecutor<TInput, TOutput> : Executor<TInput, TOutput>, IAsyncDisposable
 {
-    private readonly Executor<TInput, TOutput> _inner;
-    private readonly GuardrailPipeline _pipeline;
-    private readonly ITextExtractor _textExtractor;
-    private readonly ILogger? _log;
+    private const string InputSpan = AgentGuardTelemetry.Spans.ExecutorGuard + " input";
+    private const string OutputSpan = AgentGuardTelemetry.Spans.ExecutorGuard + " output";
+
+    private readonly ExecutorGuard _guard;
 
     internal GuardedExecutor(
         Executor<TInput, TOutput> inner,
         IGuardrailPolicy policy,
         GuardedExecutorOptions? options = null)
-        : base($"guarded-{inner.Id}")
+        : base($"guarded-{inner.Id}", InnerExecutor.GetOptions(inner), InnerExecutor.IsCrossRunShareable(inner))
     {
-        _inner = inner;
-        _textExtractor = options?.TextExtractor ?? DefaultTextExtractor.Instance;
-
-        Microsoft.Extensions.Logging.ILogger<GuardrailPipeline> logger = options?.Logger is not null
-            ? new LoggerWrapper(options.Logger)
-            : Microsoft.Extensions.Logging.Abstractions.NullLogger<GuardrailPipeline>.Instance;
-        _pipeline = new GuardrailPipeline(policy, logger, options?.Ledger);
-        _log = options?.Logger;
+        Inner = inner;
+        _guard = new ExecutorGuard(inner.Id, policy, options);
     }
+
+    internal Executor<TInput, TOutput> Inner { get; }
+
+    internal static GuardedExecutor<TInput, TOutput> Create(
+        Executor<TInput, TOutput> inner, IGuardrailPolicy policy, GuardedExecutorOptions? options) =>
+        inner is IResettableExecutor
+            ? new ResettableGuardedExecutor<TInput, TOutput>(inner, policy, options)
+            : new GuardedExecutor<TInput, TOutput>(inner, policy, options);
 
     /// <inheritdoc />
     public override async ValueTask<TOutput> HandleAsync(TInput message, IWorkflowContext context, CancellationToken cancellationToken = default)
     {
-        // --- input guardrails ---
-        using var inputGuardActivity = AgentGuardTelemetry.ActivitySource.StartActivity(
-            $"{AgentGuardTelemetry.Spans.ExecutorGuard} input");
+        var input = await _guard.GuardAsync(message, typeof(TInput), GuardrailPhase.Input, InputSpan, cancellationToken)
+            .ConfigureAwait(false);
 
-        inputGuardActivity?.SetTag(AgentGuardTelemetry.Tags.ExecutorId, _inner.Id);
-        inputGuardActivity?.SetTag(AgentGuardTelemetry.Tags.Phase, "input");
-        inputGuardActivity?.SetTag(AgentGuardTelemetry.Tags.MessageType, typeof(TInput).Name);
+        var output = await Inner.HandleAsync((TInput)input!, context, cancellationToken).ConfigureAwait(false);
 
-        var inputText = _textExtractor.ExtractText(message);
+        var guarded = await _guard.GuardAsync(output, typeof(TOutput), GuardrailPhase.Output, OutputSpan, cancellationToken)
+            .ConfigureAwait(false);
 
-        if (!string.IsNullOrEmpty(inputText))
-        {
-            var inputContext = new GuardrailContext
-            {
-                Text = inputText,
-                Phase = GuardrailPhase.Input,
-                Properties = new Dictionary<string, object>
-                {
-                    ["ExecutorId"] = _inner.Id,
-                    ["MessageType"] = typeof(TInput).Name
-                }
-            };
-
-            var inputResult = await _pipeline.RunAsync(inputContext, cancellationToken);
-
-            if (inputResult.IsBlocked)
-            {
-                inputGuardActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Blocked);
-                inputGuardActivity?.SetStatus(ActivityStatusCode.Error, inputResult.BlockingResult?.Reason);
-                throw new GuardrailViolationException(inputResult.BlockingResult!, GuardrailPhase.Input, _inner.Id);
-            }
-
-            if (inputResult.WasModified)
-            {
-                inputGuardActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Modified);
-                message = ReconstructInput(message, inputResult.FinalText, _log, _inner.Id);
-            }
-            else
-            {
-                inputGuardActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Passed);
-            }
-        }
-        else
-        {
-            inputGuardActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Passed);
-        }
-
-        inputGuardActivity?.Dispose();
-
-        // --- execute inner ---
-        var output = await _inner.HandleAsync(message, context, cancellationToken);
-
-        // --- output guardrails ---
-        using var outputGuardActivity = AgentGuardTelemetry.ActivitySource.StartActivity(
-            $"{AgentGuardTelemetry.Spans.ExecutorGuard} output");
-
-        outputGuardActivity?.SetTag(AgentGuardTelemetry.Tags.ExecutorId, _inner.Id);
-        outputGuardActivity?.SetTag(AgentGuardTelemetry.Tags.Phase, "output");
-        outputGuardActivity?.SetTag(AgentGuardTelemetry.Tags.MessageType, typeof(TOutput).Name);
-
-        var outputText = _textExtractor.ExtractText(output);
-
-        if (!string.IsNullOrEmpty(outputText))
-        {
-            var outputContext = new GuardrailContext
-            {
-                Text = outputText,
-                Phase = GuardrailPhase.Output,
-                Properties = new Dictionary<string, object>
-                {
-                    ["ExecutorId"] = _inner.Id,
-                    ["MessageType"] = typeof(TOutput).Name
-                }
-            };
-
-            var outputResult = await _pipeline.RunAsync(outputContext, cancellationToken);
-
-            if (outputResult.IsBlocked)
-            {
-                outputGuardActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Blocked);
-                outputGuardActivity?.SetStatus(ActivityStatusCode.Error, outputResult.BlockingResult?.Reason);
-                throw new GuardrailViolationException(outputResult.BlockingResult!, GuardrailPhase.Output, _inner.Id);
-            }
-
-            if (outputResult.WasModified)
-            {
-                outputGuardActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Modified);
-                output = ReconstructOutput(output, outputResult.FinalText, _log, _inner.Id);
-            }
-            else
-            {
-                outputGuardActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Passed);
-            }
-        }
-        else
-        {
-            outputGuardActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Passed);
-        }
-
-        return output;
+        return (TOutput)guarded!;
     }
 
-    private static TInput ReconstructInput(TInput original, string modifiedText, ILogger? log, string executorId)
+    /// <inheritdoc />
+    protected override ProtocolBuilder ConfigureProtocol(ProtocolBuilder protocolBuilder) =>
+        InnerExecutor.MirrorProtocol(base.ConfigureProtocol(protocolBuilder), Inner, typeof(TInput), ForwardAsync);
+
+    /// <inheritdoc />
+    protected override ValueTask InitializeAsync(IWorkflowContext context, CancellationToken cancellationToken = default) =>
+        InnerExecutor.InitializeAsync(Inner, context, cancellationToken);
+
+    /// <inheritdoc />
+    protected override ValueTask OnMessageDeliveryStartingAsync(IWorkflowContext context, CancellationToken cancellationToken = default) =>
+        InnerExecutor.OnMessageDeliveryStartingAsync(Inner, context, cancellationToken);
+
+    /// <inheritdoc />
+    protected override ValueTask OnMessageDeliveryFinishedAsync(IWorkflowContext context, CancellationToken cancellationToken = default) =>
+        InnerExecutor.OnMessageDeliveryFinishedAsync(Inner, context, cancellationToken);
+
+    /// <inheritdoc />
+    protected override ValueTask OnCheckpointingAsync(IWorkflowContext context, CancellationToken cancellationToken = default) =>
+        InnerExecutor.OnCheckpointingAsync(Inner, context, cancellationToken);
+
+    /// <inheritdoc />
+    protected override ValueTask OnCheckpointRestoredAsync(IWorkflowContext context, CancellationToken cancellationToken = default) =>
+        InnerExecutor.OnCheckpointRestoredAsync(Inner, context, cancellationToken);
+
+    /// <summary>
+    /// Disposes the inner executor when it is disposable - the workflow runtime disposes a run's executors when
+    /// the run ends. The guardrail policy is not disposed, since a reused workflow runs this executor again.
+    /// </summary>
+    /// <returns>A task that completes when the inner executor is disposed.</returns>
+    public async ValueTask DisposeAsync()
     {
-        if (original is string)
-            return (TInput)(object)modifiedText;
-
-        if (original is ChatMessage chatMessage)
-            return (TInput)(object)new ChatMessage(chatMessage.Role, modifiedText);
-
-        GuardedExecutorLog.ModificationDropped(log, executorId, typeof(TInput).Name);
-        return original;
+        await InnerExecutor.DisposeAsync(Inner).ConfigureAwait(false);
+        GC.SuppressFinalize(this);
     }
 
-    private static TOutput ReconstructOutput(TOutput original, string modifiedText, ILogger? log, string executorId)
-    {
-        if (original is string)
-            return (TOutput)(object)modifiedText;
-
-        if (original is ChatMessage chatMessage)
-            return (TOutput)(object)new ChatMessage(chatMessage.Role, modifiedText);
-
-        GuardedExecutorLog.ModificationDropped(log, executorId, typeof(TOutput).Name);
-        return original;
-    }
+    private ValueTask ForwardAsync(object message, Type? handledType, IWorkflowContext context, CancellationToken cancellationToken) =>
+        _guard.ForwardAsync(Inner, message, handledType, InputSpan, context, cancellationToken);
 }
 
-/// <summary>Log messages shared by both <c>GuardedExecutor</c> variants.</summary>
-internal static partial class GuardedExecutorLog
+/// <summary>A <see cref="GuardedExecutor{TInput}"/> whose inner executor can be reset between runs.</summary>
+internal sealed class ResettableGuardedExecutor<TInput>(
+    Executor<TInput> inner, IGuardrailPolicy policy, GuardedExecutorOptions? options)
+    : GuardedExecutor<TInput>(inner, policy, options), IResettableExecutor
 {
-    [LoggerMessage(
-        Level = LogLevel.Warning,
-        Message = "Guardrail modified the text for executor '{ExecutorId}', but {MessageType} is neither string nor ChatMessage, so the change could NOT be applied and the original value was passed through. Supply an ITextExtractor that can rebuild this type, or use string/ChatMessage.")]
-    private static partial void LogModificationDropped(ILogger logger, string executorId, string messageType);
-
-    public static void ModificationDropped(ILogger? logger, string executorId, string messageType)
-    {
-        if (logger is not null)
-            LogModificationDropped(logger, executorId, messageType);
-    }
+    public ValueTask ResetAsync() => ((IResettableExecutor)Inner).ResetAsync();
 }
 
-/// <summary>
-/// Adapter that wraps a generic ILogger as ILogger&lt;GuardrailPipeline&gt;.
-/// </summary>
-internal sealed class LoggerWrapper : Microsoft.Extensions.Logging.ILogger<GuardrailPipeline>
+/// <summary>A <see cref="GuardedExecutor{TInput, TOutput}"/> whose inner executor can be reset between runs.</summary>
+internal sealed class ResettableGuardedExecutor<TInput, TOutput>(
+    Executor<TInput, TOutput> inner, IGuardrailPolicy policy, GuardedExecutorOptions? options)
+    : GuardedExecutor<TInput, TOutput>(inner, policy, options), IResettableExecutor
 {
-    private readonly Microsoft.Extensions.Logging.ILogger _inner;
-    internal LoggerWrapper(Microsoft.Extensions.Logging.ILogger inner) => _inner = inner;
-
-    public IDisposable? BeginScope<TState>(TState state) where TState : notnull => _inner.BeginScope(state);
-    public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => _inner.IsEnabled(logLevel);
-    public void Log<TState>(Microsoft.Extensions.Logging.LogLevel logLevel, Microsoft.Extensions.Logging.EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
-        => _inner.Log(logLevel, eventId, state, exception, formatter);
+    public ValueTask ResetAsync() => ((IResettableExecutor)Inner).ResetAsync();
 }

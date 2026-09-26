@@ -69,11 +69,11 @@ public class PiiReversibleRedactionTests
     }
 
     [Fact]
-    public async Task RunStreamingAsync_ShouldRestore_BestEffort()
+    public async Task RunStreamingAsync_ShouldRestoreToken_WhenModelEchoesItInOneUpdate()
     {
         var agent = new TestAgent(
             (m, s, o, ct) => Task.FromResult(new AgentResponse(new ChatMessage(ChatRole.Assistant, ""))),
-            // emit the (encrypted) prompt as a single chunk so the token is not split across updates
+            // the (encrypted) prompt comes back as a single chunk
             (messages, session, options, ct) => EchoStream(messages.Last().Text, ct))
             .AsBuilder()
             .UsePiiReversibleRedaction(Key)

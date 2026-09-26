@@ -287,6 +287,11 @@ public sealed class GuardrailPolicyBuilder
     /// before evaluating output rules, tokens stream through immediately while guardrails
     /// evaluate progressively. On violation, retraction/replacement events are emitted.
     /// </summary>
+    /// <param name="configure">
+    /// Adjusts the default <see cref="ProgressiveStreamingOptions"/>, e.g.
+    /// <c>o =&gt; o.EvaluationIntervalChars = 100</c>.
+    /// </param>
+    /// <returns>The builder for chaining.</returns>
     public GuardrailPolicyBuilder UseProgressiveStreaming(Action<ProgressiveStreamingOptions>? configure = null)
     {
         var options = new ProgressiveStreamingOptions();
@@ -309,6 +314,10 @@ public sealed class GuardrailPolicyBuilder
     /// a response, the pipeline re-prompts the LLM with the failure reason and re-evaluates all
     /// output rules on the new response. This is opt-in and only applies to output-phase evaluation.
     /// </summary>
+    /// <param name="chatClient">The client used for the re-ask calls.</param>
+    /// <param name="configure">Adjusts the default <see cref="ReaskOptions"/>.</param>
+    /// <returns>The builder for chaining.</returns>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="configure"/> sets a negative <see cref="ReaskOptions.MaxAttempts"/>.</exception>
     public GuardrailPolicyBuilder EnableReask(IChatClient chatClient, Action<ReaskOptions>? configure = null)
     {
         _reaskChatClient = chatClient ?? throw new ArgumentNullException(nameof(chatClient));
@@ -417,7 +426,7 @@ public sealed class GuardrailPolicyBuilder
     /// <see cref="System.Net.Http.HttpClient"/>.
     /// </summary>
     /// <returns>The configured policy.</returns>
-    public IGuardrailPolicy Build() => new Guardrails.GuardrailPolicy(_name, _rules, _violationHandler, _progressiveStreaming, _reaskOptions, _reaskChatClient);
+    public IGuardrailPolicy Build() => new GuardrailPolicy(_name, _rules, _violationHandler, _progressiveStreaming, _reaskOptions, _reaskChatClient);
 }
 
 /// <summary>Configures the policy's <see cref="IViolationHandler"/>.</summary>
@@ -428,16 +437,16 @@ public sealed class ViolationHandlerBuilder
     /// <summary>Always show the same message on a block.</summary>
     /// <param name="message">The message.</param>
     /// <returns>The builder for chaining.</returns>
-    public ViolationHandlerBuilder RejectWithMessage(string message) { _handler = new Guardrails.MessageViolationHandler(message); return this; }
+    public ViolationHandlerBuilder RejectWithMessage(string message) { _handler = new MessageViolationHandler(message); return this; }
 
     /// <summary>Build the message from the blocking result and context.</summary>
     /// <param name="handler">Produces the message.</param>
     /// <returns>The builder for chaining.</returns>
     public ViolationHandlerBuilder RejectWithHandler(
         Func<GuardrailResult, GuardrailContext, CancellationToken, ValueTask<string>> handler)
-    { _handler = new Guardrails.DelegateViolationHandler(handler); return this; }
+    { _handler = new DelegateViolationHandler(handler); return this; }
 
-    internal IViolationHandler Build() => _handler ?? new Guardrails.DefaultViolationHandler();
+    internal IViolationHandler Build() => _handler ?? new DefaultViolationHandler();
 }
 
 internal sealed class PredicateRule(string name, GuardrailPhase phase, Func<string, bool> predicate, string rejectionMessage) : IGuardrailRule

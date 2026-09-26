@@ -5,6 +5,9 @@
     <RootNamespace>AgentGuard.Hosting</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="AgentGuard.Integration.Tests" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="../AgentGuard/AgentGuard.csproj" />
   </ItemGroup>
   <ItemGroup>

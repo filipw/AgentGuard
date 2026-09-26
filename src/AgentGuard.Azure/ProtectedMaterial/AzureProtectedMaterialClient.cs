@@ -135,6 +135,8 @@ public sealed partial class AzureProtectedMaterialClient : IDisposable
     /// detected - too short to match protected material, and not an error. Text over the 10K-character
     /// limit is analyzed in overlapping windows, one request at a time, until one of them reports a
     /// match. When a request fails the remaining ones are skipped and the result is an error.
+    /// Cancellation of <paramref name="cancellationToken"/> is never a failure: it throws
+    /// <see cref="OperationCanceledException"/>, whatever exception the request that was under way ends with.
     /// </remarks>
     public async ValueTask<ProtectedMaterialResult> AnalyzeTextAsync(
         string text, CancellationToken cancellationToken = default)
@@ -144,6 +146,8 @@ public sealed partial class AzureProtectedMaterialClient : IDisposable
 
         foreach (var window in windows)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             try
             {
                 var result = await PostAsync(url, new TextRequest { Text = window }, cancellationToken);
@@ -156,6 +160,11 @@ public sealed partial class AzureProtectedMaterialClient : IDisposable
             {
                 // the caller gave up; that is not an analysis failure and must not become a fail-open pass
                 throw;
+            }
+            catch (Exception ex) when (cancellationToken.IsCancellationRequested)
+            {
+                // a request torn down by the caller's cancellation can end with another exception
+                throw Canceled(ex, cancellationToken);
             }
             catch (Exception ex)
             {
@@ -177,6 +186,8 @@ public sealed partial class AzureProtectedMaterialClient : IDisposable
     /// detected. Code over the 10K-character limit is analyzed in overlapping windows (split at line
     /// breaks where possible), one request at a time, and their citations are combined. When a request
     /// fails the remaining ones are skipped, and the result is an error unless a match was already found.
+    /// Cancellation of <paramref name="cancellationToken"/> is never a failure: it throws
+    /// <see cref="OperationCanceledException"/>, whatever exception the request that was under way ends with.
     /// </remarks>
     public async ValueTask<ProtectedMaterialResult> AnalyzeCodeAsync(
         string code, CancellationToken cancellationToken = default)
@@ -190,6 +201,8 @@ public sealed partial class AzureProtectedMaterialClient : IDisposable
 
         foreach (var window in windows)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             try
             {
                 var result = await PostAsync(url, new CodeRequest { Code = window }, cancellationToken);
@@ -211,6 +224,11 @@ public sealed partial class AzureProtectedMaterialClient : IDisposable
             {
                 // the caller gave up; that is not an analysis failure and must not become a fail-open pass
                 throw;
+            }
+            catch (Exception ex) when (cancellationToken.IsCancellationRequested)
+            {
+                // a request torn down by the caller's cancellation can end with another exception
+                throw Canceled(ex, cancellationToken);
             }
             catch (Exception ex)
             {
@@ -238,6 +256,10 @@ public sealed partial class AzureProtectedMaterialClient : IDisposable
         if (_ownsHttpClient)
             _httpClient.Dispose();
     }
+
+    /// <summary>The cancellation a request that failed after the caller canceled is reported as.</summary>
+    private static OperationCanceledException Canceled(Exception ex, CancellationToken cancellationToken) =>
+        new("The Protected Material analysis was canceled.", ex, cancellationToken);
 
     /// <summary>
     /// The request-sized windows of <paramref name="input"/> worth sending: at most 10K characters

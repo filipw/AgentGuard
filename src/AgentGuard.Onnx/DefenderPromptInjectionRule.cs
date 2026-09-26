@@ -32,11 +32,11 @@ public sealed class DefenderPromptInjectionRule : IGuardrailRule, IDisposable
     // the session adds [CLS] and [SEP] around the content tokens
     private const int SpecialTokenCount = 2;
 
-    private readonly DefenderModelSession? _session;
+    private readonly IDisposable? _session;
     private readonly Func<string, DefenderScore> _classify;
     private readonly TextWindowSplitter _splitter;
     private readonly DefenderPromptInjectionOptions _options;
-    private bool _disposed;
+    private int _disposed;
 
     /// <inheritdoc />
     public string Name => "defender-prompt-injection";
@@ -51,18 +51,16 @@ public sealed class DefenderPromptInjectionRule : IGuardrailRule, IDisposable
     /// Creates a new Defender prompt injection rule. Uses the bundled model by default.
     /// </summary>
     /// <param name="options">Optional configuration. If null, default options with bundled model are used.</param>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// Thrown when a threshold is NaN or outside 0.0-1.0, <see cref="DefenderPromptInjectionOptions.TemperatureT"/>
+    /// is not a positive finite number, <see cref="DefenderPromptInjectionOptions.MaxTokenLength"/> leaves no
+    /// room for input tokens, or the window settings are invalid.
+    /// </exception>
+    /// <exception cref="FileNotFoundException">Thrown when a model or vocab file does not exist.</exception>
     public DefenderPromptInjectionRule(DefenderPromptInjectionOptions? options = null)
     {
         _options = options ?? new DefenderPromptInjectionOptions();
-
-        if (_options.MainThreshold is < 0f or > 1f)
-            throw new ArgumentOutOfRangeException(nameof(options), "MainThreshold must be between 0.0 and 1.0.");
-        if (_options.AuxThreshold is < 0f or > 1f)
-            throw new ArgumentOutOfRangeException(nameof(options), "AuxThreshold must be between 0.0 and 1.0.");
-        if (_options.TemperatureT <= 0f || !float.IsFinite(_options.TemperatureT))
-            throw new ArgumentOutOfRangeException(nameof(options), "TemperatureT must be a positive finite number.");
-        WindowedClassification.ValidateWindowOptions(
-            _options.WindowSize, _options.WindowOverlap, _options.MaxWindows, nameof(options));
+        Validate(_options);
 
         var modelPath = ResolveModelPath(_options.ModelPath, "model_quantized.onnx");
         var vocabPath = ResolveModelPath(_options.VocabPath, "vocab.txt");
@@ -77,21 +75,26 @@ public sealed class DefenderPromptInjectionRule : IGuardrailRule, IDisposable
             _options.WindowOverlap,
             nameof(options));
 
-        _session = DefenderModelSession.Acquire(modelPath, vocabPath, _options.MaxTokenLength, _options.TemperatureT);
-        _classify = _session.Classify;
+        var session = DefenderModelSession.Acquire(modelPath, vocabPath, _options.MaxTokenLength, _options.TemperatureT);
+        _session = session;
+        _classify = session.Classify;
     }
 
     /// <summary>
     /// Internal constructor for testing - classifies with <paramref name="classify"/> and counts tokens
-    /// with <paramref name="countTokens"/> instead of loading the model.
+    /// with <paramref name="countTokens"/> instead of loading the model. <paramref name="session"/>, when
+    /// given, stands in for the pooled session and is released by <see cref="Dispose"/>.
     /// </summary>
     internal DefenderPromptInjectionRule(
-        Func<string, DefenderScore> classify, TokenCounter countTokens, DefenderPromptInjectionOptions options)
+        Func<string, DefenderScore> classify,
+        TokenCounter countTokens,
+        DefenderPromptInjectionOptions options,
+        IDisposable? session = null)
     {
+        Validate(options);
         _options = options;
         _classify = classify;
-        WindowedClassification.ValidateWindowOptions(
-            options.WindowSize, options.WindowOverlap, options.MaxWindows, nameof(options));
+        _session = session;
         _splitter = WindowedClassification.CreateSplitter(
             countTokens, options.MaxTokenLength - SpecialTokenCount, options.WindowSize, options.WindowOverlap, nameof(options));
     }
@@ -105,10 +108,14 @@ public sealed class DefenderPromptInjectionRule : IGuardrailRule, IDisposable
         score.Main >= mainThreshold && score.Aux < auxThreshold;
 
     /// <inheritdoc />
+    /// <exception cref="ObjectDisposedException">Thrown when the rule has been disposed.</exception>
     public ValueTask<GuardrailResult> EvaluateAsync(
         GuardrailContext context,
         CancellationToken cancellationToken = default)
     {
+        // a disposed rule no longer holds a reference to the pooled session, which may already be freed
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+
         if (string.IsNullOrWhiteSpace(context.Text))
             return ValueTask.FromResult(GuardrailResult.Passed());
 
@@ -155,13 +162,26 @@ public sealed class DefenderPromptInjectionRule : IGuardrailRule, IDisposable
         return ValueTask.FromResult(result);
     }
 
-    /// <inheritdoc />
+    /// <summary>
+    /// Releases this rule's reference to the pooled ONNX inference session. The session is shared
+    /// process-wide and freed when its last holder releases it, so the reference is released exactly
+    /// once: calling this again, from any thread, does nothing.
+    /// </summary>
     public void Dispose()
     {
-        if (_disposed)
-            return;
-        _disposed = true;
-        _session?.Dispose();
+        if (Interlocked.Exchange(ref _disposed, 1) == 0)
+            _session?.Dispose();
+    }
+
+    private static void Validate(DefenderPromptInjectionOptions options)
+    {
+        OptionValidation.RequireProbability(options.MainThreshold, nameof(options.MainThreshold), nameof(options));
+        OptionValidation.RequireProbability(options.AuxThreshold, nameof(options.AuxThreshold), nameof(options));
+        if (!float.IsFinite(options.TemperatureT) || options.TemperatureT <= 0f)
+            throw new ArgumentOutOfRangeException(nameof(options), options.TemperatureT, "TemperatureT must be a positive finite number.");
+        OptionValidation.RequireMaxTokenLength(options.MaxTokenLength, SpecialTokenCount, nameof(options));
+        WindowedClassification.ValidateWindowOptions(
+            options.WindowSize, options.WindowOverlap, options.MaxWindows, nameof(options));
     }
 
     private static string ResolveModelPath(string? customPath, string fileName)

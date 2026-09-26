@@ -116,26 +116,37 @@ own GLiNER NER recognizer so the heavy model lives in its own container:
 using TasmanianDevil.Analyzer;
 using TasmanianDevil.Onnx;
 
-var registry = new RecognizerRegistry([
-    new GlinerNerRecognizer(new GlinerNerOptions
-    {
-        ModelPath = "/models/gliner/model_fp16.onnx",
-        TokenizerPath = "/models/gliner/spm.model",
-        ConfigPath = "/models/gliner/config.json",
-    })
-]);
+var gliner = new GlinerNerOptions
+{
+    ModelPath = "/models/gliner/model_fp16.onnx",
+    TokenizerPath = "/models/gliner/spm.model",
+    ConfigPath = "/models/gliner/config.json",
+};
+
+// the model is multilingual, but a recognizer only runs for the language it is registered for, so
+// register one per language the sidecar serves (they share one pooled ONNX session)
+string[] languages = ["en", "de", "es", "fr", "it", "nl", "pt"];
+var registry = new RecognizerRegistry([.. languages.Select(language => new GlinerNerRecognizer(gliner, language))]);
 var analyzer = new AnalyzerEngine(registry, defaultScoreThreshold: 0);
 
 var app = WebApplication.Create();
 app.MapPost("/detect", (DetectRequest req) =>
 {
+    // an unserved language would silently detect nothing, so reject it instead
+    if (!languages.Contains(req.Language))
+        return Results.BadRequest($"language '{req.Language}' is not served");
+
     var results = analyzer.Analyze(req.Text, req.Language, req.Entities);
-    return new { entities = results.Select(r => new { type = r.EntityType, start = r.Start, end = r.End, score = r.Score }) };
+    return Results.Ok(new { entities = results.Select(r => new { type = r.EntityType, start = r.Start, end = r.End, score = r.Score }) });
 });
 app.Run();
 
 record DetectRequest(string Text, string Language, string[] Entities);
 ```
+
+The `language` in each request is the calling rule's `PiiOptions.Language` (default `en`). A rejected
+request counts as a remote failure, so with `FailOpen = true` (the default) that request falls back
+to local-only redaction.
 
 `samples/RemotePii` in this repo demonstrates the same idea in-process (no separate container) so you
 can see the pattern end to end without standing up a real sidecar; it falls back to a naive regex
@@ -257,8 +268,9 @@ builder.Services.AddSingleton<IGuardrailRuleFactory, AzurePiiRuleFactory>();    
 builder.Services.AddAgentGuard(builder.Configuration.GetSection("AgentGuard"));
 ```
 
-`Endpoint` and `Entities` are required for both; `TimeoutSeconds` defaults to 10 and `FailOpen` to
-`true`:
+`Endpoint` and `Entities` are required for both; `TimeoutSeconds` (at least 1) defaults to 10 and
+`FailOpen` to `true`. `Replacement` and `Countries` work as they do for `PiiRedaction` (default
+`<ENTITY_TYPE>` tags; generic + US recognizers plus the listed country packs):
 
 ```json
 {

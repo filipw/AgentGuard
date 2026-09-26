@@ -12,8 +12,9 @@ namespace AgentGuard.AgentFramework;
 /// is present in the policy and the inner agent has a <c>FunctionInvokingChatClient</c>), a blocked call
 /// is not executed and the model receives <see cref="BlockedToolCallPlaceholder"/> instead; each tool
 /// result returned by an <c>AIFunction</c> is evaluated by a filtered sub-pipeline. Blocked results are
-/// replaced with <see cref="BlockedPlaceholder"/> (or throw a <see cref="Workflows.GuardrailViolationException"/>
-/// when <see cref="HardFail"/> is true). Modified (sanitized) results are substituted in place.
+/// replaced with <see cref="BlockedPlaceholder"/>, and with <see cref="HardFail"/> a block also stops the
+/// run with a <see cref="Workflows.GuardrailViolationException"/>. Modified (sanitized) results are
+/// substituted in place.
 /// </summary>
 public sealed class ToolResultMiddlewareOptions
 {
@@ -49,9 +50,24 @@ public sealed class ToolResultMiddlewareOptions
     public string BlockedPlaceholder { get; init; } = "[blocked: tool result violated guardrail policy]";
 
     /// <summary>
-    /// When true, throw <see cref="Workflows.GuardrailViolationException"/> on a blocking violation
-    /// instead of substituting <see cref="BlockedPlaceholder"/>. Aborts the entire agent run.
-    /// Default: false.
+    /// When true, a blocked tool call or tool result stops the whole agent run instead of letting the
+    /// model continue. Default: false.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The blocked call is answered with <see cref="BlockedToolCallPlaceholder"/> (the tool never runs)
+    /// or its result with <see cref="BlockedPlaceholder"/>, the model is not called again, and once the
+    /// inner run has returned <c>RunAsync</c> throws <see cref="Workflows.GuardrailViolationException"/>;
+    /// a <c>RunStreamingAsync</c> enumeration throws it after the last update. Calls the model requested
+    /// in the same turn that had not run yet are not run either; each is answered with a placeholder, so
+    /// the history the agent saves has no call without a result.
+    /// </para>
+    /// <para>
+    /// The run is stopped with <c>FunctionInvocationContext.Terminate</c>, since
+    /// <c>FunctionInvokingChatClient</c> turns an exception thrown by a tool into an error result for the
+    /// model. The agent must accept <c>ChatClientAgentRunOptions</c> (or no options), as the
+    /// function-invocation middleware itself requires.
+    /// </para>
+    /// </remarks>
     public bool HardFail { get; init; }
 }

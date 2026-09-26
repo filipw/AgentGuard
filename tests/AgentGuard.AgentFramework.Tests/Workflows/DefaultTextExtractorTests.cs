@@ -1,3 +1,4 @@
+using System.Globalization;
 using AgentGuard.AgentFramework.Workflows;
 using FluentAssertions;
 using Microsoft.Agents.AI;
@@ -30,34 +31,34 @@ public class DefaultTextExtractorTests
     }
 
     [Fact]
-    public void ShouldReturnLastAssistantText_WhenMessageIsAgentResponse()
+    public void ShouldReturnEveryMessageText_WhenMessageIsAgentResponse()
     {
         var response = new AgentResponse
         {
             Messages =
             [
-                new ChatMessage(ChatRole.User, "question"),
                 new ChatMessage(ChatRole.Assistant, "first answer"),
+                new ChatMessage(ChatRole.Tool, [new FunctionResultContent("call-1", "42")]),
                 new ChatMessage(ChatRole.Assistant, "second answer")
             ]
         };
 
-        _extractor.ExtractText(response).Should().Be("second answer");
+        _extractor.ExtractText(response).Should().Be("first answer\nsecond answer");
     }
 
     [Fact]
-    public void ShouldReturnNull_WhenAgentResponseHasNoAssistantMessages()
+    public void ShouldReturnEmptyString_WhenAgentResponseHasNoText()
     {
         var response = new AgentResponse
         {
-            Messages = [new ChatMessage(ChatRole.User, "question")]
+            Messages = [new ChatMessage(ChatRole.Assistant, [new FunctionCallContent("call-1", "lookup")])]
         };
 
-        _extractor.ExtractText(response).Should().BeNull();
+        _extractor.ExtractText(response).Should().BeEmpty();
     }
 
     [Fact]
-    public void ShouldReturnLastMessageText_WhenMessageIsEnumerableOfChatMessage()
+    public void ShouldReturnEveryMessageText_WhenMessageIsEnumerableOfChatMessage()
     {
         var messages = new List<ChatMessage>
         {
@@ -65,7 +66,15 @@ public class DefaultTextExtractorTests
             new(ChatRole.Assistant, "second")
         };
 
-        _extractor.ExtractText(messages).Should().Be("second");
+        _extractor.ExtractText(messages).Should().Be("first\nsecond");
+    }
+
+    [Fact]
+    public void ShouldReturnEveryMessageText_WhenMessageIsChatMessageArray()
+    {
+        ChatMessage[] messages = [new(ChatRole.System, "be brief"), new(ChatRole.User, "hello")];
+
+        _extractor.ExtractText(messages).Should().Be("be brief\nhello");
     }
 
     [Fact]
@@ -95,6 +104,6 @@ public class DefaultTextExtractorTests
 
     private class ObjectWithoutTextProperty(int value)
     {
-        public override string ToString() => value.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        public override string ToString() => value.ToString(CultureInfo.InvariantCulture);
     }
 }

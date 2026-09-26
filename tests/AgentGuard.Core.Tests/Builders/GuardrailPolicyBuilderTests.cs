@@ -88,6 +88,31 @@ public class GuardrailPolicyBuilderTests
     }
 
     [Fact]
+    public void ShouldApplyTheConfigureCallback_WhenConfiguringProgressiveStreaming()
+    {
+        var policy = new GuardrailPolicyBuilder()
+            .BlockPromptInjection()
+            .UseProgressiveStreaming(o =>
+            {
+                o.EvaluationIntervalChars = 100;
+                o.MinCharsBeforeFirstCheck = 10;
+                o.EvaluationIntervalTime = TimeSpan.FromSeconds(2);
+                o.AdaptiveRuleMinCharInterval = 400;
+                o.RunFinalCheck = false;
+            })
+            .Build();
+
+        policy.ProgressiveStreaming.Should().BeEquivalentTo(new ProgressiveStreamingOptions
+        {
+            EvaluationIntervalChars = 100,
+            MinCharsBeforeFirstCheck = 10,
+            EvaluationIntervalTime = TimeSpan.FromSeconds(2),
+            AdaptiveRuleMinCharInterval = 400,
+            RunFinalCheck = false
+        });
+    }
+
+    [Fact]
     public void ShouldDefaultToNoProgressiveStreaming()
     {
         var policy = new GuardrailPolicyBuilder()

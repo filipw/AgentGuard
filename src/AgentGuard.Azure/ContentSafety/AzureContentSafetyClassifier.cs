@@ -10,7 +10,9 @@ namespace AgentGuard.Azure.ContentSafety;
 /// Supports category-based analysis and server-side blocklist matching.
 /// Text over the service's 10K-character request limit is analyzed in overlapping windows and the
 /// worst severity per category is reported.
-/// Fails open on errors - returns empty results so the agent keeps working.
+/// A failed analysis is reported as an error (<see cref="ContentSafetyResult.IsError"/>), which
+/// <see cref="ContentSafetyRule"/> hands to <see cref="ContentSafetyOptions.OnError"/>; the legacy
+/// <see cref="AnalyzeAsync"/> returns no categories instead.
 /// </summary>
 public sealed partial class AzureContentSafetyClassifier : IContentSafetyClassifier
 {
@@ -49,7 +51,10 @@ public sealed partial class AzureContentSafetyClassifier : IContentSafetyClassif
     /// When a window fails the remaining ones are skipped and the result is an error, unless the
     /// windows already analyzed decide the verdict on their own - a blocklist match, or a category in
     /// <see cref="ContentSafetyOptions.Categories"/> above <see cref="ContentSafetyOptions.MaxAllowedSeverity"/> -
-    /// which the missing windows could not undo.
+    /// which the missing windows could not undo. Cancellation of <paramref name="cancellationToken"/>
+    /// is never a failure: it throws <see cref="OperationCanceledException"/>, whatever exception the
+    /// request that was under way ends with (the SDK's retry policy, for one, can wrap it together with
+    /// an earlier failed attempt).
     /// </remarks>
     public async ValueTask<ContentSafetyResult> AnalyzeWithOptionsAsync(
         string text, ContentSafetyOptions options, CancellationToken cancellationToken = default)
@@ -66,6 +71,8 @@ public sealed partial class AzureContentSafetyClassifier : IContentSafetyClassif
 
         foreach (var window in windows)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             try
             {
                 var response = await _client.AnalyzeTextAsync(CreateRequest(window, options), cancellationToken);
@@ -100,6 +107,11 @@ public sealed partial class AzureContentSafetyClassifier : IContentSafetyClassif
             {
                 // the caller gave up; that is not a classifier failure and must not be swallowed
                 throw;
+            }
+            catch (Exception ex) when (cancellationToken.IsCancellationRequested)
+            {
+                // a request torn down by the caller's cancellation can end with another exception
+                throw new OperationCanceledException("The Azure AI Content Safety analysis was canceled.", ex, cancellationToken);
             }
             catch (Exception ex)
             {

@@ -1,8 +1,8 @@
 # classifier-benchmark
 
 Benchmarks the **real** AgentGuard prompt-injection rules side by side on held-out datasets,
-reporting precision / recall / F1 / FPR per classifier. Standalone eng tool, not in
-`AgentGuard.slnx`.
+reporting precision / recall / F1 / FPR and the number of errored calls per classifier. Standalone
+eng tool, not in `AgentGuard.slnx`.
 
 Unlike `eng/defender-sweep` in the [Kyoto](https://github.com/filipw/kyoto) repo
 (`../kyoto/eng/defender-sweep` in a sibling checkout, which re-implements Defender scoring inline to
@@ -48,13 +48,12 @@ before answering; `--llm-timeout` (default 240s) caps a single runaway request (
 
 ## Caveats
 
-- `LlmPromptInjectionRule` fails **open** on errors (a failed or off-format judge call counts as
-  "not blocked"), so a flaky or overloaded endpoint inflates the LLM's false-negative rate. Keep
-  `--concurrency` within what the server handles cleanly.
-- `--llm-timeout` cancels the token passed to the rule, and the rule lets a cancelled caller token
-  propagate (as `OperationCanceledException`) instead of failing open, so a request that runs past
-  the timeout ends the run rather than counting as a miss. Set it above the slowest expected judge
-  call.
+- A call that runs past `--llm-timeout`, throws, or comes back as a rule error (a failed or
+  off-format judge call, which `LlmPromptInjectionRule` fails **open** on) is counted in the `errors`
+  column and as "not blocked", and the run moves on to the next row. A flaky or overloaded endpoint
+  therefore inflates the LLM's false-negative rate, and `errors` shows by how much. Keep
+  `--concurrency` within what the server handles cleanly, and set `--llm-timeout` above the slowest
+  expected judge call.
 - `--max-rows N` takes the first N positives and N negatives per dataset (balanced), preserving
   dataset order.
 - F1 is reported per dataset; the benign corpus only yields an FPR (no positives).

@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text.RegularExpressions;
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Rules.Secrets;
 using FluentAssertions;
@@ -385,6 +387,240 @@ public class SecretsDetectionRuleTests
 
         act.Should().Throw<ArgumentException>();
     }
+
+    // other private key armors: PGP with armor headers, PGP 2.x SECRET KEY BLOCK, SSH2, and
+    // traditional encrypted PEM - the whole block goes, not just the header line
+
+    [Theory]
+    [InlineData("-----BEGIN PGP PRIVATE KEY BLOCK-----\nVersion: GnuPG v2\nComment: backup\n", "=twTO\n-----END PGP PRIVATE KEY BLOCK-----")]
+    [InlineData("-----BEGIN PGP SECRET KEY BLOCK-----\nVersion: 2.6.3i\n", "-----END PGP SECRET KEY BLOCK-----")]
+    [InlineData("---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----\nComment: \"rsa-key-20240926\"", "---- END SSH2 ENCRYPTED PRIVATE KEY ----")]
+    [InlineData("-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,3F17F5316E2BAC89\n", "-----END RSA PRIVATE KEY-----")]
+    public async Task ShouldRedactTheWholeBlock_WhenAPrivateKeyUsesAnotherArmor(string begin, string end)
+    {
+        var rule = new SecretsDetectionRule(new SecretsDetectionOptions { Action = SecretAction.Redact });
+
+        var result = await rule.EvaluateAsync(CreateContext($"Key:\n{begin}\n{KeyBody(3)}\n{end}\nDone."));
+
+        result.IsModified.Should().BeTrue();
+        result.ModifiedText.Should().Be("Key:\n[SECRET_REDACTED]\nDone.");
+    }
+
+    [Theory]
+    [InlineData("-----BEGIN PGP SECRET KEY BLOCK-----", "-----END PGP SECRET KEY BLOCK-----")]
+    [InlineData("---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----", "---- END SSH2 ENCRYPTED PRIVATE KEY ----")]
+    public async Task ShouldBlock_WhenAPrivateKeyUsesAnotherArmor(string begin, string end)
+    {
+        var result = await new SecretsDetectionRule().EvaluateAsync(CreateContext($"{begin}\n{KeyBody(3)}\n{end}"));
+
+        result.IsBlocked.Should().BeTrue();
+        result.Reason.Should().Contain("private-key");
+    }
+
+    // GitHub fine-grained personal access tokens: github_pat_ and 82 characters
+
+    private const string FineGrainedToken =
+        "github_pat_11AAAAAAA0bCdEfGhIjKlM_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456";
+
+    [Fact]
+    public async Task ShouldBlock_WhenAFineGrainedGitHubTokenIsFound()
+    {
+        var result = await new SecretsDetectionRule().EvaluateAsync(CreateContext($"Use {FineGrainedToken} for the CI job."));
+
+        result.IsBlocked.Should().BeTrue();
+        result.Reason.Should().Contain("github-token");
+    }
+
+    [Fact]
+    public async Task ShouldRedactTheToken_WhenAFineGrainedGitHubTokenIsFound()
+    {
+        var rule = new SecretsDetectionRule(new SecretsDetectionOptions { Action = SecretAction.Redact });
+
+        var result = await rule.EvaluateAsync(CreateContext($"GITHUB_TOKEN={FineGrainedToken}\nnext line"));
+
+        result.ModifiedText.Should().Be("GITHUB_TOKEN=[SECRET_REDACTED]\nnext line");
+    }
+
+    [Fact]
+    public async Task ShouldPass_WhenAFineGrainedGitHubTokenIsTruncated()
+    {
+        var result = await new SecretsDetectionRule().EvaluateAsync(CreateContext("Tokens look like github_pat_11AAAAAAA0bCdEfGhIjKlM_... in the docs."));
+
+        result.IsBlocked.Should().BeFalse();
+    }
+
+    // quoted secret fields: JSON, YAML flow maps, Python and JS literals
+
+    [Theory]
+    [InlineData("""{"api_key": "sk_live_1234567890abcdefghij"}""")]
+    [InlineData("""{"user": "bob", "password":"hunter2!x"}""")]
+    [InlineData("""{'secret': 'S3cr3tV@lue'}""")]
+    [InlineData("""{"client_secret" : "abc123XYZ789def"}""")]
+    [InlineData("""{"DB_PASSWORD": "Tr0ub4dor&3"}""")]
+    [InlineData("""{"accessToken": "q9Xv2LmP8sKd"}""")]
+    [InlineData("""{"token": "q9Xv2LmP8sKd"}""")]
+    [InlineData("""config = {'signing_key': 'x7Qp9Lm2Vb4N'}""")]
+    [InlineData("""$settings = ['password' => 'hunter2!x'];""")]
+    public async Task ShouldBlock_WhenAQuotedFieldHoldsASecret(string text)
+    {
+        var result = await new SecretsDetectionRule().EvaluateAsync(CreateContext(text));
+
+        result.IsBlocked.Should().BeTrue();
+        result.Reason.Should().Contain("secret-field");
+    }
+
+    [Fact]
+    public async Task ShouldRedactOnlyTheValue_WhenAQuotedFieldHoldsASecret()
+    {
+        var rule = new SecretsDetectionRule(new SecretsDetectionOptions { Action = SecretAction.Redact });
+
+        var result = await rule.EvaluateAsync(CreateContext(
+            """{"user": "bob", "password": "hunter2!x", "nested": {'client_secret': 'S3cr3t\'V@lue'}}"""));
+
+        result.ModifiedText.Should().Be(
+            """{"user": "bob", "password": "[SECRET_REDACTED]", "nested": {'client_secret': '[SECRET_REDACTED]'}}""");
+    }
+
+    [Theory]
+    [InlineData("""{"password": ""}""")]
+    [InlineData("""{"password": "${DB_PASSWORD}"}""")]
+    [InlineData("""{"password": "<password>"}""")]
+    [InlineData("""{"password": "changeme"}""")]
+    [InlineData("""{"api_key": "YOUR_API_KEY"}""")]
+    [InlineData("""{"secret": "********"}""")]
+    [InlineData("""{"secret": "short"}""")]
+    [InlineData("""{"pwd": "/home/user/project"}""")]
+    [InlineData("""{"client_secret": "https://vault.example.com/secrets/app"}""")]
+    [InlineData("""{"next_page_token": "CAESBggCEAEYAQ"}""")]
+    [InlineData("""{"token_type": "Bearer", "password_hint": "first pet"}""")]
+    public async Task ShouldPass_WhenAQuotedFieldHoldsNoCredential(string text)
+    {
+        var result = await new SecretsDetectionRule().EvaluateAsync(CreateContext(text));
+
+        result.IsBlocked.Should().BeFalse();
+    }
+
+    // connection-string URIs: the password, not the host, is the secret
+
+    [Theory]
+    [InlineData("postgres://user:pass@host/db", "connection-uri")]
+    [InlineData("postgresql://app:S3cr3t@db.example.com:5432/app", "connection-uri")]
+    [InlineData("mysql://root:toor@localhost:3306/mysql", "connection-uri")]
+    [InlineData("mongodb://admin:hunter2@mongo:27017", "mongodb-uri")]
+    [InlineData("mongodb+srv://admin:hunter2@cluster0.abc.mongodb.net/mydb", "mongodb-uri")]
+    [InlineData("redis://:hunter2@redis.example.com:6379", "redis-uri")]
+    [InlineData("rediss://default:hunter2@cache.example.com:6380", "redis-uri")]
+    [InlineData("amqp://app:hunter2@rabbit:5672/vhost", "connection-uri")]
+    [InlineData("ftp://anon:letmein@ftp.example.com/pub", "connection-uri")]
+    [InlineData("sqlserver://sa:Str0ng!Pass@sql:1433;database=app", "connection-uri")]
+    [InlineData("git clone https://ci:glpat-Xk9mP2vL7qR4tZ8w@gitlab.example.com/org/repo.git", "connection-uri")]
+    public async Task ShouldBlock_WhenAUriCarriesAPassword(string text, string label)
+    {
+        var result = await new SecretsDetectionRule().EvaluateAsync(CreateContext(text));
+
+        result.IsBlocked.Should().BeTrue();
+        result.Reason.Should().Contain(label);
+    }
+
+    [Theory]
+    [InlineData("postgres://app:S3cr3t@db.example.com:5432/app", "postgres://app:[SECRET_REDACTED]@db.example.com:5432/app")]
+    [InlineData("mongodb+srv://admin:hunter2@cluster0.abc.mongodb.net/mydb", "mongodb+srv://admin:[SECRET_REDACTED]@cluster0.abc.mongodb.net/mydb")]
+    [InlineData("redis://:hunter2@redis.example.com:6379", "redis://:[SECRET_REDACTED]@redis.example.com:6379")]
+    // a raw '@' in the password: the password runs to the last '@' before the host
+    [InlineData("DATABASE_URL=postgres://u:p@ss@db:5432/app", "DATABASE_URL=postgres://u:[SECRET_REDACTED]@db:5432/app")]
+    [InlineData("\"url\": \"amqp://app:hunter2@rabbit:5672/vhost\",", "\"url\": \"amqp://app:[SECRET_REDACTED]@rabbit:5672/vhost\",")]
+    public async Task ShouldRedactOnlyThePassword_WhenAUriCarriesOne(string text, string expected)
+    {
+        var rule = new SecretsDetectionRule(new SecretsDetectionOptions { Action = SecretAction.Redact });
+
+        var result = await rule.EvaluateAsync(CreateContext(text));
+
+        result.ModifiedText.Should().Be(expected);
+    }
+
+    [Theory]
+    [InlineData("See https://example.com/docs?page=2#auth for details.")]
+    [InlineData("Connect to postgres://db.example.com:5432/app with your own credentials.")]
+    [InlineData("Clone ssh://git@github.com/org/repo.git or https://user@example.com/repo.git")]
+    [InlineData("Proxy at http://proxy.internal:3128/ and ftp://ftp.example.com:21/pub")]
+    [InlineData("postgres://user:${DB_PASSWORD}@db:5432/app")]
+    [InlineData("mysql://root:<password>@localhost/mysql")]
+    [InlineData("redis://:****@cache:6379")]
+    public async Task ShouldPass_WhenAUriCarriesNoPassword(string text)
+    {
+        var result = await new SecretsDetectionRule().EvaluateAsync(CreateContext(text));
+
+        result.IsBlocked.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ShouldRedactOnlyThePassword_WhenAConnectionStringCarriesOne()
+    {
+        var rule = new SecretsDetectionRule(new SecretsDetectionOptions { Action = SecretAction.Redact });
+
+        var result = await rule.EvaluateAsync(CreateContext(
+            "Server=db.example.com;Database=app;User Id=admin;Password=s3cretP@ss!;Encrypt=true"));
+
+        result.ModifiedText.Should().Be(
+            "Server=db.example.com;Database=app;User Id=admin;Password=[SECRET_REDACTED];Encrypt=true");
+    }
+
+    [Fact]
+    public async Task ShouldPass_WhenAConnectionStringPasswordIsAPlaceholder()
+    {
+        var result = await new SecretsDetectionRule().EvaluateAsync(CreateContext(
+            "Server=db.example.com;Database=app;User Id=admin;Password=<your-password>;"));
+
+        result.IsBlocked.Should().BeFalse();
+    }
+
+    // case-insensitive patterns must not depend on the process culture: under tr-TR, 'i' and 'I'
+    // are not case variants of each other
+
+    [Fact]
+    public async Task ShouldDetectUppercaseKeyNames_WhenTheCurrentCultureIsTurkish()
+    {
+        var culture = CultureInfo.CurrentCulture;
+        var uiCulture = CultureInfo.CurrentUICulture;
+        try
+        {
+            CultureInfo.CurrentCulture = new CultureInfo("tr-TR");
+            CultureInfo.CurrentUICulture = new CultureInfo("tr-TR");
+
+            // built under the Turkish culture, so its patterns are compiled under it too
+            var rule = new SecretsDetectionRule(new SecretsDetectionOptions { Categories = SecretCategory.All });
+
+            var assignment = await rule.EvaluateAsync(CreateContext("API_KEY=sk_live_1234567890abcdefghij"));
+            var field = await rule.EvaluateAsync(CreateContext("""{"API_KEY": "q9Xv2LmP8sKd"}"""));
+            var keyed = await rule.EvaluateAsync(CreateContext("CREDENTIALS=xK9mP2vL7qR4"));
+
+            assignment.Reason.Should().Contain("api-key");
+            field.Reason.Should().Contain("secret-field");
+            keyed.Reason.Should().Contain("high-entropy-string");
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = culture;
+            CultureInfo.CurrentUICulture = uiCulture;
+        }
+    }
+
+    [Fact]
+    public void ShouldMatchCultureInvariantly_WhenAPatternIgnoresCase()
+    {
+        var rule = new SecretsDetectionRule(new SecretsDetectionOptions
+        {
+            Categories = SecretCategory.All,
+            CustomPatterns = new Dictionary<string, string> { ["internal-id"] = "(?i)internal_[0-9]{8}" }
+        });
+
+        var caseInsensitive = rule.Patterns
+            .Where(p => p.Options.HasFlag(RegexOptions.IgnoreCase) || p.ToString().Contains("(?i", StringComparison.Ordinal))
+            .ToList();
+
+        caseInsensitive.Should().NotBeEmpty();
+        caseInsensitive.Should().OnlyContain(p => p.Options.HasFlag(RegexOptions.CultureInvariant));
+    }
 }
 
 // scans a large unterminated key block on purpose, so it runs in the non-parallel large-input
@@ -406,5 +642,40 @@ public class SecretsDetectionRuleLargeInputTests
 
         result.IsModified.Should().BeTrue();
         result.ModifiedText.Should().Be("Key:\n[SECRET_REDACTED]");
+    }
+
+    // a secret after adversarial padding is still found: a pattern that backtracks over the padding
+    // runs out of its match timeout and is skipped, which would miss it
+
+    [Theory]
+    [InlineData("jwt-run", "jwt-token")]
+    [InlineData("connection-string-segments", "connection-string")]
+    [InlineData("mongodb-colons", "mongodb-uri")]
+    [InlineData("uri-without-host", "connection-uri")]
+    [InlineData("unterminated-quoted-value", "secret-field")]
+    [InlineData("repeated-quoted-keys", "secret-field")]
+    [InlineData("long-dash-rule", "private-key")]
+    public async Task ShouldDetectTheSecret_WhenItFollowsAdversarialPadding(string kind, string label)
+    {
+        const string jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U";
+        var text = kind switch
+        {
+            "jwt-run" => "x " + string.Concat(Enumerable.Repeat("eyJ", 100_000)) + " token " + jwt,
+            "connection-string-segments" => string.Concat(Enumerable.Repeat("Host=a;", 50_000))
+                + "\nServer=db;Database=app;Password=hunter2!",
+            "mongodb-colons" => "mongodb://" + string.Concat(Enumerable.Repeat("a:", 100_000))
+                + " then mongodb://admin:hunter2@mongo:27017",
+            "uri-without-host" => "postgres://u:" + new string('a', 200_000) + " then mysql://root:toor@db/app",
+            "unterminated-quoted-value" => "{\"password\": \"" + new string('a', 200_000) + " {\"password\": \"hunter2!x\"}",
+            "repeated-quoted-keys" => string.Concat(Enumerable.Repeat("\"password\":\"", 50_000)) + " {\"secret\": \"S3cr3tV@lue\"}",
+            "long-dash-rule" => new string('-', 200_000) + $"\n-----BEGIN RSA PRIVATE KEY-----\n{SecretsDetectionRuleTests.KeyBody(2)}\n-----END RSA PRIVATE KEY-----",
+            _ => throw new ArgumentOutOfRangeException(nameof(kind))
+        };
+        var rule = new SecretsDetectionRule();
+
+        var result = await rule.EvaluateAsync(new GuardrailContext { Text = text, Phase = GuardrailPhase.Output });
+
+        result.IsBlocked.Should().BeTrue();
+        result.Reason.Should().Contain(label);
     }
 }

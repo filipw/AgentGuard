@@ -76,12 +76,21 @@ internal sealed class ChunkingEntityRecognizer : EntityRecognizer
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// Cancellation of <paramref name="ct"/> throws <see cref="OperationCanceledException"/> even when a
+    /// fail-open inner recognizer answers the request it tore down with no entities, so a canceled
+    /// analysis never comes back as a partial result.
+    /// </remarks>
     public override async ValueTask<IReadOnlyList<RecognizerResult>> AnalyzeAsync(
         string text, IReadOnlyList<string> entities, CancellationToken ct = default)
     {
         var windows = TextChunker.Split(text, _maxChunkLength, _chunkOverlap);
         if (windows.Count == 1)
-            return await _inner.AnalyzeAsync(text, entities, ct).ConfigureAwait(false);
+        {
+            var single = await _inner.AnalyzeAsync(text, entities, ct).ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
+            return single;
+        }
 
         // one window at a time: a burst of parallel calls is what trips a service's rate limit, and
         // a throttled window would be lost to fail-open
@@ -93,6 +102,7 @@ internal sealed class ChunkingEntityRecognizer : EntityRecognizer
                 continue;
 
             var results = await _inner.AnalyzeAsync(text.Substring(window.Start, window.Length), entities, ct).ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
             Collect(found, index, window, results);
         }
 
