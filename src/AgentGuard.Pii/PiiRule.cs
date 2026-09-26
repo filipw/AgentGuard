@@ -31,7 +31,7 @@ public sealed class PiiRule : IGuardrailRule, IDisposable
     /// through a caller-supplied <paramref name="analyzer"/> are left alone.
     /// </param>
     /// <param name="ruleOptions">
-    /// Guardrail-side settings (phase, span merging). Separate from <paramref name="options"/> on
+    /// Guardrail-side settings (the phase). Separate from <paramref name="options"/> on
     /// purpose - see <see cref="PiiRuleOptions"/>.
     /// </param>
     public PiiRule(

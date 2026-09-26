@@ -80,9 +80,8 @@ public class LlmPromptInjectionRuleTests
         result.IsBlocked.Should().BeFalse();
     }
 
-    // AG-15: the verdict used to be a substring search over the whole response, so any sentence
-    // mentioning the token - including a negation - read as a positive verdict. The verdict is now
-    // read from the first line, and anything off-format is a rule error that ErrorBehavior decides.
+    // the verdict is read from the first line; anything off-format is a rule error that
+    // ErrorBehavior decides
 
     [Theory]
     [InlineData("SAFE")]
@@ -287,8 +286,7 @@ public class LlmPromptInjectionRuleTests
         systemPrompt.Should().NotContain("Conversation history");
     }
 
-    // AG-16: a cancelled request used to be caught as a judge failure and, under FailOpen, become
-    // a pass. It has to propagate.
+    // caller cancellation propagates; it is not a judge failure
 
     [Fact]
     public async Task ShouldPropagateCancellation_RatherThanFailingOpen()

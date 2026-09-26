@@ -57,6 +57,7 @@
 using AgentGuard.Core.Builders;
 using AgentGuard.Core.Guardrails;
 using AgentGuard.Onnx;
+using AgentGuard.Pii;
 
 var policy = new GuardrailPolicyBuilder()
     .NormalizeInput()
@@ -87,9 +88,11 @@ else if (result.WasModified)
       <p class="code-label">2. IChatClient decorator - wrap any chat client with one call</p>
 <pre><code>using AgentGuard.Core.ChatClient;
 using AgentGuard.Onnx;
+using AgentGuard.Pii;
 
 // Wrap any IChatClient - works with OpenAI, Azure OpenAI, Ollama, or any
-// Microsoft.Extensions.AI client. Conversation history is propagated automatically.
+// Microsoft.Extensions.AI client. Every user message of the request and every
+// assistant message of the response is guarded; history is propagated automatically.
 var guardedClient = chatClient.UseAgentGuard(g => g
     .NormalizeInput()
     .BlockPromptInjection()
@@ -112,6 +115,7 @@ await foreach (var update in guardedClient.GetStreamingResponseAsync(conversatio
       <p class="code-label">3. Microsoft Agent Framework middleware - plug into AIAgentBuilder</p>
 <pre><code>using AgentGuard.AgentFramework;
 using AgentGuard.Onnx;
+using AgentGuard.Pii;
 
 var guardedAgent = agent
     .AsBuilder()
@@ -149,7 +153,7 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
     <div class="feature-grid">
       <div class="feature-card">
         <h3>Prompt Injection Detection</h3>
-        <p>Six tiers: regex patterns (from Arcanum taxonomy), bundled StackOne Defender multi-head ONNX model (minilm-multihead-v5, calibrated dual-head, ~8ms, no download), optional DeBERTa v3 classifiers including PIGuard (strong on indirect / code-style injection), remote ML classifier (Sentinel-v2 via HTTP), Azure Prompt Shields (jailbreaks + indirect injection), and LLM-as-judge with structured threat classification.</p>
+        <p>Six tiers: regex patterns (informed by the Arcanum taxonomy), bundled StackOne Defender multi-head ONNX model (minilm-multihead-v5, calibrated dual-head, ~8ms per 64-token window, no download), optional DeBERTa v3 classifiers including PIGuard (strong on indirect / code-style injection), remote ML classifier (Sentinel-v2 via HTTP), Azure Prompt Shields (jailbreaks + indirect injection), and LLM-as-judge with structured threat classification. The ONNX classifiers scan long input in overlapping windows - a flagged window blocks, and input too long to scan in full is blocked rather than truncated.</p>
       </div>
       <div class="feature-card">
         <h3>Content Safety</h3>
@@ -157,7 +161,7 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
       </div>
       <div class="feature-card">
         <h3>PII Redaction</h3>
-        <p>Strip personal data at every agent boundary - input, output, and tool results - so it never reaches the model or your logs. Reversible redaction encrypts PII before the provider and decrypts it back in the reply. Offline, ~50 entity types, powered by the TasmanianDevil engine. <a href="#pii">See how it works &rarr;</a></p>
+        <p>Strip personal data at every agent boundary - input, output, and tool results - so it never reaches the model or your logs. Reversible redaction encrypts PII before the provider and decrypts it back in the reply. Offline by default, ~50 entity types, powered by the TasmanianDevil engine. <a href="#pii">See how it works &rarr;</a></p>
       </div>
       <div class="feature-card">
         <h3>Topic Enforcement</h3>
@@ -169,11 +173,11 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
       </div>
       <div class="feature-card">
         <h3>Input Normalization</h3>
-        <p>Decodes evasion encodings - base64, hex escapes, reversed text, Unicode homoglyphs - before any other rule evaluates, so encoding-based attacks are caught by the downstream rules.</p>
+        <p>Decodes evasion encodings - base64, hex escapes, reversed text, leetspeak, Unicode homoglyphs - and strips invisible characters, including Unicode tag characters (surfacing the text they hide), before any other rule evaluates, so encoding-based attacks are caught by the downstream rules.</p>
       </div>
       <div class="feature-card">
         <h3>Agentic &amp; RAG Guardrails</h3>
-        <p>Guard tool call arguments against SQL injection, code injection, SSRF, and more. Detect indirect prompt injection in tool results (emails, documents). Filter RAG chunks for injection and secrets before they reach the LLM context.</p>
+        <p>Guard tool call arguments against SQL injection, code injection, SSRF, and more, before the tool runs (in Agent Framework, or with the <code>IChatClient</code> decorator inside a <code>FunctionInvokingChatClient</code>). Detect indirect prompt injection in tool results (emails, documents), including instructions hidden in invisible Unicode tag characters - in Agent Framework, before the model reads them. Filter RAG chunks for injection and secrets before they reach the LLM context.</p>
       </div>
       <div class="feature-card">
         <h3>Dynamic Rule Enabling</h3>
@@ -185,7 +189,7 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
       </div>
       <div class="feature-card">
         <h3>Tamper-evident Decision Ledger</h3>
-        <p>An optional SHA-256 hash-chained audit trail of every pipeline decision - policy, request, and allow/block/modify outcome. Any retroactive edit breaks the chain and is caught by <code>Verify()</code>. Hash-only by default, dependency-free, with optional JSONL export.</p>
+        <p>An optional SHA-256 hash-chained audit trail of every pipeline decision - policy, request, and allow/block/modify outcome. Any retroactive edit breaks the chain and is caught by <code>Verify()</code>. Hash-only by default, dependency-free, with an optional append-only JSONL file.</p>
       </div>
     </div>
   </div>
@@ -198,8 +202,9 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
   <p class="section-subtitle">
     AgentGuard redacts personal data as a guardrail at every boundary an agent crosses - user input,
     model output, and tool results - so PII never reaches the LLM provider or your logs. Reversible
-    redaction goes further: encrypt PII before the model and decrypt it back in the reply, so the model
-    reasons over opaque tokens while the user still gets a coherent answer. Fully offline, powered by the
+    redaction goes further: encrypt PII in every message of the request before the model and decrypt it
+    back in the reply, so the model reasons over opaque tokens while the user still gets a coherent answer.
+    Offline by default, powered by the
     <a href="https://github.com/filipw/tasmaniandevil" target="_blank">TasmanianDevil</a> engine.
   </p>
 
@@ -235,8 +240,8 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
 <pre><code>var agent = chatClient
     .AsAIAgent(instructions, name: "SupportBot", tools: [lookupCustomer])
     .AsBuilder()
-    .UseAgentGuard(g =&gt; g.RedactPii().GuardToolResults()) // input, output &amp; tool-result redaction
-    .UsePiiReversibleRedaction(key)                       // encrypt in, decrypt out
+    .UsePiiReversibleRedaction(key)                       // outermost: encrypt in, decrypt out
+    .UseAgentGuard(g =&gt; g.RedactPii().GuardToolResults()) // redact tool results before the model
     .Build();
 
 // user : "Email me at john@example.com about order 12345"
@@ -247,7 +252,6 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
   <p class="code-label" style="margin-top:3rem">Or as a single rule in any pipeline / IChatClient decorator</p>
 <pre><code>var policy = new GuardrailPolicyBuilder()
     .RedactPii()                 // order 20, runs on input and output
-    .GuardToolResults()          // strip PII from tool output before the model sees it
     .Build();
 
 // input  : "Email ada@acme.com or call +1 415 555 0132"
@@ -256,19 +260,19 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
   <div class="feature-grid" style="margin-top:3rem">
     <div class="feature-card">
       <h3>Every boundary, one rule</h3>
-      <p>The order-20 <code>RedactPii()</code> rule runs on both input and output; <code>GuardToolResults()</code> extends it to tool/function results so retrieved records are scrubbed before they ever re-enter the model's context.</p>
+      <p>The order-20 <code>RedactPii()</code> rule runs on both input and output - every user message of a request and every assistant message of a response. In an Agent Framework agent, <code>GuardToolResults()</code> extends it to tool results, so retrieved records are scrubbed before they re-enter the model's context.</p>
     </div>
     <div class="feature-card">
       <h3>Reversible round-trip</h3>
-      <p>Encrypt PII before the provider sees it and decrypt the exact value back in the response - the model reasons over tokens, the user gets real data. A wrong key fails loudly; lossy operators report themselves non-reversible.</p>
+      <p>Encrypt PII in every message of the request, history included, before the provider sees it and decrypt the exact value back in the response - the model reasons over tokens, the user gets real data. Pass in your own engine to bring remote or Azure detectors into the round-trip. A wrong key fails loudly; lossy operators report themselves non-reversible.</p>
     </div>
     <div class="feature-card">
       <h3>Nothing leaves your process</h3>
-      <p>Detection is deterministic regex + checksums with no network calls and no telemetry - so PII isn't shipped to a cloud classifier just to be redacted. Suitable for air-gapped and regulated deployments.</p>
+      <p>By default, detection is deterministic regex + checksums with no network calls and no telemetry - so PII isn't shipped to a cloud classifier just to be redacted. Suitable for air-gapped and regulated deployments.</p>
     </div>
     <div class="feature-card">
       <h3>Broad, validated coverage</h3>
-      <p>~50 entity types - email, phone, cards (Luhn), IBAN (mod-97), crypto, plus an always-on US pack and opt-in UK/DE/IN/IT/ES packs - with an optional multilingual NER add-on. The full engine, breadth, and operators live in <a href="https://github.com/filipw/tasmaniandevil" target="_blank">TasmanianDevil</a>.</p>
+      <p>~50 entity types - email, phone, cards (Luhn), IBAN (mod-97), crypto, plus an always-on US pack and opt-in UK/DE/IN/IT/ES/NL packs - with an optional multilingual NER add-on. The full engine, breadth, and operators live in <a href="https://github.com/filipw/tasmaniandevil" target="_blank">TasmanianDevil</a>.</p>
     </div>
     <div class="feature-card">
       <h3>Optional out-of-process detection</h3>
@@ -352,8 +356,8 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
       </tr>
       <tr>
         <td>20</td>
-        <td><code>PiiRule</code> (+ optional <code>GlinerNerRecognizer</code>)</td>
-        <td><span class="badge badge-regex">Regex</span><span class="badge badge-onnx">ONNX NER</span></td>
+        <td><code>PiiRule</code> (+ optional <code>GlinerNerRecognizer</code>, remote or Azure detectors)</td>
+        <td><span class="badge badge-regex">Regex</span><span class="badge badge-onnx">ONNX NER</span><span class="badge badge-plugin">Remote</span></td>
         <td>Both</td>
       </tr>
       <tr>
@@ -440,7 +444,9 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
     <p class="section-subtitle">
       The classifiers are complementary, not competing. The bundled Defender model is the fast default
       for English prompt injection; PIGuard and Opir are optional models you can layer on for cases it
-      isn't built for. Numbers are from held-out datasets - full method and data in the
+      isn't built for. Numbers are from held-out datasets - full method and data in AgentGuard's
+      <a href="https://github.com/filipw/AgentGuard/tree/main/eng/classifier-benchmark" target="_blank"><code>eng/classifier-benchmark</code></a>
+      (the prompt injection head to head) and the
       <a href="https://github.com/filipw/kyoto" target="_blank">Kyoto repo</a>'s <code>eng/*-eval</code>
       RESULTS files. Recall = % of unsafe inputs blocked; FPR = % of safe inputs blocked.
     </p>
@@ -449,7 +455,7 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
     <p class="bench-note">
       The real rules head to head on a balanced 25/class held-out sample (jackhhao English jailbreaks,
       deepset German injections); cells are recall&nbsp;/&nbsp;FPR. The bundled Defender model is the
-      fast default - on the full jackhhao test split it scores 90.6% / 0.8%. The LLM-as-judge tier
+      fast default - on the full jackhhao test split (262 rows) it scores 94% / 1.6%. The LLM-as-judge tier
       (<code>LlmPromptInjectionRule</code>) runs on <strong>any <code>IChatClient</code> you supply -
       AgentGuard bundles no LLM</strong>; the two models below are <strong>illustrative bring-your-own
       examples</strong> (one capable, one tiny), not shipped components. Per-call latency measured on an Apple M4 Pro.
@@ -460,14 +466,14 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
       </thead>
       <tbody>
         <tr><td>regex (medium)</td><td>60% / 8%</td><td>8% / 0%</td><td>&lt;1 ms</td></tr>
-        <tr><td>Defender (bundled)</td><td>92% / 4%</td><td>64% / 0%</td><td>~8 ms</td></tr>
-        <tr><td>LLM (BYO) &middot; gemma-4-26b-a4b</td><td><strong>96% / 0%</strong></td><td><strong>68% / 0%</strong></td><td>~6 s</td></tr>
+        <tr><td>Defender (bundled)</td><td>92% / 0%</td><td><strong>72% / 0%</strong></td><td>~8 ms / window</td></tr>
+        <tr><td>LLM (BYO) &middot; gemma-4-26b-a4b</td><td><strong>96% / 0%</strong></td><td>68% / 0%</td><td>~6 s</td></tr>
         <tr><td>LLM (BYO) &middot; qwen3-0.6b</td><td>32% / 16%</td><td>16% / 0%</td><td>~1.5 s</td></tr>
       </tbody>
     </table>
     <p class="bench-note">
       The LLM rows illustrate that quality scales hard with the model you bring: the MoE gemma-4-26b-a4b (~4B active)
-      tops every column, while a tiny 0.6B lands well below Defender. Both happen to run fully locally, so an LLM
+      leads on the English set and is close to Defender on the German one, while a tiny 0.6B lands well below Defender. Both happen to run fully locally, so an LLM
       tier is a real option for offline deployments - but the model is yours to choose, so budget the latency
       and pick a capable one. PIGuard isn't in this table: both datasets are in its training set, so its numbers
       would be optimistic - it's shown on indirect injection below, where it's held-out.
@@ -475,9 +481,10 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
 
     <h3 class="bench-heading">Indirect / code-style injection</h3>
     <p class="bench-note">
-      A direct-injection sentence classifier is weak by design on payloads hidden in tool results. The optional
-      PIGuard model (DeBERTa-v3) is built for these and layers on top of Defender - held-out indirect set
-      (BIPIA) and an over-defense benign set (NotInject).
+      A direct-injection sentence classifier is weak by design on payloads hidden inside documents, emails or code.
+      The optional PIGuard model (DeBERTa-v3) is built for these and layers on top of Defender as an input rule -
+      held-out indirect set (BIPIA) and an over-defense benign set (NotInject). Tool results are covered separately,
+      by the tool-result guardrails.
     </p>
     <table class="rule-table bench-table">
       <thead>
@@ -532,15 +539,15 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
     <div class="feature-grid">
       <div class="feature-card">
         <h3>1. Input Guardrails</h3>
-        <p>Normalization, RAG chunk filtering, prompt injection detection, PII redaction, secrets detection, topic boundary, token limits - all before the LLM sees the input.</p>
+        <p>Normalization, RAG chunk filtering, prompt injection detection, PII redaction, secrets detection, topic boundary, token limits - on every user message of the request, before the LLM sees it.</p>
       </div>
       <div class="feature-card">
         <h3>2. Agent Execution</h3>
-        <p>Your AI agent runs with the sanitized input. Works with any framework - MAF, Semantic Kernel, or standalone. Supports both RunAsync and streaming.</p>
+        <p>Your AI agent runs with the sanitized input. Works with Microsoft Agent Framework, any <code>IChatClient</code>-based stack, or standalone, with both RunAsync and streaming. Inside the Agent Framework tool loop, each tool call is checked before it runs and each tool result before the model reads it.</p>
       </div>
       <div class="feature-card">
         <h3>3. Output Guardrails</h3>
-        <p>Tool call injection detection, indirect injection in tool results, PII/secrets redaction, policy compliance, groundedness checking, copyright detection - all before the response reaches the user. Optional <em>re-ask</em> re-prompts the LLM with the failure reason on violations.</p>
+        <p>Tool call injection detection, indirect injection in tool results, PII/secrets redaction, policy compliance, groundedness checking, copyright detection - on each assistant message of the response, before it reaches the user. Optional <em>re-ask</em> re-prompts the LLM with the failure reason and returns the answer that passes in place of the blocked one.</p>
       </div>
     </div>
   </div>
@@ -551,21 +558,29 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
   <p class="section-label">Packages</p>
   <h2 class="section-title">Pick what you need.</h2>
   <p class="section-subtitle">
-    Ten packages, layered. The main <code>AgentGuard</code> package is all you need to start. Add framework adapters, cloud integrations, or remote classifiers as needed.
+    Nine packages, layered. The main <code>AgentGuard</code> package is all you need to start. Add framework adapters, cloud integrations, or remote classifiers as needed.
   </p>
 
   <div class="package-grid">
     <div class="package-card">
       <div class="package-name">AgentGuard</div>
-      <div class="package-desc">All-in-one package. Core rules engine, bundled Defender multi-head ONNX model (minilm-multihead-v5), and offline classifiers. No agent framework dependency.</div>
+      <div class="package-desc">All-in-one package: <code>AgentGuard.Core</code>, <code>AgentGuard.Onnx</code> (with the bundled Defender multi-head ONNX model, minilm-multihead-v5) and <code>AgentGuard.Pii</code> in one reference. No agent framework dependency.</div>
+    </div>
+    <div class="package-card">
+      <div class="package-name">AgentGuard.Core</div>
+      <div class="package-desc">Framework-agnostic engine: rule abstractions, pipeline, fluent builder, the regex, local and LLM-as-judge rules, the <code>IChatClient</code> decorator (<code>UseAgentGuard()</code>), progressive streaming, built-in spans and metrics, and the decision ledger.</div>
+    </div>
+    <div class="package-card">
+      <div class="package-name">AgentGuard.Onnx</div>
+      <div class="package-desc">Guardrail rules over the Kyoto ONNX classifiers: prompt injection with the bundled Defender model (no download) and optional DeBERTa v3 / PIGuard models, Opir multilingual content safety, and GLiNER NER for PII via <code>.RedactPiiWithNer()</code>. Long input is classified in overlapping windows.</div>
     </div>
     <div class="package-card">
       <div class="package-name">AgentGuard.Pii</div>
-      <div class="package-desc">Flagship offline PII engine: ~50 entity types across generic + always-on US + opt-in country packs, lemma-aware context scoring, anonymization operators, reversible de-identification, and structured JSON/CSV + batch APIs. Architecture inspired by Microsoft Presidio (MIT). Fully offline.</div>
+      <div class="package-desc">The flagship PII guardrail - the order-20 <code>PiiRule</code> and <code>.RedactPii()</code> over the TasmanianDevil engine: ~50 entity types across generic + always-on US + opt-in country packs, lemma-aware context scoring, and anonymization operators. TasmanianDevil also brings reversible de-identification and structured JSON/CSV + batch APIs; its architecture is inspired by Microsoft Presidio (MIT). Fully offline.</div>
     </div>
     <div class="package-card">
       <div class="package-name">AgentGuard.AgentFramework</div>
-      <div class="package-desc">Microsoft Agent Framework adapter. <code>UseAgentGuard()</code> middleware + workflow guardrails via <code>.WithGuardrails()</code>.</div>
+      <div class="package-desc">Microsoft Agent Framework adapter. <code>UseAgentGuard()</code> middleware (with tool-call and tool-result checks inside the tool loop), <code>UsePiiReversibleRedaction()</code>, and workflow guardrails via <code>.WithGuardrails()</code>.</div>
     </div>
     <div class="package-card">
       <div class="package-name">AgentGuard.RemoteClassifier</div>
@@ -573,7 +588,7 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
     </div>
     <div class="package-card">
       <div class="package-name">AgentGuard.Azure</div>
-      <div class="package-desc">Azure AI Content Safety integration - Prompt Shields (injection detection), protected material detection (text &amp; code with license citations), category analysis, severity thresholds, server-side blocklists - plus Azure AI Language PII detection (native Person/Address) via <code>.RedactPiiWithAzure()</code>.</div>
+      <div class="package-desc">Azure AI Content Safety integration - Prompt Shields (injection detection), protected material detection (text &amp; code with license citations), category analysis, severity thresholds, server-side blocklists - plus Azure AI Language PII detection (native Person/Address) via <code>.RedactPiiWithAzure()</code>. Input over a service's per-request limit is split and analyzed in several sequential requests.</div>
     </div>
     <div class="package-card">
       <div class="package-name">AgentGuard.RemotePii</div>
@@ -581,13 +596,14 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
     </div>
     <div class="package-card">
       <div class="package-name">AgentGuard.Hosting</div>
-      <div class="package-desc">DI registration, named policy factory, and <code>appsettings.json</code> configuration binding for ASP.NET Core and Aspire.</div>
+      <div class="package-desc">DI registration, named policy factory, <code>appsettings.json</code> configuration binding, and OpenTelemetry and decision-ledger registration for ASP.NET Core and Aspire. Azure and remote PII rule types plug in through <code>IGuardrailRuleFactory</code>, so Hosting does not pull in their dependencies.</div>
     </div>
   </div>
 
   <p class="builds-on">
     Built on two standalone engines:
-    <a href="https://github.com/filipw/tasmaniandevil">TasmanianDevil</a> (the PII engine behind <code>AgentGuard.Pii</code>)
+    <a href="https://github.com/filipw/tasmaniandevil">TasmanianDevil</a> (the PII engine behind <code>AgentGuard.Pii</code>,
+    <code>AgentGuard.RemotePii</code> and the PII detection in <code>AgentGuard.Azure</code>)
     and <a href="https://github.com/filipw/kyoto">Kyoto</a> (the ONNX classifiers behind <code>AgentGuard.Onnx</code>).
   </p>
 </section>
@@ -598,23 +614,23 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
     <p class="section-label">LLM-as-Judge</p>
     <h2 class="section-title">When regex isn't enough.</h2>
     <p class="section-subtitle">
-      Plug in any <code>IChatClient</code> - Azure OpenAI, Ollama, local models. Built-in prompt templates, fail-open on errors.
+      Plug in any <code>IChatClient</code> - Azure OpenAI, Ollama, local models. Built-in prompt templates, fail-open on errors by default.
     </p>
 <pre><code>using AgentGuard.Onnx;
+using AgentGuard.RemoteClassifier;
 using AgentGuard.Azure.PromptShield;
 
 // Multi-tier prompt injection: Regex → Defender → Remote ML → Prompt Shield → LLM
 var policy = new GuardrailPolicyBuilder()
     .NormalizeInput()
     .BlockPromptInjection()                            // regex (order 10)
-    .BlockPromptInjectionWithDefender()                    // Defender ML (order 11, bundled)
-    .BlockPromptInjectionWithRemoteClassifier(          // remote ML (order 13)
+    .BlockPromptInjectionWithDefender()                // Defender ML (order 11, bundled)
+    .BlockPromptInjectionWithRemoteClassifier(         // remote ML (order 13)
         "http://localhost:8000/classify")
-    .BlockPromptInjectionWithAzurePromptShield(         // Azure Prompt Shield (order 14)
+    .BlockPromptInjectionWithAzurePromptShield(        // Azure Prompt Shield (order 14)
         endpoint, apiKey)
     .BlockPromptInjectionWithLlm(chatClient)           // LLM (order 15)
-    .DetectPIIWithLlm(chatClient,
-        new() { Action = PiiAction.Redact })
+    .DetectPIIWithLlm(chatClient)                      // LLM PII (order 25, redacts by default)
     .EnforceOutputPolicy(chatClient,
         "Never recommend competitor products")
     .CheckGroundedness(chatClient)
@@ -629,7 +645,8 @@ var policy = new GuardrailPolicyBuilder()
   <h2 class="section-title">Re-ask on violation.</h2>
   <p class="section-subtitle">
     When output guardrails block a response, the pipeline can re-prompt the LLM with the failure reason
-    and re-evaluate. Opt-in, configurable, non-streaming only for now.
+    and re-evaluate; an answer that passes replaces the blocked one. Opt-in and configurable; it applies
+    to non-streaming responses and the default buffered streaming, not to progressive streaming.
   </p>
 <pre><code>var policy = new GuardrailPolicyBuilder()
     .EnforceOutputPolicy(chatClient, "Never recommend competitors")
@@ -644,7 +661,10 @@ var policy = new GuardrailPolicyBuilder()
 var result = await pipeline.RunAsync(outputContext);
 
 if (result.WasReasked)
-    Console.WriteLine($"Re-asked {result.ReaskAttemptsUsed} time(s)");</code></pre>
+    Console.WriteLine($"Re-asked {result.ReaskAttemptsUsed} time(s)");
+
+if (!result.IsBlocked)
+    Console.WriteLine(result.FinalText);   // the re-asked answer, when a re-ask passed</code></pre>
 </section>
 
 <!-- ── Observability ───────────────────────────────── -->

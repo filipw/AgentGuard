@@ -33,12 +33,16 @@ jobs:
       run: dotnet build AgentGuard.slnx --no-restore --configuration Release
 
     - name: Test
+      # -m:1 runs the test projects one at a time: several suites check that large inputs are scanned
+      # within the rules' regex match timeouts, which are wall-clock, and the CPU-heavy ONNX suite
+      # running alongside would eat into them
       run: |
         dotnet test AgentGuard.slnx \
           --no-build \
           --configuration Release \
+          -m:1 \
           --verbosity normal \
-          --logger "trx;LogFileName=results.trx" \
+          --logger "trx;LogFilePrefix=results" \
           --collect:"XPlat Code Coverage" \
           --results-directory TestResults
 

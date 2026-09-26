@@ -270,7 +270,7 @@ public class FalsePositiveRegressionTests
         await AssertSafe(input);
     }
 
-    // ── Tricky edge cases that previously caused false positives ──
+    // ── Tricky edge cases ────────────────────────────────────────
 
     [Theory]
     [InlineData("The base64 encoding of 'hello' is aGVsbG8=")] // short base64 mention

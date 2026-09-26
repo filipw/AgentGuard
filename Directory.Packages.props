@@ -21,31 +21,25 @@
     <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.8" />
     <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.8" />
     <PackageVersion Include="Microsoft.Extensions.Logging" Version="10.0.8" />
-    <PackageVersion Include="Microsoft.Extensions.Options" Version="10.0.8" />
     <PackageVersion Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.8" />
     <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.8" />
     <PackageVersion Include="Microsoft.Extensions.Configuration" Version="10.0.8" />
-    <PackageVersion Include="Microsoft.Extensions.Configuration.Abstractions" Version="10.0.8" />
     <PackageVersion Include="Microsoft.Extensions.Configuration.Json" Version="10.0.8" />
     <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.8" />
 
     <!-- Tokenization -->
+    <!-- the Data packages carry the tiktoken vocabularies; they target netstandard2.0 only, and the
+         Microsoft.Bcl.Memory pin lifts the vulnerable 9.0.4 they depend on -->
+    <PackageVersion Include="Microsoft.Bcl.Memory" Version="10.0.8" />
+    <PackageVersion Include="Microsoft.ML.Tokenizers.Data.Cl100kBase" Version="2.0.0" />
+    <PackageVersion Include="Microsoft.ML.Tokenizers.Data.O200kBase" Version="2.0.0" />
     <PackageVersion Include="Microsoft.ML.Tokenizers" Version="2.0.0" />
-
-    <!-- PII detection -->
-    <PackageVersion Include="libphonenumber-csharp" Version="9.0.32" />
-
-    <!-- ONNX Runtime -->
-    <PackageVersion Include="Microsoft.ML.OnnxRuntime" Version="1.21.0" />
 
     <PackageVersion Include="TasmanianDevil" Version="0.3.0" />
     <PackageVersion Include="TasmanianDevil.Onnx" Version="0.3.0" />
     <PackageVersion Include="TasmanianDevil.Remote" Version="0.3.0" />
     <PackageVersion Include="TasmanianDevil.Azure" Version="0.3.0" />
     <PackageVersion Include="Kyoto" Version="0.1.0" />
-
-    <!-- Benchmark -->
-    <PackageVersion Include="Parquet.Net" Version="5.3.0" />
 
     <!-- Testing -->
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
@@ -56,8 +50,6 @@
     <PackageVersion Include="coverlet.collector" Version="6.0.2" />
 
     <!-- OpenTelemetry -->
-    <PackageVersion Include="OpenTelemetry" Version="1.15.3" />
     <PackageVersion Include="OpenTelemetry.Api" Version="1.15.3" />
-    <PackageVersion Include="OpenTelemetry.Exporter.InMemory" Version="1.15.3" />
   </ItemGroup>
 </Project>

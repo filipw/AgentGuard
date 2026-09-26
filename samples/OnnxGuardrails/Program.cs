@@ -2,10 +2,9 @@
 // Demonstrates offline ML-based prompt injection detection.
 //
 // The StackOne Defender model is bundled - no download needed for Example 1 and 2.
-// For Example 3 (DeBERTa v3), download the model first:
-//   ./eng/download-onnx-model.sh
-//   AGENTGUARD_ONNX_MODEL_PATH=./models/deberta-v3-prompt-injection/model.onnx \
-//   AGENTGUARD_ONNX_TOKENIZER_PATH=./models/deberta-v3-prompt-injection/spm.model \
+// For Example 3 (DeBERTa v3), bring your own model. From a sibling Kyoto checkout
+// (see eng/MODELS.md), fetch it and export AGENTGUARD_ONNX_MODEL_PATH / _TOKENIZER_PATH:
+//   cd ../kyoto && ./bootstrap-models.sh deberta && source ./models/env.sh && cd -
 //   dotnet run --project samples/OnnxGuardrails
 
 using AgentGuard.Core.Abstractions;

@@ -55,6 +55,8 @@ public class ReaskPipelineTests
         result.WasReasked.Should().BeTrue();
         result.ReaskAttemptsUsed.Should().Be(1);
         result.FinalText.Should().Be("good response");
+        // the adapters apply FinalText when WasModified is set
+        result.WasModified.Should().BeTrue();
         callCount.Should().Be(2); // first eval + re-eval after reask
     }
 
@@ -269,6 +271,42 @@ public class ReaskPipelineTests
 
         var act = () => pipeline.RunAsync(OutputCtx("bad"), cts.Token).AsTask();
         await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Fact]
+    public async Task ShouldReturnTheBlockUntouched_WhenMaxAttemptsIsZero()
+    {
+        var rule = new TestRule("strict", GuardrailPhase.Output, _ => ValueTask.FromResult(GuardrailResult.Blocked("off-topic")));
+        var chatClient = new Mock<IChatClient>();
+        var policy = new GuardrailPolicy("t", [rule],
+            reaskOptions: new ReaskOptions { MaxAttempts = 0 },
+            reaskChatClient: chatClient.Object);
+        var pipeline = new GuardrailPipeline(policy, NullLogger<GuardrailPipeline>.Instance);
+
+        var result = await pipeline.RunAsync(OutputCtx("bad output"));
+
+        result.IsBlocked.Should().BeTrue();
+        result.WasReasked.Should().BeFalse();
+        result.ReaskAttemptsUsed.Should().Be(0);
+        result.FinalText.Should().Be("bad output");
+        result.BlockingResult!.Reason.Should().Be("off-topic");
+        chatClient.Verify(c => c.GetResponseAsync(It.IsAny<IEnumerable<ChatMessage>>(), It.IsAny<ChatOptions>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public void ShouldRejectANegativeMaxAttempts_WhenSetOnTheOptions()
+    {
+        var act = () => new ReaskOptions { MaxAttempts = -1 };
+
+        act.Should().Throw<ArgumentOutOfRangeException>().Which.ParamName.Should().Be(nameof(ReaskOptions.MaxAttempts));
+    }
+
+    [Fact]
+    public void ShouldRejectANegativeMaxAttempts_WhenConfiguredThroughEnableReask()
+    {
+        var act = () => new GuardrailPolicyBuilder().EnableReask(Mock.Of<IChatClient>(), o => o.MaxAttempts = -1);
+
+        act.Should().Throw<ArgumentOutOfRangeException>();
     }
 
     private class TestRule(string name, GuardrailPhase phase, Func<GuardrailContext, ValueTask<GuardrailResult>> eval) : IGuardrailRule

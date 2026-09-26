@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Reflection;
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Guardrails;
 using AgentGuard.Core.Ledger;
@@ -281,6 +282,239 @@ public class HashChainLedgerTests
         }
     }
 
+    private static string TempLedgerPath() =>
+        Path.Combine(Path.GetTempPath(), $"agentguard-ledger-{Guid.NewGuid():N}.jsonl");
+
+    [Fact]
+    public void ShouldContinueThePersistedChain_WhenReopenedOnAnExistingFile()
+    {
+        var path = TempLedgerPath();
+        try
+        {
+            string lastPersistedHash;
+            using (var first = new HashChainLedger(path))
+            {
+                first.Append(Decision("passed", "a"));
+                first.Append(Decision("blocked", "b"));
+                lastPersistedHash = first.Entries[^1].Hash;
+            }
+
+            // a process restart: a new ledger over the same file
+            using (var second = new HashChainLedger(path))
+            {
+                second.Append(Decision("modified", "c"));
+                second.Append(Decision("passed", "d"));
+
+                second.Entries.Select(e => e.Seq).Should().Equal(2L, 3L);
+                second.Entries[0].PreviousHash.Should().Be(lastPersistedHash);
+                second.Verify().Should().BeTrue();
+            }
+
+            var loaded = HashChainLedger.Load(path);
+            loaded.Entries.Select(e => e.Seq).Should().Equal(0L, 1L, 2L, 3L);
+            loaded.Verify(out var brokenAtSeq).Should().BeTrue();
+            brokenAtSeq.Should().Be(-1);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void ShouldKeepOneChain_WhenResumedThroughLoadAndThenReopened()
+    {
+        var path = TempLedgerPath();
+        try
+        {
+            using (var ledger = new HashChainLedger(path))
+                ledger.Append(Decision("passed", "a"));
+
+            using (var resumed = HashChainLedger.Load(path, resumeWriting: true))
+                resumed.Append(Decision("passed", "b"));
+
+            using (var reopened = new HashChainLedger(path))
+                reopened.Append(Decision("passed", "c"));
+
+            var loaded = HashChainLedger.Load(path);
+            loaded.Entries.Select(e => e.Seq).Should().Equal(0L, 1L, 2L);
+            loaded.Verify().Should().BeTrue();
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void ShouldThrowInvalidDataException_WhenTheLastLineIsAnIncompleteWrite()
+    {
+        var path = TempLedgerPath();
+        try
+        {
+            using (var ledger = new HashChainLedger(path))
+                ledger.Append(Decision());
+            File.AppendAllText(path, "{\"seq\":1,\"previousHash\":\"ab");
+            var before = File.ReadAllText(path);
+
+            var act = () => new HashChainLedger(path);
+
+            act.Should().Throw<InvalidDataException>().WithMessage($"*{path}*");
+            File.ReadAllText(path).Should().Be(before, "a ledger that cannot continue the chain must not write to the file");
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void ShouldThrowInvalidDataException_WhenTheLastEntryNoLongerMatchesItsHash()
+    {
+        var path = TempLedgerPath();
+        try
+        {
+            using (var ledger = new HashChainLedger(path))
+            {
+                ledger.Append(Decision("passed"));
+                ledger.Append(Decision("passed"));
+            }
+
+            var lines = File.ReadAllLines(path);
+            lines[^1] = lines[^1].Replace("\"outcome\":\"passed\"", "\"outcome\":\"blocked\"", StringComparison.Ordinal);
+            File.WriteAllLines(path, lines);
+
+            var act = () => new HashChainLedger(path);
+
+            act.Should().Throw<InvalidDataException>().WithMessage($"*{path}*");
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("\n\r\n  \n")]
+    public void ShouldStartAtGenesis_WhenTheFileHoldsNoEntries(string content)
+    {
+        var path = TempLedgerPath();
+        try
+        {
+            File.WriteAllText(path, content);
+
+            using (var ledger = new HashChainLedger(path))
+            {
+                ledger.Append(Decision());
+
+                ledger.Entries[0].Seq.Should().Be(0);
+                ledger.Entries[0].PreviousHash.Should().BeEmpty();
+            }
+
+            var loaded = HashChainLedger.Load(path);
+            loaded.Count.Should().Be(1);
+            loaded.Verify().Should().BeTrue();
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void ShouldKeepEntriesOnSeparateLines_WhenTheLastLineHasNoLineBreak()
+    {
+        var path = TempLedgerPath();
+        try
+        {
+            using (var first = new HashChainLedger(path))
+                first.Append(Decision("passed", "a"));
+            File.WriteAllText(path, File.ReadAllText(path).TrimEnd());
+
+            using (var second = new HashChainLedger(path))
+                second.Append(Decision("passed", "b"));
+
+            var loaded = HashChainLedger.Load(path);
+            loaded.Entries.Select(e => e.Seq).Should().Equal(0L, 1L);
+            loaded.Verify().Should().BeTrue();
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void ShouldCheckThatTheEntriesLinkToThePersistedTail_WhenVerifyingAContinuedChain()
+    {
+        var path = TempLedgerPath();
+        try
+        {
+            using (var first = new HashChainLedger(path))
+                first.Append(Decision());
+
+            using var second = new HashChainLedger(path);
+            second.Append(Decision());
+
+            // the entry before the window is now a different one than the window's first entry links to
+            typeof(HashChainLedger)
+                .GetField("_lastTrimmedHash", BindingFlags.NonPublic | BindingFlags.Instance)!
+                .SetValue(second, HashChainLedger.HashText("some other chain"));
+
+            second.Verify(out var brokenAtSeq).Should().BeFalse();
+            brokenAtSeq.Should().Be(1);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void ShouldThrowInvalidDataException_WhenALoadedLineIsNotAnEntry()
+    {
+        var path = TempLedgerPath();
+        try
+        {
+            using (var ledger = new HashChainLedger(path))
+                ledger.Append(Decision());
+            File.AppendAllText(path, "not a ledger entry\n");
+
+            var act = () => HashChainLedger.Load(path);
+
+            act.Should().Throw<InvalidDataException>().WithMessage($"*{path}*line 2*");
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void ShouldProduceTheKnownHash_WhenHashingAFixedDecision()
+    {
+        // persisted chains are verified by recomputing this hash, so its canonical form must never drift
+        var ledger = new HashChainLedger();
+        ledger.Append(new GuardrailDecision
+        {
+            PolicyName = "golden",
+            Phase = GuardrailPhase.Output,
+            AgentName = "agent",
+            Outcome = "blocked",
+            BlockingRuleName = "rule-a",
+            Severity = GuardrailSeverity.High,
+            BlockReason = "reason with | delimiter",
+            RuleOutcomes = [new RuleOutcome("rule-a", "blocked")],
+            InputHash = HashChainLedger.HashText("in"),
+            OutputHash = HashChainLedger.HashText("out"),
+            Input = "raw in",
+            Timestamp = new DateTimeOffset(2026, 1, 2, 3, 4, 5, TimeSpan.Zero)
+        });
+
+        ledger.Entries[0].Hash.Should().Be("610bdfba17e4e3ddfb04a405607e23ffbd499253b4455b8f525530b50b6ca82c");
+    }
+
     [Fact]
     public void ShouldNotWriteBack_WhenLoadedWithoutResume()
     {
@@ -450,8 +684,7 @@ public class LedgerPipelineTests
         ledger.Verify().Should().BeTrue();
     }
 
-    // AG-32: the in-memory chain had no cap and the JSONL mirror opened, wrote and closed the file
-    // once per entry, on the guarded request's own thread.
+    // the in-memory chain is capped, and the JSONL mirror keeps one handle open
 
     private static GuardrailDecision Decision(string tag) => new()
     {

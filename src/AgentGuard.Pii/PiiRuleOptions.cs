@@ -7,10 +7,9 @@ namespace AgentGuard.Pii;
 /// inside a pipeline rather than how the detection engine behaves.
 /// </summary>
 /// <remarks>
-/// This deliberately does not live on the engine's <c>PiiOptions</c>. <c>RedactOutput</c> used to be
-/// read from there, which made a guardrail concept (which <see cref="GuardrailPhase"/> the rule
-/// registers for) part of an engine that has no notion of phases at all; the engine dropped the
-/// property in 0.3.0. Settings that genuinely belong to detection or anonymization - including
+/// This deliberately does not live on the engine's <c>PiiOptions</c>: which
+/// <see cref="GuardrailPhase"/> the rule registers for is a guardrail concept, and the engine has no
+/// notion of phases. Settings that genuinely belong to detection or anonymization - including
 /// <c>MergeEntitiesWithSpaces</c> - stay on <c>PiiOptions</c> where the engine owns them.
 /// </remarks>
 public sealed class PiiRuleOptions

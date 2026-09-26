@@ -1,3 +1,4 @@
+using System.Globalization;
 using AgentGuard.Azure.Pii;
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Builders;
@@ -6,6 +7,8 @@ using AgentGuard.RemotePii;
 using AgentGuard.Core.Guardrails;
 using AgentGuard.Core.Rules.ContentSafety;
 using AgentGuard.Hosting;
+using AgentGuard.Hosting.Configuration;
+using AgentGuard.Onnx;
 using FluentAssertions;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
@@ -248,8 +251,8 @@ public class ConfigurationBindingTests
         });
         piiResult.WasModified.Should().BeTrue();
 
-        // AG-26: with no Replacement configured, config-driven PII now uses the same default as
-        // the code-driven path (<ENTITY_TYPE> tags) instead of being forced to "[REDACTED]".
+        // with no Replacement configured, config-driven PII uses the same default as the code-driven
+        // path (<ENTITY_TYPE> tags)
         piiResult.FinalText.Should().Contain("<EMAIL_ADDRESS>");
     }
 
@@ -559,8 +562,8 @@ public class ConfigurationBindingTests
         act.Should().Throw<InvalidOperationException>().Which.ToString().Should().Contain("PolicyDescription");
     }
 
-    // AG-05: AgentGuard.Hosting no longer references the Azure or out-of-process PII packages;
-    // those rule types arrive through a registered IGuardrailRuleFactory instead.
+    // AgentGuard.Hosting doesn't reference the Azure or out-of-process PII packages; those rule
+    // types arrive through a registered IGuardrailRuleFactory
 
     [Theory]
     [InlineData("RemotePii")]
@@ -623,6 +626,234 @@ public class ConfigurationBindingTests
             .GetRequiredService<IAgentGuardFactory>().GetDefaultPolicy();
 
         policy.Rules.Should().ContainSingle().Which.Name.Should().Be("my-company-rule");
+    }
+
+    private static ServiceProvider BuildProvider(Dictionary<string, string?> values)
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddAgentGuard(BuildConfig(values));
+        return services.BuildServiceProvider();
+    }
+
+    [Theory]
+    [InlineData("DefenderPromptInjection", "NaN")]
+    [InlineData("DefenderPromptInjection", "1.5")]
+    [InlineData("OnnxPromptInjection", "-0.1")]
+    [InlineData("OnnxPromptInjection", "Infinity")]
+    public void ShouldRejectTheThreshold_WhenItIsOutsideZeroToOne(string type, string threshold)
+    {
+        var provider = BuildProvider(new()
+        {
+            ["DefaultPolicy:Rules:0:Type"] = type,
+            ["DefaultPolicy:Rules:0:Threshold"] = threshold,
+        });
+
+        var act = () => provider.GetRequiredService<IAgentGuardFactory>();
+
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage($"{type}: Threshold must be a number from 0.0 to 1.0, but was {threshold}.");
+    }
+
+    [Fact]
+    public void ShouldRejectTheThreshold_WhenADebertaModelIsGivenNaN()
+    {
+        var provider = BuildProvider(new()
+        {
+            ["DefaultPolicy:Rules:0:Type"] = "DebertaPromptInjection",
+            ["DefaultPolicy:Rules:0:ModelPath"] = "model.onnx",
+            ["DefaultPolicy:Rules:0:TokenizerPath"] = "spm.model",
+            ["DefaultPolicy:Rules:0:Threshold"] = "NaN",
+        });
+
+        var act = () => provider.GetRequiredService<IAgentGuardFactory>();
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("DebertaPromptInjection: Threshold*NaN*");
+    }
+
+    [Fact]
+    public async Task ShouldBindWindowSettings_WhenConfiguredForTheDefenderModel()
+    {
+        var provider = BuildProvider(new()
+        {
+            ["DefaultPolicy:Rules:0:Type"] = "DefenderPromptInjection",
+            ["DefaultPolicy:Rules:0:WindowSize"] = "8",
+            ["DefaultPolicy:Rules:0:WindowOverlap"] = "2",
+            ["DefaultPolicy:Rules:0:MaxWindows"] = "1",
+        });
+        var pipeline = provider.GetRequiredService<GuardrailPipeline>();
+
+        // more than one 8-token window of text, which the one-window limit turns away before the model runs
+        var result = await pipeline.RunAsync(new GuardrailContext
+        {
+            Text = string.Join(' ', Enumerable.Repeat("the quarterly report is ready for review", 5)),
+            Phase = GuardrailPhase.Input
+        });
+
+        result.IsBlocked.Should().BeTrue();
+        result.BlockingResult!.Metadata!["inputTooLong"].Should().Be(true);
+        result.BlockingResult.Metadata["maxWindows"].Should().Be(1);
+    }
+
+    [Fact]
+    public void ShouldMapWindowSettings_WhenBuildingDefenderOptions()
+    {
+        var options = ConfigurationMapper.CreateDefenderOptions(new RuleConfiguration
+        {
+            Type = "OnnxPromptInjection",
+            Threshold = 0.9f,
+            WindowSize = 128,
+            WindowOverlap = 16,
+            MaxWindows = 0,
+        });
+
+        options.MainThreshold.Should().Be(0.9f);
+        options.WindowSize.Should().Be(128);
+        options.WindowOverlap.Should().Be(16);
+        options.MaxWindows.Should().Be(0);
+    }
+
+    [Fact]
+    public void ShouldMapWindowSettings_WhenBuildingDebertaOptions()
+    {
+        var options = ConfigurationMapper.CreateDebertaOptions(new RuleConfiguration
+        {
+            Type = "DebertaPromptInjection",
+            ModelPath = "model.onnx",
+            TokenizerPath = "spm.model",
+            Threshold = 0.8f,
+            WindowSize = 256,
+            WindowOverlap = 64,
+            MaxWindows = 8,
+        });
+
+        options.ModelPath.Should().Be("model.onnx");
+        options.TokenizerPath.Should().Be("spm.model");
+        options.Threshold.Should().Be(0.8f);
+        options.WindowSize.Should().Be(256);
+        options.WindowOverlap.Should().Be(64);
+        options.MaxWindows.Should().Be(8);
+    }
+
+    [Fact]
+    public void ShouldKeepTheModelDefaults_WhenWindowSettingsAreNotConfigured()
+    {
+        ConfigurationMapper.CreateDefenderOptions(new RuleConfiguration { Type = "DefenderPromptInjection" })
+            .Should().BeEquivalentTo(new DefenderPromptInjectionOptions());
+
+        ConfigurationMapper.CreateDebertaOptions(new RuleConfiguration
+            {
+                Type = "DebertaPromptInjection",
+                ModelPath = "model.onnx",
+                TokenizerPath = "spm.model",
+            })
+            .Should().BeEquivalentTo(new OnnxPromptInjectionOptions { ModelPath = "model.onnx", TokenizerPath = "spm.model" });
+    }
+
+    [Theory]
+    [InlineData("WindowSize", "0", "DefenderPromptInjection: WindowSize must be at least 1, but was 0.")]
+    [InlineData("WindowOverlap", "-1", "DefenderPromptInjection: WindowOverlap must be at least 0, but was -1.")]
+    [InlineData("MaxWindows", "-1", "DefenderPromptInjection: MaxWindows must be at least 0, but was -1.")]
+    [InlineData("WindowOverlap", "64", "DefenderPromptInjection: WindowOverlap (64) must be smaller than WindowSize (64).")]
+    public void ShouldRejectWindowSettings_WhenOutOfRange(string setting, string value, string expectedMessage)
+    {
+        var provider = BuildProvider(new()
+        {
+            ["DefaultPolicy:Rules:0:Type"] = "DefenderPromptInjection",
+            [$"DefaultPolicy:Rules:0:{setting}"] = value,
+        });
+
+        var act = () => provider.GetRequiredService<IAgentGuardFactory>();
+
+        act.Should().Throw<InvalidOperationException>().WithMessage(expectedMessage);
+    }
+
+    [Fact]
+    public void ShouldValidateWindowSettings_WhenOnnxPromptInjectionSelectsABringYourOwnModel()
+    {
+        var provider = BuildProvider(new()
+        {
+            ["DefaultPolicy:Rules:0:Type"] = "OnnxPromptInjection",
+            ["DefaultPolicy:Rules:0:ModelPath"] = "model.onnx",
+            ["DefaultPolicy:Rules:0:TokenizerPath"] = "spm.model",
+            ["DefaultPolicy:Rules:0:WindowSize"] = "100",
+            ["DefaultPolicy:Rules:0:WindowOverlap"] = "100",
+        });
+
+        var act = () => provider.GetRequiredService<IAgentGuardFactory>();
+
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("OnnxPromptInjection: WindowOverlap (100) must be smaller than WindowSize (100).");
+    }
+
+    [Fact]
+    public void ShouldRejectMaxTokens_WhenNotPositive()
+    {
+        var provider = BuildProvider(new()
+        {
+            ["DefaultPolicy:Rules:0:Type"] = "TokenLimit",
+            ["DefaultPolicy:Rules:0:MaxTokens"] = "0",
+        });
+
+        var act = () => provider.GetRequiredService<IAgentGuardFactory>();
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("TokenLimit: MaxTokens must be at least 1, but was 0.");
+    }
+
+    [Theory]
+    [InlineData("PromptInjection", "Sensitivity", "7")]
+    [InlineData("TokenLimit", "Phase", "4")]
+    [InlineData("ToolCallGuardrail", "Categories", "SqlInjection, 1024")]
+    public void ShouldRejectAnEnumSetting_WhenItIsANumber(string type, string setting, string value)
+    {
+        var provider = BuildProvider(new()
+        {
+            ["DefaultPolicy:Rules:0:Type"] = type,
+            [$"DefaultPolicy:Rules:0:{setting}"] = value,
+        });
+
+        var act = () => provider.GetRequiredService<IAgentGuardFactory>();
+
+        act.Should().Throw<InvalidOperationException>().WithMessage($"'{value}' is not a valid *");
+    }
+
+    [Fact]
+    public void ShouldAcceptFlagNames_WhenCombinedWithCommas()
+    {
+        var provider = BuildProvider(new()
+        {
+            ["DefaultPolicy:Rules:0:Type"] = "ToolCallGuardrail",
+            ["DefaultPolicy:Rules:0:Categories"] = "SqlInjection, Ssrf",
+        });
+
+        provider.GetRequiredService<IAgentGuardFactory>().GetDefaultPolicy()
+            .Rules.Should().ContainSingle().Which.Name.Should().Be("tool-call-guardrail");
+    }
+
+    [Fact]
+    public void ShouldParseRuleTypesAndEnumNames_WhenTheCurrentCultureIsTurkish()
+    {
+        // under tr-TR a culture-sensitive comparison does not treat "i" and "I" as the same letter
+        var previous = CultureInfo.CurrentCulture;
+        try
+        {
+            CultureInfo.CurrentCulture = new CultureInfo("tr-TR");
+            var provider = BuildProvider(new()
+            {
+                ["DefaultPolicy:Rules:0:Type"] = "INPUTNORMALIZATION",
+                ["DefaultPolicy:Rules:1:Type"] = "PromptInjection",
+                ["DefaultPolicy:Rules:1:Sensitivity"] = "HIGH",
+                ["DefaultPolicy:Rules:2:Type"] = "PIIREDACTION",
+                ["DefaultPolicy:Rules:3:Type"] = "ToolCallGuardrail",
+                ["DefaultPolicy:Rules:3:Categories"] = "SQLINJECTION, PATHTRAVERSAL",
+            });
+
+            provider.GetRequiredService<IAgentGuardFactory>().GetDefaultPolicy().Rules.Should().HaveCount(4);
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = previous;
+        }
     }
 
     private sealed class CustomRuleFactory : IGuardrailRuleFactory

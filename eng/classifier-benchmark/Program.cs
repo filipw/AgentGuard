@@ -9,6 +9,9 @@
 // Datasets are fetched via the HF datasets-server JSON rows API and cached locally. The LLM
 // column is the slow one (one request per row) - cap it with --max-rows for a quick read.
 //
+// A call that times out (--llm-timeout), throws, or returns a rule error is counted in the errors
+// column and as not blocked (the rules fail open), and the run carries on with the next row.
+//
 // Usage:
 //   dotnet run -c Release
 //   dotnet run -c Release -- --max-rows 120 --concurrency 4
@@ -33,8 +36,10 @@ var llmEndpoint = Environment.GetEnvironmentVariable("OPENAI_BASE_URL") ?? "http
 var llmModel = Environment.GetEnvironmentVariable("OPENAI_MODEL") ?? "google/gemma-4-26b-a4b-qat";
 var llmKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY") ?? "unused";
 // reasoning models spend the token budget thinking before answering, so give them headroom.
-var llmMaxTokens = int.TryParse(Environment.GetEnvironmentVariable("OPENAI_MAX_TOKENS"), out var mt) ? mt : 4000;
-var llmTimeoutSec = 240;  // per-call cap so one runaway reasoning request can't wedge the run
+var llmMaxTokens = int.TryParse(Environment.GetEnvironmentVariable("OPENAI_MAX_TOKENS"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var mt)
+    ? mt
+    : 4000;
+var llmTimeoutSec = 240;  // per-call cap: a call that runs past it counts as an error for its row
 
 for (var i = 0; i < args.Length; i++)
 {
@@ -119,7 +124,7 @@ static async Task ReportLabeled(string display, List<(string text, int label)> r
     var pos = rows.Count(r => r.label == 1);
     var neg = rows.Count - pos;
     Console.WriteLine($"\n=== {display}: {rows.Count} rows ({pos} injection, {neg} benign) ===");
-    Console.WriteLine($"  {"classifier",-28} {"prec",6} {"recall",7} {"F1",6} {"FPR",7}");
+    Console.WriteLine($"  {"classifier",-28} {"prec",6} {"recall",7} {"F1",6} {"FPR",7} {"errors",6}");
 
     var texts = rows.Select(r => r.text).ToList();
     var labels = rows.Select(r => r.label).ToArray();
@@ -130,17 +135,20 @@ static async Task ReportLabeled(string display, List<(string text, int label)> r
         // to stay gentle on a local model; the instant local rules can fan out freely.
         var dop = timeoutSec > 0 ? concurrency : Math.Min(8, Environment.ProcessorCount);
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        var blocked = await RunAll(rule, texts, dop, timeoutSec, name);
+        var verdicts = await RunAll(rule, texts, dop, timeoutSec, name);
         sw.Stop();
 
         int tp = 0, fp = 0, fn = 0, tn = 0;
         for (var i = 0; i < labels.Length; i++)
         {
-            if (blocked[i] && labels[i] == 1) tp++;
-            else if (blocked[i] && labels[i] == 0) fp++;
-            else if (!blocked[i] && labels[i] == 1) fn++;
+            // an errored row counts as not blocked, the outcome of a rule that fails open
+            var blocked = verdicts[i] == Verdict.Blocked;
+            if (blocked && labels[i] == 1) tp++;
+            else if (blocked && labels[i] == 0) fp++;
+            else if (!blocked && labels[i] == 1) fn++;
             else tn++;
         }
+        var errors = verdicts.Count(v => v == Verdict.Error);
         var prec = tp + fp == 0 ? 0 : (double)tp / (tp + fp);
         var rec = tp + fn == 0 ? 0 : (double)tp / (tp + fn);
         var f1 = prec + rec == 0 ? 0 : 2 * prec * rec / (prec + rec);
@@ -148,27 +156,21 @@ static async Task ReportLabeled(string display, List<(string text, int label)> r
         var precCell = pos == 0 ? "  n/a" : $"{prec,6:P0}";
         var recCell = pos == 0 ? "    n/a" : $"{rec,7:P0}";
         var f1Cell = pos == 0 ? "   n/a" : $"{f1,6:P0}";
-        Console.WriteLine($"  {name,-28} {precCell} {recCell} {f1Cell} {fpr,7:P1}  ({sw.Elapsed.TotalSeconds:F0}s)");
+        Console.WriteLine($"  {name,-28} {precCell} {recCell} {f1Cell} {fpr,7:P1} {errors,6}  ({sw.Elapsed.TotalSeconds:F0}s)");
     }
 }
 
-static async Task<bool[]> RunAll(IGuardrailRule rule, IReadOnlyList<string> texts, int concurrency,
+static async Task<Verdict[]> RunAll(IGuardrailRule rule, IReadOnlyList<string> texts, int concurrency,
     int timeoutSec, string name)
 {
-    var results = new bool[texts.Count];
+    var results = new Verdict[texts.Count];
     var done = 0;
     var showProgress = timeoutSec > 0 && texts.Count > 20; // only the slow LLM column
     await Parallel.ForEachAsync(Enumerable.Range(0, texts.Count),
         new ParallelOptions { MaxDegreeOfParallelism = concurrency },
         async (i, ct) =>
         {
-            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            if (timeoutSec > 0) cts.CancelAfter(TimeSpan.FromSeconds(timeoutSec));
-            // the rule fails open on timeout/error (returns not-blocked), so a runaway request
-            // can't wedge the run - it just counts as a miss, which is the production behaviour.
-            var r = await rule.EvaluateAsync(
-                new GuardrailContext { Text = texts[i], Phase = GuardrailPhase.Input }, cts.Token);
-            results[i] = r.IsBlocked;
+            results[i] = await Evaluate(rule, texts[i], timeoutSec, ct);
             if (showProgress)
             {
                 var n = Interlocked.Increment(ref done);
@@ -178,6 +180,28 @@ static async Task<bool[]> RunAll(IGuardrailRule rule, IReadOnlyList<string> text
         });
     if (showProgress) Console.Error.WriteLine();
     return results;
+}
+
+// a call that runs past the per-call timeout is canceled, and the rule lets that cancellation
+// propagate; it, any other exception, and a rule's own error result all make the row an error
+// instead of ending the run
+static async Task<Verdict> Evaluate(IGuardrailRule rule, string text, int timeoutSec, CancellationToken runToken)
+{
+    using var cts = CancellationTokenSource.CreateLinkedTokenSource(runToken);
+    if (timeoutSec > 0) cts.CancelAfter(TimeSpan.FromSeconds(timeoutSec));
+    try
+    {
+        var result = await rule.EvaluateAsync(new GuardrailContext { Text = text, Phase = GuardrailPhase.Input }, cts.Token);
+        return result.IsError ? Verdict.Error : result.IsBlocked ? Verdict.Blocked : Verdict.Passed;
+    }
+    catch (OperationCanceledException) when (!runToken.IsCancellationRequested)
+    {
+        return Verdict.Error;
+    }
+    catch (Exception e) when (e is not OperationCanceledException)
+    {
+        return Verdict.Error;
+    }
 }
 
 // ----- data loading (HF datasets-server JSON rows API, cached) -----
@@ -244,5 +268,7 @@ static IReadOnlyList<string> BenignCorpus() =>
 
 internal sealed record DatasetSpec(
     string Display, string HfName, string Split, string TextCol, string LabelCol, Func<string, bool> IsPositive);
+
+internal enum Verdict { Passed, Blocked, Error }
 
 internal sealed class RowDto { public string text { get; set; } = ""; public int label { get; set; } }

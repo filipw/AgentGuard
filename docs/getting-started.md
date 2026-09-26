@@ -3,12 +3,15 @@
 ## Installation
 
 ```bash
-dotnet add package AgentGuard --prerelease                 # core + Defender ONNX model + offline classifiers
+dotnet add package AgentGuard --prerelease                 # core + offline PII + ONNX classifiers (bundled Defender model)
 dotnet add package AgentGuard.AgentFramework --prerelease  # optional: MAF middleware + workflow guardrails
-dotnet add package AgentGuard.Azure --prerelease           # optional: Azure AI Content Safety
+dotnet add package AgentGuard.Azure --prerelease           # optional: Azure AI Content Safety + Azure AI Language PII
 dotnet add package AgentGuard.Hosting --prerelease         # optional: DI + config binding
 dotnet add package AgentGuard.RemoteClassifier --prerelease # optional: remote ML classifier via HTTP
+dotnet add package AgentGuard.RemotePii --prerelease       # optional: out-of-process PII detection via HTTP
 ```
+
+The Defender prompt-injection model ships in the Kyoto package that `AgentGuard.Onnx` (and so `AgentGuard`) depends on - no download needed. The other ONNX models are optional downloads (see [`eng/MODELS.md`](../eng/MODELS.md)).
 
 ## Integration Tiers
 
@@ -65,7 +68,11 @@ var guardedClient = chatClient.UseAgentGuard(g => g
 var response = await guardedClient.GetResponseAsync(conversationHistory);
 ```
 
-Streaming is also supported - input guardrails run before the stream starts, output guardrails evaluate the buffered full response before chunks are forwarded to the caller.
+Every user message in the request is guarded, not only the last one. The newest is always evaluated; an earlier one reuses the verdict already reached for identical text (from a bounded cache) or, on a miss, is judged against the conversation as it stood. An earlier user message the policy blocks is replaced with `ChatMessageGuard.RemovedMessagePlaceholder`, and only a block of the newest user message blocks the call. Output guardrails evaluate each assistant message of the response (streamed responses too), and its tool calls and tool results together with the final text. The reasoning of each assistant message goes through the output rules separately: a rewrite replaces it and a block removes it, without blocking the answer. Rewrites keep images, attachments, tool calls, encrypted reasoning and metadata.
+
+Streaming is also supported - input guardrails run before the stream starts. By default output guardrails evaluate the buffered full response before chunks are forwarded to the caller; a policy with `UseProgressiveStreaming()` streams answer tokens immediately and emits retraction/replacement events instead, holding tool calls, reasoning and other non-text content back until the final check.
+
+To have tool-call guardrails vet each model turn before its tool calls run, place the decorator inside the `FunctionInvokingChatClient` (add it after `UseFunctionInvocation()` on a `ChatClientBuilder` - see [Tool Call Guardrails](../README.md#tool-call-guardrails)). Wrapped around it, the decorator sees tool calls only after they have run.
 
 ### 3. Microsoft Agent Framework Middleware
 
@@ -88,7 +95,11 @@ var guardedAgent = agent
 var response = await guardedAgent.RunAsync(messages, session, options);
 ```
 
-Supports both `RunAsync` and `RunStreamingAsync`, including progressive streaming with retraction events.
+Supports both `RunAsync` and `RunStreamingAsync`, including progressive streaming with retraction events. Messages are guarded the same way as in the `IChatClient` decorator: every user message of the request, and each assistant message of the response.
+
+`ChatClientAgent` saves its response to the session's chat history before this middleware sees it. With the default in-memory history provider, an output block or rewrite is applied to the stored response too, so the next turn doesn't replay what was blocked or redacted. Other history providers and service-side conversations keep the raw response; if that matters, also add `UseAgentGuard()` to the agent's `IChatClient`, which guards the response before the agent saves it.
+
+When the agent invokes functions through a `FunctionInvokingChatClient` (`ChatClientAgent` has one), `GuardToolCalls()` checks each call's arguments before the tool runs - a blocked call is never executed and the model receives `ToolResultMiddlewareOptions.BlockedToolCallPlaceholder` instead - and `GuardToolResults()` checks each tool result before the model sees it.
 
 ## How It Works
 
@@ -96,32 +107,40 @@ Supports both `RunAsync` and `RunStreamingAsync`, including progressive streamin
 2. **Agent / LLM runs** - processes the (potentially modified) input
 3. **Output guardrails** - content safety, PII in responses, output validation
 
-If any rule blocks, the agent never runs. The user gets a configurable rejection message.
+If an input rule blocks, the agent never runs; if an output rule blocks, the response is replaced. Either way the user gets a configurable rejection message (`OnViolation(...)`).
 
 ## Available Rules
 
 | Rule | Phase | Order | Package |
 |------|-------|-------|---------|
 | `NormalizeInput()` | Input | 5 | Core |
+| `GuardRetrieval()` | Input | 8 | Core |
 | `BlockPromptInjection()` | Input | 10 | Core |
 | `BlockPromptInjectionWithDefender()` | Input | 11 | Onnx |
-| `BlockPromptInjectionWithDeberta()` | Input | 12 | Onnx |
+| `BlockPromptInjectionWithDeberta()` | Input | 12 | Onnx (optional download) |
+| `BlockPromptInjectionWithPIGuard()` | Input | 12 | Onnx (optional download) |
 | `BlockPromptInjectionWithRemoteClassifier()` | Input | 13 | RemoteClassifier |
 | `BlockPromptInjectionWithAzurePromptShield()` | Input | 14 | Azure |
 | `BlockPromptInjectionWithLlm()` | Input | 15 | Core |
-| `DetectSecrets()` | Both | 22 | Core |
 | `RedactPii()` | Both | 20 | Pii |
-| `RedactPiiWithNer()` | Both | 20 | Onnx (GLiNER, optional download) |
+| `RedactPiiWithNer()` | Both | 20 | Onnx (the PII rule plus GLiNER NER, optional download) |
+| `RedactPiiWithRemote()` | Both | 20 | RemotePii (the PII rule plus an out-of-process detector) |
+| `RedactPiiWithAzure()` | Both | 20 | Azure (the PII rule plus Azure AI Language) |
+| `DetectSecrets()` | Both | 22 | Core |
 | `DetectPIIWithLlm()` | Both | 25 | Core |
 | `EnforceTopicBoundaryWithLlm()` | Input | 35 | Core |
 | `LimitInputTokens()` / `LimitOutputTokens()` | Input/Output | 40 | Core |
 | `GuardToolCalls()` | Output | 45 | Core |
 | `GuardToolResults()` | Output | 47 | Core |
 | `BlockHarmfulContent()` | Both | 50 | Core + Azure |
+| `BlockUnsafeContentWithOpir()` | Input | 50 | Onnx (optional download) |
 | `EnforceOutputPolicy()` | Output | 55 | Core |
 | `CheckGroundedness()` | Output | 65 | Core |
 | `CheckCopyright()` | Output | 75 | Core |
+| `BlockProtectedMaterialWithAzure()` | Output | 76 | Azure |
 | `ValidateInput()` / `ValidateOutput()` | Input/Output | 100 | Core |
+
+`RedactPii()`, `RedactPiiWithNer()`, `RedactPiiWithRemote()` and `RedactPiiWithAzure()` each add one order-20 PII rule. The last three run the same offline recognizers as `RedactPii()` plus their own detector, so use one of them in place of `RedactPii()` rather than alongside it.
 
 ## Workflow Guardrails
 
@@ -146,8 +165,8 @@ catch (GuardrailViolationException ex)
 
 ## Re-ask / Self-healing (Experimental)
 
-> **Note:** This feature is experimental. It currently supports non-streaming pipelines only.
-> Streaming re-ask support is planned for a future release.
+> **Note:** This feature is experimental. Re-ask runs in `GuardrailPipeline`, which also serves the
+> default buffer-then-release streaming mode; progressive streaming does not re-ask.
 
 When output guardrails block a response, you can opt in to re-ask: the pipeline re-prompts the LLM with the failure reason and re-evaluates all output rules on the new response.
 
@@ -169,6 +188,8 @@ var result = await pipeline.RunAsync(outputContext);
 if (result.WasReasked)
     Console.WriteLine($"Self-healed after {result.ReaskAttemptsUsed} attempt(s)");
 ```
+
+A successful re-ask returns an unblocked result whose `FinalText` is the new answer, and `WasModified` is true whenever that differs from the text that went in. The `IChatClient` decorator, the MAF middleware and workflow executors send that answer in place of the blocked response. When every attempt is blocked, the result stays blocked (`WasReasked` is still true).
 
 Re-ask only triggers for output-phase blocks - input guardrails always short-circuit immediately.
 
@@ -201,3 +222,4 @@ Every pipeline run, rule evaluation, re-ask attempt, and streaming retraction is
 - [Configuration](configuration.md) - DI, named policies
 - [Observability](observability.md) - spans, metrics, and sensitive data
 - [Azure Integration](azure-integration.md) - production content safety
+- [Remote PII Detection](remote-pii.md) - out-of-process and Azure AI Language PII detectors

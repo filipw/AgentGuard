@@ -44,8 +44,10 @@ public sealed record ProtectedMaterialResult
     public IReadOnlyList<CodeCitation> CodeCitations { get; init; } = [];
 
     /// <summary>
-    /// True when the API call failed (error, timeout, retry exhaustion).
-    /// The result is a fail-open default, not an actual classification.
+    /// True when an API call failed (error, timeout, retry exhaustion) and none of the calls that did
+    /// complete detected protected material. The result is a fail-open default, not an actual
+    /// classification. Text below the service's minimum length is not an error: it is not sent, and
+    /// comes back as not detected.
     /// </summary>
     public bool IsError { get; init; }
 }
@@ -57,12 +59,23 @@ public sealed record ProtectedMaterialResult
 ///   <item><c>/contentsafety/text:detectProtectedMaterialForCode</c> - detects code from GitHub repositories with license info</item>
 /// </list>
 /// No C# SDK support exists for these APIs - REST only.
+/// Both APIs accept 110 to 10K characters per request: shorter input is not sent, longer input is
+/// analyzed in overlapping windows.
 /// Fails open on errors.
 /// </summary>
 public sealed partial class AzureProtectedMaterialClient : IDisposable
 {
     private const string TextApiVersion = "2024-09-01";
     private const string CodeApiVersion = "2024-09-15-preview";
+
+    // the documented per-request limits of both detection APIs
+    private const int MaxTextLength = 10_000;
+    private const int MinTextLength = 110;
+
+    // windows of oversized input overlap by this much, comfortably more than the spans the service
+    // flags (lyrics over 11 words, news or web excerpts over 200 characters), so a match straddling a
+    // window boundary is still seen whole by one request
+    private const int ChunkOverlap = 1_000;
 
     private readonly HttpClient _httpClient;
     private readonly bool _ownsHttpClient;
@@ -117,29 +130,50 @@ public sealed partial class AzureProtectedMaterialClient : IDisposable
     /// Analyzes text for protected material (song lyrics, articles, recipes, known web content).
     /// Meant to be run on LLM completions, not user prompts.
     /// </summary>
+    /// <remarks>
+    /// Text shorter than the service's 110-character minimum is not sent and comes back as not
+    /// detected - too short to match protected material, and not an error. Text over the 10K-character
+    /// limit is analyzed in overlapping windows, one request at a time, until one of them reports a
+    /// match. When a request fails the remaining ones are skipped and the result is an error.
+    /// Cancellation of <paramref name="cancellationToken"/> is never a failure: it throws
+    /// <see cref="OperationCanceledException"/>, whatever exception the request that was under way ends with.
+    /// </remarks>
     public async ValueTask<ProtectedMaterialResult> AnalyzeTextAsync(
         string text, CancellationToken cancellationToken = default)
     {
-        try
+        var windows = Windows(text, ProtectedMaterialType.Text);
+        var url = $"/contentsafety/text:detectProtectedMaterial?api-version={TextApiVersion}";
+
+        foreach (var window in windows)
         {
-            var request = new TextRequest { Text = text };
-            var url = $"/contentsafety/text:detectProtectedMaterial?api-version={TextApiVersion}";
-            using var response = await SendWithRetryAsync(url, request, cancellationToken);
-            response.EnsureSuccessStatusCode();
+            cancellationToken.ThrowIfCancellationRequested();
 
-            var result = await response.Content.ReadFromJsonAsync<ProtectedMaterialResponse>(JsonOptions, cancellationToken);
-
-            return new ProtectedMaterialResult
+            try
             {
-                Detected = result?.ProtectedMaterialAnalysis?.Detected ?? false,
-                MaterialType = ProtectedMaterialType.Text
-            };
+                var result = await PostAsync(url, new TextRequest { Text = window }, cancellationToken);
+
+                // a match is the whole answer; the remaining windows cannot add to it
+                if (result?.ProtectedMaterialAnalysis?.Detected == true)
+                    return new ProtectedMaterialResult { Detected = true, MaterialType = ProtectedMaterialType.Text };
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // the caller gave up; that is not an analysis failure and must not become a fail-open pass
+                throw;
+            }
+            catch (Exception ex) when (cancellationToken.IsCancellationRequested)
+            {
+                // a request torn down by the caller's cancellation can end with another exception
+                throw Canceled(ex, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                LogTextAnalysisFailed(_logger, ex);
+                return new ProtectedMaterialResult { MaterialType = ProtectedMaterialType.Text, IsError = true }; // fail-open
+            }
         }
-        catch (Exception ex)
-        {
-            LogTextAnalysisFailed(_logger, ex);
-            return new ProtectedMaterialResult { MaterialType = ProtectedMaterialType.Text, IsError = true }; // fail-open
-        }
+
+        return new ProtectedMaterialResult { MaterialType = ProtectedMaterialType.Text };
     }
 
     /// <summary>
@@ -147,37 +181,111 @@ public sealed partial class AzureProtectedMaterialClient : IDisposable
     /// Returns license information and source URLs when matches are found.
     /// Meant to be run on LLM completions, not user prompts.
     /// </summary>
+    /// <remarks>
+    /// Code shorter than the service's 110-character minimum is not sent and comes back as not
+    /// detected. Code over the 10K-character limit is analyzed in overlapping windows (split at line
+    /// breaks where possible), one request at a time, and their citations are combined. When a request
+    /// fails the remaining ones are skipped, and the result is an error unless a match was already found.
+    /// Cancellation of <paramref name="cancellationToken"/> is never a failure: it throws
+    /// <see cref="OperationCanceledException"/>, whatever exception the request that was under way ends with.
+    /// </remarks>
     public async ValueTask<ProtectedMaterialResult> AnalyzeCodeAsync(
         string code, CancellationToken cancellationToken = default)
     {
-        try
+        var windows = Windows(code, ProtectedMaterialType.Code);
+        var url = $"/contentsafety/text:detectProtectedMaterialForCode?api-version={CodeApiVersion}";
+
+        var detected = false;
+        var citations = new List<CodeCitation>();
+        var seenCitations = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var window in windows)
         {
-            var request = new CodeRequest { Code = code };
-            var url = $"/contentsafety/text:detectProtectedMaterialForCode?api-version={CodeApiVersion}";
-            using var response = await SendWithRetryAsync(url, request, cancellationToken);
-            response.EnsureSuccessStatusCode();
+            cancellationToken.ThrowIfCancellationRequested();
 
-            var result = await response.Content.ReadFromJsonAsync<ProtectedMaterialResponse>(JsonOptions, cancellationToken);
-            var analysis = result?.ProtectedMaterialAnalysis;
-
-            return new ProtectedMaterialResult
+            try
             {
-                Detected = analysis?.Detected ?? false,
-                MaterialType = ProtectedMaterialType.Code,
-                CodeCitations = analysis?.CodeCitations?
-                    .Select(c => new CodeCitation
-                    {
-                        License = c.License ?? "",
-                        SourceUrls = c.SourceUrls ?? []
-                    })
-                    .ToList() ?? []
-            };
+                var result = await PostAsync(url, new CodeRequest { Code = window }, cancellationToken);
+                var analysis = result?.ProtectedMaterialAnalysis;
+
+                if (analysis?.Detected == true)
+                    detected = true;
+
+                foreach (var citation in analysis?.CodeCitations ?? [])
+                {
+                    var sourceUrls = citation.SourceUrls ?? [];
+
+                    // the windows overlap, so the same citation can come back from two of them
+                    if (seenCitations.Add(citation.License + "\n" + string.Join("\n", sourceUrls)))
+                        citations.Add(new CodeCitation { License = citation.License ?? "", SourceUrls = sourceUrls });
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // the caller gave up; that is not an analysis failure and must not become a fail-open pass
+                throw;
+            }
+            catch (Exception ex) when (cancellationToken.IsCancellationRequested)
+            {
+                // a request torn down by the caller's cancellation can end with another exception
+                throw Canceled(ex, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                LogCodeAnalysisFailed(_logger, ex);
+
+                // a match found before the failure decides the verdict whatever the rest would have said
+                if (!detected)
+                    return new ProtectedMaterialResult { MaterialType = ProtectedMaterialType.Code, IsError = true }; // fail-open
+
+                break;
+            }
         }
-        catch (Exception ex)
+
+        return new ProtectedMaterialResult
         {
-            LogCodeAnalysisFailed(_logger, ex);
-            return new ProtectedMaterialResult { MaterialType = ProtectedMaterialType.Code, IsError = true }; // fail-open
-        }
+            Detected = detected,
+            MaterialType = ProtectedMaterialType.Code,
+            CodeCitations = citations
+        };
+    }
+
+    /// <summary>Disposes the <see cref="HttpClient"/> when this instance created it.</summary>
+    public void Dispose()
+    {
+        if (_ownsHttpClient)
+            _httpClient.Dispose();
+    }
+
+    /// <summary>The cancellation a request that failed after the caller canceled is reported as.</summary>
+    private static OperationCanceledException Canceled(Exception ex, CancellationToken cancellationToken) =>
+        new("The Protected Material analysis was canceled.", ex, cancellationToken);
+
+    /// <summary>
+    /// The request-sized windows of <paramref name="input"/> worth sending: at most 10K characters
+    /// each, and none below the 110-character minimum the service rejects.
+    /// </summary>
+    private List<string> Windows(string? input, ProtectedMaterialType materialType)
+    {
+        var windows = TextChunker.SplitToStrings(input, MaxTextLength, ChunkOverlap)
+            .Where(window => TextChunker.HasAtLeastTextElements(window, MinTextLength))
+            .ToList();
+
+        if (windows.Count == 0)
+            LogBelowMinimumLength(_logger, materialType, MinTextLength);
+        else if (windows.Count > 1)
+            LogSplitAnalysis(_logger, materialType, windows.Count);
+
+        return windows;
+    }
+
+    private async Task<ProtectedMaterialResponse?> PostAsync<TRequest>(
+        string path, TRequest request, CancellationToken cancellationToken)
+    {
+        using var response = await SendWithRetryAsync(path, request, cancellationToken);
+        response.EnsureSuccessStatusCode();
+
+        return await response.Content.ReadFromJsonAsync<ProtectedMaterialResponse>(JsonOptions, cancellationToken);
     }
 
     /// <summary>
@@ -231,13 +339,6 @@ public sealed partial class AzureProtectedMaterialClient : IDisposable
         throw new InvalidOperationException("retry loop completed without a response");
     }
 
-    /// <summary>Disposes the <see cref="HttpClient"/> when this instance created it.</summary>
-    public void Dispose()
-    {
-        if (_ownsHttpClient)
-            _httpClient.Dispose();
-    }
-
     [LoggerMessage(Level = LogLevel.Error, Message = "Azure Protected Material text analysis failed")]
     private static partial void LogTextAnalysisFailed(ILogger logger, Exception ex);
 
@@ -250,7 +351,13 @@ public sealed partial class AzureProtectedMaterialClient : IDisposable
     [LoggerMessage(Level = LogLevel.Error, Message = "Azure Protected Material rate limit retries exhausted after {MaxRetries} attempts - failing open")]
     private static partial void LogRetryExhausted(ILogger logger, int maxRetries);
 
-    // --- JSON DTOs ---
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Azure Protected Material {MaterialType} analysis skipped: input is shorter than the service minimum of {MinLength} characters")]
+    private static partial void LogBelowMinimumLength(ILogger logger, ProtectedMaterialType materialType, int minLength);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Azure Protected Material {MaterialType} input exceeds the per-request limit, analyzing it in {WindowCount} requests")]
+    private static partial void LogSplitAnalysis(ILogger logger, ProtectedMaterialType materialType, int windowCount);
+
+    // wire DTOs
 
     private sealed class TextRequest
     {

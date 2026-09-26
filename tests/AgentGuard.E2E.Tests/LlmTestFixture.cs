@@ -1,3 +1,4 @@
+using System.Globalization;
 using Microsoft.Extensions.AI;
 using OpenAI;
 
@@ -14,6 +15,8 @@ namespace AgentGuard.E2E.Tests;
 /// Optional:
 ///   OPENAI_API_KEY - API key (defaults to "unused" for local servers that don't require auth)
 ///   OPENAI_MAX_TOKENS - max output tokens (defaults to 1000; increase for reasoning models)
+///   OPENAI_TEMPERATURE - sampling temperature, e.g. 0 for deterministic local models. Unset means
+///                        the model's default: newer reasoning models reject any explicit value.
 /// </summary>
 public sealed class LlmTestFixture : IDisposable
 {
@@ -29,6 +32,8 @@ public sealed class LlmTestFixture : IDisposable
         var model = Environment.GetEnvironmentVariable("OPENAI_MODEL");
         var key = Environment.GetEnvironmentVariable("OPENAI_API_KEY") ?? "unused";
         var maxTokens = int.TryParse(Environment.GetEnvironmentVariable("OPENAI_MAX_TOKENS"), out var mt) ? mt : 1000;
+        float? temperature = float.TryParse(Environment.GetEnvironmentVariable("OPENAI_TEMPERATURE"),
+            NumberStyles.Float, CultureInfo.InvariantCulture, out var t) ? t : null;
 
         if (string.IsNullOrEmpty(endpoint) || string.IsNullOrEmpty(model))
         {
@@ -41,7 +46,7 @@ public sealed class LlmTestFixture : IDisposable
             new OpenAIClientOptions { Endpoint = new Uri(endpoint) });
 
         ChatClient = client.GetChatClient(model).AsIChatClient();
-        ChatOptions = new ChatOptions { MaxOutputTokens = maxTokens, Temperature = 0f };
+        ChatOptions = new ChatOptions { MaxOutputTokens = maxTokens, Temperature = temperature };
         ModelName = model;
         IsAvailable = true;
         SkipReason = "";

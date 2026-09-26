@@ -14,6 +14,8 @@ Azure AI Content Safety provides three complementary APIs, all integrated in Age
 
 All use the same Azure Content Safety endpoint and API key.
 
+`AgentGuard.Azure` also includes PII detection through Azure AI Language (`RedactPiiWithAzure()`), a separate Azure service - see [Remote PII detection](remote-pii.md).
+
 ## Prompt Shields (Prompt Injection Detection)
 
 Azure Prompt Shields is a dedicated prompt injection detector. It detects:
@@ -55,6 +57,8 @@ var ctx = new GuardrailContext { Text = userQuery, Phase = GuardrailPhase.Input 
 ctx.Properties["Documents"] = (IReadOnlyList<string>)new[] { emailBody, ragChunk };
 var result = await pipeline.RunAsync(ctx);
 ```
+
+Documents are analyzed together with the user prompt, so the rule makes no call when `Text` is empty or whitespace. A block reports `attackType` (`userPrompt` or `document`) in its metadata, plus `documentIndex` for a document attack.
 
 ### Using the Client Directly
 
@@ -155,7 +159,7 @@ A well-designed guardrail pipeline uses **both** - Prompt Shields to stop manipu
 
 Prompt Shield offers strong precision with moderate recall on diverse prompt injection inputs - it catches jailbreaks, role-play persona hijacking, system prompt overrides, and encoding attacks while keeping false positives low. Combined with the local multi-head Defender classifier for breadth, it adds a complementary cloud-based detection signal.
 
-> Published comparison numbers were temporarily removed pending a full re-benchmark on a held-out dataset (see CLAUDE.md "Needs Work"). The previous figures were measured on `jayavibhav/prompt-injection-safety`, which is now part of the bundled Defender model's training set.
+> Comparison numbers are not published here yet: they are pending a re-benchmark on a held-out dataset, since `jayavibhav/prompt-injection-safety` is part of the bundled Defender model's training set and cannot give a fair comparison.
 
 ## Protected Material Detection
 
@@ -205,9 +209,21 @@ var policy = new GuardrailPolicyBuilder("safe-agent")
 
 Code content is taken from `GuardrailContext.Properties["Code"]` (string), or falls back to `GuardrailContext.Text`.
 
+## Input Size Limits
+
+The services cap what one request may carry, so AgentGuard splits longer input rather than sending a request the service would reject:
+
+- **Prompt Shields** - the user prompt goes in windows of up to 10,000 characters (2,000 overlap); documents are packed into batches of at most 5 documents and 10,000 characters, and a longer document is split the same way. Each request pairs one prompt window with one document batch, so typical input is still a single call. An attack in any request blocks, and `DocumentAttacksDetected` has one entry per input document. Empty or whitespace-only documents are not sent.
+- **Content Safety** - text goes in windows of up to 10,000 characters (1,000 overlap); each category reports its worst severity across windows, and `HaltOnBlocklistHit` stops at the first window with a blocklist hit.
+- **Protected Material** (text and code) - input under 110 characters is not sent (the service requires at least 110) and counts as not detected; longer input goes in windows of up to 10,000 characters (1,000 overlap).
+
+Requests are sent one at a time. Each window is a billable call, so latency and cost grow with input length.
+
 ## Fail-Open Behavior
 
-All Azure clients (Prompt Shield, Content Safety, Protected Material) fail open on errors - they return non-blocking results so the agent continues. Error results include `IsError = true` so callers can distinguish "checked and clean" from "failed to check". Override by wrapping with your own fail-closed implementation.
+All Azure clients (Prompt Shield, Content Safety, Protected Material) fail open on errors by default - they return non-blocking results so the agent continues. Error results include `IsError = true` so callers can distinguish "checked and clean" from "failed to check"; set `OnError = ErrorBehavior.FailClosed` on the rule options to block instead. When input is split and a request fails, the remaining requests are skipped: the result is an error unless an earlier request already found an attack, a violation or a match, which then decides the verdict. Cancelling the caller's token always propagates instead of becoming an error result.
+
+The Prompt Shields and Protected Material clients send a request that is answered with HTTP 429 up to three times, waiting for the service's `Retry-After` in between (1 second when it gives none, capped at 10 seconds); after that the request counts as failed. The Content Safety classifier goes through the Azure SDK's `ContentSafetyClient`, which applies the SDK's retry policy (configurable through its client options).
 
 ## Cost
 

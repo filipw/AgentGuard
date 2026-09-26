@@ -70,9 +70,9 @@ public class RemotePiiGuardrailBuilderExtensionsTests
     [Fact]
     public async Task EvaluateAsync_ShouldStillRunRemoteRecognizer_WhenPiiLanguageIsNonDefault()
     {
-        // regression: the remote recognizer must be registered under the analysis language PiiRule uses
-        // (piiOptions.Language), otherwise the registry filters it out on a language mismatch and it
-        // never runs. It should also be told that same language.
+        // the remote recognizer is registered under the analysis language PiiRule uses
+        // (piiOptions.Language), since the registry filters recognizers by language, and is told that
+        // same language
         const string text = "Klaus Müller rief an";
         var nameStart = text.IndexOf("Klaus Müller", StringComparison.Ordinal);
         var client = new StubPiiDetectionClient(
@@ -170,9 +170,8 @@ public class RemotePiiGuardrailBuilderExtensionsTests
             });
     }
 
-    // AG-29: the recognizer wraps the detection client, which owns an HttpClient. On the engine
-    // version this originally shipped against neither was IDisposable, so the handover was inert;
-    // 0.3.0 made them disposable and it now genuinely releases them.
+    // the recognizer wraps the detection client, which owns an HttpClient; disposing the rule
+    // releases both
 
     [Fact]
     public void ShouldDisposeTheDetectionClient_WhenThePolicyIsDisposed()

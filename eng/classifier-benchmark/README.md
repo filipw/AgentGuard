@@ -1,12 +1,13 @@
 # classifier-benchmark
 
 Benchmarks the **real** AgentGuard prompt-injection rules side by side on held-out datasets,
-reporting precision / recall / F1 / FPR per classifier. Standalone eng tool, not in
-`AgentGuard.slnx`.
+reporting precision / recall / F1 / FPR and the number of errored calls per classifier. Standalone
+eng tool, not in `AgentGuard.slnx`.
 
-Unlike `eng/defender-sweep` (which re-implements Defender scoring inline to sweep thresholds),
-this references `AgentGuard.Core` and `AgentGuard.Onnx` and runs the actual rules through
-`IGuardrailRule.EvaluateAsync`, so the numbers reflect what ships.
+Unlike `eng/defender-sweep` in the [Kyoto](https://github.com/filipw/kyoto) repo
+(`../kyoto/eng/defender-sweep` in a sibling checkout, which re-implements Defender scoring inline to
+sweep thresholds), this references `AgentGuard.Core` and `AgentGuard.Onnx` and runs the actual rules
+through `IGuardrailRule.EvaluateAsync`, so the numbers reflect what ships.
 
 ## Classifiers
 
@@ -14,7 +15,7 @@ this references `AgentGuard.Core` and `AgentGuard.Onnx` and runs the actual rule
 |--------|------|-------|
 | `regex-medium` | `PromptInjectionRule` (Sensitivity.Medium) | Arcanum-taxonomy patterns, default tier |
 | `regex-high` | `PromptInjectionRule` (Sensitivity.High) | all patterns |
-| `defender` | `DefenderPromptInjectionRule` | bundled minilm-multihead-v5, prod calibration |
+| `defender` | `DefenderPromptInjectionRule` | bundled minilm-multihead-v5, default options (0.75 / 0.64 thresholds, 64-token windows for long input) |
 | `llm (<model>)` | `LlmPromptInjectionRule` | LLM-as-judge over an OpenAI-compatible endpoint |
 
 ## Datasets
@@ -37,17 +38,22 @@ dotnet run -c Release -- --concurrency 2           # 2 LLM requests in flight (d
 ```
 
 LLM endpoint and model default to `OPENAI_BASE_URL` / `OPENAI_MODEL` (or the values hard-coded at
-the top of `Program.cs`). The LLM column issues **one request per row, sequentially by default**
+the top of `Program.cs`) and can be overridden with `--llm-endpoint` / `--llm-model`; the key comes
+from `OPENAI_API_KEY`. The LLM column issues **one request per row, sequentially by default**
 (`--concurrency 1`) to stay gentle on a local model - it dominates runtime, so use `--max-rows`
-for a quick read. The instant local rules (regex, Defender) always run on the full set.
-`--llm-max-tokens` (default 4000) gives reasoning models room to think before answering;
-`--llm-timeout` (default 240s) caps a single runaway request.
+for a quick read. The instant local rules (regex, Defender) run on every row `--max-rows` keeps.
+`--llm-max-tokens` (default `OPENAI_MAX_TOKENS`, else 4000) gives reasoning models room to think
+before answering; `--llm-timeout` (default 240s) caps a single runaway request (see Caveats).
+`--limit` (default 5000) caps how many rows are fetched per dataset.
 
 ## Caveats
 
-- `LlmPromptInjectionRule` fails **open** on errors (an LLM timeout counts as "not blocked"), so a
-  flaky or overloaded endpoint inflates the LLM's false-negative rate. Keep `--concurrency` within
-  what the server handles cleanly.
+- A call that runs past `--llm-timeout`, throws, or comes back as a rule error (a failed or
+  off-format judge call, which `LlmPromptInjectionRule` fails **open** on) is counted in the `errors`
+  column and as "not blocked", and the run moves on to the next row. A flaky or overloaded endpoint
+  therefore inflates the LLM's false-negative rate, and `errors` shows by how much. Keep
+  `--concurrency` within what the server handles cleanly, and set `--llm-timeout` above the slowest
+  expected judge call.
 - `--max-rows N` takes the first N positives and N negatives per dataset (balanced), preserving
   dataset order.
 - F1 is reported per dataset; the benign corpus only yields an FPR (no positives).

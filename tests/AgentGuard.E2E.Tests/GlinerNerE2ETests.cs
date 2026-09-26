@@ -59,10 +59,8 @@ public class GlinerNerE2ETests : IClassFixture<GlinerTestFixture>
     [GlinerFact]
     public void ShouldDetectEntitiesInEveryChunk_WhenInputIsChunked()
     {
-        // regression: when text is long enough to chunk, each chunk is decoded independently. A prior
-        // bug compared chunk-LOCAL word indices across chunks, so a second entity landing at the same
-        // local word position as a first was spuriously treated as overlapping and dropped. A small
-        // MaxChunkChars forces ≥2 chunks; both distinct PERSONs must survive.
+        // when text is long enough to chunk, each chunk is decoded independently. A small MaxChunkChars
+        // forces two or more chunks; both distinct PERSONs must survive.
         using var recognizer = _fixture.CreateRecognizer(maxChunkChars: 55);
         const string text =
             "Jane Doe lives in Berlin and works there happily. Klaus Mueller lives in Munich and works there too.";

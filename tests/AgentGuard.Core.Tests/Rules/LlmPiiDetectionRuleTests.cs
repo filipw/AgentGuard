@@ -85,8 +85,7 @@ public class LlmPiiDetectionRuleTests
         result.IsBlocked.Should().BeFalse();
     }
 
-    // AG-15: a rule configured to Redact used to turn into a Block whenever the fallback substring
-    // search saw "PII" or "REDACTED" in an off-format reply. Redact now only ever redacts or errors.
+    // a rule configured to Redact only ever redacts or errors
 
     [Fact]
     public async Task ShouldReportError_WhenRedactRuleGetsOffFormatResponse()
@@ -109,6 +108,82 @@ public class LlmPiiDetectionRuleTests
         var result = await rule.EvaluateAsync(Ctx("test"));
 
         result.IsBlocked.Should().BeTrue();
+    }
+
+    // Redact read only the first line of the judge's reply, so a multi-line message came back cut
+    // to its first line, and "REDACTED:" on a line of its own was treated as off-format - which
+    // fails open with the PII still in the text.
+
+    private const string MultiLineInput = "Hi, I'm John Smith.\nMy order 4411 never arrived.\nPlease refund it to my card.";
+    private const string MultiLineRedacted = "Hi, I'm [REDACTED].\nMy order 4411 never arrived.\nPlease refund it to my card.";
+
+    [Fact]
+    public async Task ShouldKeepEveryLine_WhenRedactingAMultiLineMessage()
+    {
+        var rule = new LlmPiiDetectionRule(MockClient("REDACTED: " + MultiLineRedacted).Object);
+
+        var result = await rule.EvaluateAsync(Ctx(MultiLineInput));
+
+        result.IsModified.Should().BeTrue();
+        result.ModifiedText.Should().Be(MultiLineRedacted);
+    }
+
+    [Theory]
+    [InlineData("REDACTED:\n" + MultiLineRedacted)]
+    [InlineData("REDACTED:\r\n" + MultiLineRedacted + "\r\n")]
+    [InlineData("```\nREDACTED: " + MultiLineRedacted + "\n```")]
+    [InlineData("<think>The name is PII.</think>\nREDACTED:\n" + MultiLineRedacted)]
+    [InlineData("REDACTED:\n```text\n" + MultiLineRedacted + "\n```")]
+    [InlineData("redacted:   " + MultiLineRedacted + "\n\n")]
+    public async Task ShouldRedact_WhenTheMessageFollowsTheMarkerInAnyAcceptedLayout(string reply)
+    {
+        var rule = new LlmPiiDetectionRule(MockClient(reply).Object);
+
+        var result = await rule.EvaluateAsync(Ctx(MultiLineInput));
+
+        result.IsError.Should().BeFalse();
+        result.IsModified.Should().BeTrue();
+        result.ModifiedText.Should().Be(MultiLineRedacted);
+    }
+
+    [Fact]
+    public async Task ShouldKeepTheMessagesOwnFence_WhenTheInputIsAFencedBlock()
+    {
+        var rule = new LlmPiiDetectionRule(MockClient("REDACTED:\n```\nssn: [REDACTED]\n```").Object);
+
+        var result = await rule.EvaluateAsync(Ctx("```\nssn: 123-45-6789\n```"));
+
+        result.ModifiedText.Should().Be("```\nssn: [REDACTED]\n```");
+    }
+
+    [Theory]
+    [InlineData("CLEAN")]
+    [InlineData("```\nCLEAN\n```")]
+    [InlineData("<think>no names, no numbers</think>\nCLEAN")]
+    public async Task ShouldPass_WhenTheCleanVerdictIsWrapped(string reply)
+    {
+        var rule = new LlmPiiDetectionRule(MockClient(reply).Object);
+
+        var result = await rule.EvaluateAsync(Ctx(MultiLineInput));
+
+        result.IsError.Should().BeFalse();
+        result.IsModified.Should().BeFalse();
+        result.IsBlocked.Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("REDACTED:")]
+    [InlineData("REDACTED:\n\n")]
+    [InlineData("Sure! Here is the message:\nREDACTED: Hi, I'm [REDACTED].")]
+    public async Task ShouldReportError_WhenTheRedactedReplyCarriesNoMessage(string reply)
+    {
+        var rule = new LlmPiiDetectionRule(MockClient(reply).Object);
+
+        var result = await rule.EvaluateAsync(Ctx(MultiLineInput));
+
+        result.IsError.Should().BeTrue();
+        result.IsModified.Should().BeFalse();
+        result.IsBlocked.Should().BeFalse();
     }
 
     [Fact]

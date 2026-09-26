@@ -3,12 +3,9 @@
 // violence / sexual content / self-harm / harassment) - the gap the English-only Defender
 // classifier and cloud-only content-safety APIs leave open.
 //
-// The model is BYO-download (not bundled). Fetch it first:
-//   ./eng/download-opir-model.sh
-// then point the sample at the files:
-//   AGENTGUARD_OPIR_ONNX_MODEL_PATH=./models/opir-multilang/model.onnx \
-//   AGENTGUARD_OPIR_TOKENIZER_PATH=./models/opir-multilang/spm.model \
-//   AGENTGUARD_OPIR_PREFIX_PATH=./models/opir-multilang/prefix.json \
+// The model is BYO-download (not bundled). From a sibling Kyoto checkout (see eng/MODELS.md),
+// fetch it and export the AGENTGUARD_OPIR_* paths the sample reads:
+//   cd ../kyoto && ./bootstrap-models.sh opir && source ./models/env.sh && cd -
 //   dotnet run --project samples/OpirMultilingualGuardrails
 
 using AgentGuard.Core.Abstractions;

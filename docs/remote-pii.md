@@ -40,7 +40,8 @@ you lose name/address detection for that request, not the ability to redact at a
 
 ```csharp
 using AgentGuard.RemotePii;
-using TasmanianDevil;
+using TasmanianDevil;          // PiiEntities
+using TasmanianDevil.Remote;   // RemotePiiOptions
 
 var policy = new GuardrailPolicyBuilder("safe-agent")
     .RedactPiiWithRemote(new RemotePiiOptions
@@ -63,7 +64,9 @@ var policy = new GuardrailPolicyBuilder("safe-agent")
 
 Both add an order-20 `PiiRule` alongside `RedactPii()` - typically you use `RedactPiiWithRemote()`
 *instead of* `RedactPii()` for entities the remote side handles, since `RedactPiiWithRemote()` already
-includes the full generic/US regex+checksum recognizer set plus the remote one in a single pass.
+includes the full generic/US regex+checksum recognizer set (plus any country packs in the optional
+`PiiOptions`) and the remote one in a single pass. The remote and Azure builders take no
+`PiiRuleOptions`, so the rule they add runs on both input and output.
 
 ### The wire contract
 
@@ -95,13 +98,14 @@ Content-Type: application/json
   the current `PiiRule` evaluation requested - only ask the remote side for what you actually need.
 - `type` in the response should match your canonical vocabulary (`PiiEntities.Person`, etc.); use
   `RemotePiiOptions.CategoryMap` if your server uses different names.
-- An entity type not in `SupportedEntities`, or an offset outside the analyzed text, is dropped rather
-  than trusted - `AgentGuard`/`TasmanianDevil` don't post-filter recognizer output, so this guard lives
-  in the recognizer itself.
+- An entity whose type (after `CategoryMap`) was not requested, or whose offsets fall outside the
+  analyzed text, is dropped rather than trusted, and scores are clamped to 0-1 -
+  `AgentGuard`/`TasmanianDevil` don't post-filter recognizer output, so this guard lives in the
+  recognizer itself.
 - Optional: set `RemotePiiOptions.RequestRedactedTextPassthrough = true` to also send
-  `"includeRedactedText": true` and receive back an optional `"redactedText"` field. AgentGuard parses
-  it but never uses it for redaction (detection stays remote, redaction stays local) - it exists purely
-  as a forward-looking hook.
+  `"includeRedactedText": true` and receive back an optional `"redactedText"` field. The field is
+  parsed but neither exposed nor used for redaction (detection stays remote, redaction stays local) -
+  it exists purely as a forward-looking hook.
 
 ### A sidecar recipe (TasmanianDevil + GLiNER)
 
@@ -112,26 +116,37 @@ own GLiNER NER recognizer so the heavy model lives in its own container:
 using TasmanianDevil.Analyzer;
 using TasmanianDevil.Onnx;
 
-var registry = new RecognizerRegistry([
-    new GlinerNerRecognizer(new GlinerNerOptions
-    {
-        ModelPath = "/models/gliner/model_fp16.onnx",
-        TokenizerPath = "/models/gliner/spm.model",
-        ConfigPath = "/models/gliner/config.json",
-    })
-]);
+var gliner = new GlinerNerOptions
+{
+    ModelPath = "/models/gliner/model_fp16.onnx",
+    TokenizerPath = "/models/gliner/spm.model",
+    ConfigPath = "/models/gliner/config.json",
+};
+
+// the model is multilingual, but a recognizer only runs for the language it is registered for, so
+// register one per language the sidecar serves (they share one pooled ONNX session)
+string[] languages = ["en", "de", "es", "fr", "it", "nl", "pt"];
+var registry = new RecognizerRegistry([.. languages.Select(language => new GlinerNerRecognizer(gliner, language))]);
 var analyzer = new AnalyzerEngine(registry, defaultScoreThreshold: 0);
 
 var app = WebApplication.Create();
 app.MapPost("/detect", (DetectRequest req) =>
 {
+    // an unserved language would silently detect nothing, so reject it instead
+    if (!languages.Contains(req.Language))
+        return Results.BadRequest($"language '{req.Language}' is not served");
+
     var results = analyzer.Analyze(req.Text, req.Language, req.Entities);
-    return new { entities = results.Select(r => new { type = r.EntityType, start = r.Start, end = r.End, score = r.Score }) };
+    return Results.Ok(new { entities = results.Select(r => new { type = r.EntityType, start = r.Start, end = r.End, score = r.Score }) });
 });
 app.Run();
 
 record DetectRequest(string Text, string Language, string[] Entities);
 ```
+
+The `language` in each request is the calling rule's `PiiOptions.Language` (default `en`). A rejected
+request counts as a remote failure, so with `FailOpen = true` (the default) that request falls back
+to local-only redaction.
 
 `samples/RemotePii` in this repo demonstrates the same idea in-process (no separate container) so you
 can see the pattern end to end without standing up a real sidecar; it falls back to a naive regex
@@ -144,7 +159,7 @@ new RemotePiiOptions
 {
     Endpoint = endpoint,
     SupportedEntities = [PiiEntities.Person, PiiEntities.Address],
-    Timeout = TimeSpan.FromSeconds(3),   // enforced independently of the caller's own cancellation
+    Timeout = TimeSpan.FromSeconds(3),   // default 10 s; enforced independently of the caller's own cancellation
     FailOpen = true,                     // default: swallow remote failures, keep local-only redaction
     AuthHeaderName = "Authorization",
     AuthHeaderValue = $"Bearer {token}",
@@ -184,6 +199,8 @@ delegate gets bound to a concrete `TokenCredential`.
 ### Full configuration
 
 ```csharp
+using TasmanianDevil.Azure;   // AzurePiiOptions, AzurePiiDomain
+
 var policy = new GuardrailPolicyBuilder("safe-agent")
     .RedactPiiWithAzure(new AzurePiiOptions
     {
@@ -193,7 +210,7 @@ var policy = new GuardrailPolicyBuilder("safe-agent")
         Domain = AzurePiiDomain.Phi,               // broader clinical categories; default None
         ConfidenceThreshold = 0.7,                  // client-side post-filter
         FailOpen = true,                            // default
-        Timeout = TimeSpan.FromSeconds(5),
+        Timeout = TimeSpan.FromSeconds(5),          // default 10 s
     })
     .Build();
 ```
@@ -222,47 +239,69 @@ Category mapping (Azure category -> canonical entity type) is built in and overr
   contains a surrogate pair (emoji, some CJK), which would silently corrupt redaction spans.
 - `loggingOptOut` defaults to `true` - a PII detector should not let Azure retain the analyzed text.
 - Targets the GA REST API version `2024-11-01` by default (`AzurePiiOptions.ApiVersion`).
+- The synchronous API accepts at most 5,120 characters per document. With `RedactPiiWithAzure()`,
+  longer text is analyzed in windows of up to 5,000 characters (500 overlap, split at whitespace where
+  possible), one call at a time, and the spans are mapped back onto the full text with duplicates from
+  the overlaps removed. Each window is its own call with its own timeout and fail-open handling, so an
+  unresponsive endpoint can cost up to one timeout per window.
 
 ## Fail-open behavior (both detectors)
 
 Both `RemotePiiRecognizer` and `AzurePiiRecognizer` fail open by default (`FailOpen = true`): a remote
 exception, non-success response, or timeout is caught, optionally reported via `OnError`, and yields no
-results for that request - **not** a thrown exception. Local recognizers (regex/checksum, and GLiNER if
-configured) still run and still redact what they can. Cancellation of the caller's own token always
-propagates regardless of `FailOpen`, so it isn't mistaken for a remote failure. Set `FailOpen = false`
-if partial detection is unacceptable for your use case.
+results for that request - **not** a thrown exception. For Azure, an error the service reports for the
+document inside an otherwise successful response counts as a failure too. Local recognizers
+(regex/checksum, and GLiNER if configured) still run and still redact what they can. Cancellation of
+the caller's own token always propagates regardless of `FailOpen`, so it isn't mistaken for a remote
+failure. Set `FailOpen = false` if partial detection is unacceptable for your use case.
 
 ## Hosting / configuration binding
 
-`AgentGuard.Hosting` supports both detectors via `appsettings.json`:
+Both detectors can be configured from `appsettings.json`. The `RemotePii` and `AzurePii` rule types
+ship as `IGuardrailRuleFactory` implementations in their own packages (so `AgentGuard.Hosting` doesn't
+pull in the Azure SDK); register the ones you use before `AddAgentGuard` (see
+[configuration](configuration.md)):
+
+```csharp
+builder.Services.AddSingleton<IGuardrailRuleFactory, RemotePiiRuleFactory>();   // AgentGuard.RemotePii
+builder.Services.AddSingleton<IGuardrailRuleFactory, AzurePiiRuleFactory>();    // AgentGuard.Azure
+builder.Services.AddAgentGuard(builder.Configuration.GetSection("AgentGuard"));
+```
+
+`Endpoint` and `Entities` are required for both; `TimeoutSeconds` (at least 1) defaults to 10 and
+`FailOpen` to `true`. `Replacement` and `Countries` work as they do for `PiiRedaction` (default
+`<ENTITY_TYPE>` tags; generic + US recognizers plus the listed country packs):
 
 ```json
 {
-  "DefaultPolicy": {
-    "Rules": [
-      {
-        "Type": "RemotePii",
-        "Endpoint": "https://pii-sidecar.internal:8443/detect",
-        "Entities": ["PERSON", "ADDRESS"],
-        "AuthHeaderName": "X-Api-Key",
-        "AuthHeaderValue": "...",
-        "TimeoutSeconds": 5,
-        "FailOpen": true
-      },
-      {
-        "Type": "AzurePii",
-        "Endpoint": "https://my-resource.cognitiveservices.azure.com",
-        "SubscriptionKey": "...",
-        "Entities": ["PERSON", "ADDRESS"],
-        "Domain": "None"
-      }
-    ]
+  "AgentGuard": {
+    "DefaultPolicy": {
+      "Rules": [
+        {
+          "Type": "RemotePii",
+          "Endpoint": "https://pii-sidecar.internal:8443/detect",
+          "Entities": ["PERSON", "ADDRESS"],
+          "AuthHeaderName": "X-Api-Key",
+          "AuthHeaderValue": "...",
+          "TimeoutSeconds": 5,
+          "FailOpen": true
+        },
+        {
+          "Type": "AzurePii",
+          "Endpoint": "https://my-resource.cognitiveservices.azure.com",
+          "SubscriptionKey": "...",
+          "Entities": ["PERSON", "ADDRESS"],
+          "Domain": "None"
+        }
+      ]
+    }
   }
 }
 ```
 
-For managed identity instead of a subscription key, set `"UseManagedIdentity": true` and omit
-`SubscriptionKey` - `AgentGuard.Hosting` wires up `DefaultAzureCredential` for you.
+`Domain` is `None` (default) or `Phi`. For managed identity instead of a subscription key, set
+`"UseManagedIdentity": true` and omit `SubscriptionKey` - `AzurePiiRuleFactory` wires up
+`DefaultAzureCredential` for you.
 
 ## See also
 

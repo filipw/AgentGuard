@@ -15,7 +15,7 @@ namespace AgentGuard.AgentFramework.Tests.Middleware;
 
 public class AgentGuardMiddlewareTests
 {
-    // --- AG-21 / AG-23 / AG-24: middleware plumbing regressions ---
+    // middleware plumbing
 
     [Fact]
     public async Task RunAsync_ShouldRecordToTheLedger()
@@ -48,7 +48,7 @@ public class AgentGuardMiddlewareTests
         await guarded.RunAsync(counted, null, null, CancellationToken.None);
 
         // the guardrail layer is allowed exactly one materialization on top of whatever the agent
-        // framework itself does; it used to enumerate the caller's sequence five times.
+        // framework itself does
         counted.Count.Should().BeLessThanOrEqualTo(baseline.Count + 1);
     }
 

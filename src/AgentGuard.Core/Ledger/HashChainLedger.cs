@@ -2,7 +2,6 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using AgentGuard.Core.Abstractions;
 
 namespace AgentGuard.Core.Ledger;
 
@@ -20,6 +19,12 @@ namespace AgentGuard.Core.Ledger;
 /// take only a brief lock so they are not blocked while a writer computes its SHA-256 hash.
 /// </para>
 /// <para>
+/// <b>Restarts.</b> A ledger created over a JSONL file that already holds entries continues that
+/// chain: its first entry follows the file's last one in sequence and links to that entry's hash,
+/// so the file stays one chain that <see cref="Load"/> verifies from genesis. The entries held in
+/// memory then start mid-chain.
+/// </para>
+/// <para>
 /// <b>What tamper-evidence covers.</b> Editing an entry, or removing one from the middle of the
 /// chain, breaks the linkage and is reported by <see cref="Verify()"/>. Removing entries from the
 /// <i>end</i> is not detectable: a hash chain carries no record of how long it should be, so a
@@ -30,6 +35,9 @@ namespace AgentGuard.Core.Ledger;
 /// </remarks>
 public sealed class HashChainLedger : IGuardrailLedger, IDisposable
 {
+    // a line longer than this is not a ledger entry, so continuing a chain never reads more of the file
+    private const int MaxEntryBytes = 64 * 1024 * 1024;
+
     private readonly List<GuardrailLedgerEntry> _entries = [];
 
     // the hash chain is sequential, so appends must serialize; _appendLock is held for
@@ -43,8 +51,9 @@ public sealed class HashChainLedger : IGuardrailLedger, IDisposable
     private readonly StreamWriter? _writer;
     private readonly int? _maxInMemoryEntries;
 
-    // entries evicted by the in-memory cap. Non-zero means the retained list is a window rather
-    // than the whole chain, so Verify() must not expect the first entry to be genesis.
+    // the chain position of the first entry the retained list can hold, and the hash that entry links
+    // to. Non-zero means the list is a window that starts mid-chain: older entries were evicted under
+    // the in-memory cap, or the ledger continues a chain an earlier instance persisted.
     private long _trimmed;
     private string _lastTrimmedHash = string.Empty;
     private bool _disposed;
@@ -74,6 +83,12 @@ public sealed class HashChainLedger : IGuardrailLedger, IDisposable
     /// When provided, each appended entry is also written as one JSON object per line
     /// (JSONL) to this append-only file. The containing directory is created eagerly if
     /// it does not already exist, so the first append cannot fail on a missing directory.
+    /// When the file already holds entries, for example ones written before a process restart, the
+    /// ledger continues that chain: the next entry's <see cref="GuardrailLedgerEntry.Seq"/> follows the
+    /// file's last entry and its <see cref="GuardrailLedgerEntry.PreviousHash"/> is that entry's
+    /// <see cref="GuardrailLedgerEntry.Hash"/>. Only the last line of the file is read, so
+    /// <see cref="Entries"/> holds just the entries appended since, and <see cref="Verify()"/> checks
+    /// that they link to the persisted tail. Use <see cref="Load"/> to verify the whole file.
     /// </param>
     /// <param name="maxInMemoryEntries">
     /// Caps how many entries are held in memory. When the cap is reached the oldest are evicted, so
@@ -82,7 +97,17 @@ public sealed class HashChainLedger : IGuardrailLedger, IDisposable
     /// retains everything, which is only safe for a bounded run - a long-lived service accumulates
     /// one entry per guardrail decision for the life of the process.
     /// </param>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="maxInMemoryEntries"/> is not positive.</exception>
+    /// <exception cref="InvalidDataException">
+    /// The last line of <paramref name="jsonlFilePath"/> is not an intact ledger entry (an incomplete
+    /// write or an edit), so the chain cannot be continued from it.
+    /// </exception>
     public HashChainLedger(string? jsonlFilePath = null, int? maxInMemoryEntries = null)
+        : this(jsonlFilePath, maxInMemoryEntries, continuePersistedChain: true)
+    {
+    }
+
+    private HashChainLedger(string? jsonlFilePath, int? maxInMemoryEntries, bool continuePersistedChain)
     {
         if (maxInMemoryEntries is <= 0)
             throw new ArgumentOutOfRangeException(nameof(maxInMemoryEntries), "The cap must be greater than zero.");
@@ -90,22 +115,48 @@ public sealed class HashChainLedger : IGuardrailLedger, IDisposable
         _jsonlPath = jsonlFilePath;
         _maxInMemoryEntries = maxInMemoryEntries;
 
-        if (_jsonlPath is not null)
-        {
-            var dir = Path.GetDirectoryName(Path.GetFullPath(_jsonlPath));
-            if (!string.IsNullOrEmpty(dir))
-            {
-                Directory.CreateDirectory(dir);
-            }
+        if (_jsonlPath is null)
+            return;
 
-            // one handle held open for the life of the ledger. Appending used to open, write and
-            // close the file per entry, on the guarded request's own thread; FileShare.Read also
-            // lets an auditor tail the file while it is being written.
-            _writer = new StreamWriter(
-                new FileStream(_jsonlPath, FileMode.Append, FileAccess.Write, FileShare.Read))
+        var dir = Path.GetDirectoryName(Path.GetFullPath(_jsonlPath));
+        if (!string.IsNullOrEmpty(dir))
+        {
+            Directory.CreateDirectory(dir);
+        }
+
+        var endsMidLine = false;
+        if (File.Exists(_jsonlPath))
+        {
+            using var file = new FileStream(_jsonlPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            endsMidLine = file.Length > 0 && ReadLastByte(file) != '\n';
+
+            // a second genesis in the same file would fork the chain, so continue from the last entry
+            if (continuePersistedChain && ReadLastLine(file, _jsonlPath) is { } lastLine)
             {
-                AutoFlush = true
-            };
+                var last = ParseEntry(lastLine, _jsonlPath, "the last line");
+                if (last.Seq < 0 || !HashMatches(last))
+                {
+                    throw new InvalidDataException(
+                        $"Ledger file '{_jsonlPath}': the last entry does not match its hash, so the chain cannot be continued from it.");
+                }
+
+                _trimmed = last.Seq + 1;
+                _lastTrimmedHash = last.Hash;
+            }
+        }
+
+        // one handle held open for the life of the ledger, so an append never opens the file on the
+        // guarded request's thread; FileShare.Read lets an auditor tail the file while it is being written.
+        _writer = new StreamWriter(
+            new FileStream(_jsonlPath, FileMode.Append, FileAccess.Write, FileShare.Read))
+        {
+            AutoFlush = true
+        };
+
+        // every entry is one line, so an unterminated last line gets its line break before the next entry
+        if (endsMidLine)
+        {
+            _writer.WriteLine();
         }
     }
 
@@ -122,7 +173,10 @@ public sealed class HashChainLedger : IGuardrailLedger, IDisposable
         }
     }
 
-    /// <summary>The number of entries currently in the ledger.</summary>
+    /// <summary>
+    /// The number of entries held in memory - the whole chain unless older entries were evicted
+    /// under the in-memory cap or the ledger continues a persisted chain.
+    /// </summary>
     public int Count
     {
         get { lock (_entriesLock) { return _entries.Count; } }
@@ -176,22 +230,26 @@ public sealed class HashChainLedger : IGuardrailLedger, IDisposable
         }
     }
 
-    /// <summary>A snapshot of all ledger entries in chain order.</summary>
+    /// <summary>
+    /// A snapshot of the entries held in memory, in chain order. It starts mid-chain when older
+    /// entries were evicted under the in-memory cap or the ledger continues a persisted chain.
+    /// </summary>
     public IReadOnlyList<GuardrailLedgerEntry> Entries
     {
         get { lock (_entriesLock) { return _entries.ToArray(); } }
     }
 
     /// <summary>
-    /// Recomputes the whole chain and verifies that every entry's hash and previous-hash
-    /// linkage are intact.
+    /// Recomputes the entries held in memory and verifies that every entry's hash and previous-hash
+    /// linkage are intact. When they start mid-chain, the first one must link to the entry before
+    /// it - the last evicted entry, or the last entry of the persisted chain this ledger continues.
     /// </summary>
     /// <returns><c>true</c> if the chain is intact; otherwise <c>false</c>.</returns>
     public bool Verify() => Verify(out _);
 
     /// <summary>
-    /// Recomputes the whole chain and verifies its integrity, reporting the first broken
-    /// entry when verification fails.
+    /// Recomputes the entries held in memory and verifies their integrity, reporting the first
+    /// broken entry when verification fails. See <see cref="Verify()"/>.
     /// </summary>
     /// <param name="brokenAtSeq">
     /// The <see cref="GuardrailLedgerEntry.Seq"/> of the first tampered entry, or -1 when
@@ -202,9 +260,9 @@ public sealed class HashChainLedger : IGuardrailLedger, IDisposable
     {
         lock (_entriesLock)
         {
-            // a trimmed ledger retains a window, so its first entry legitimately has a non-empty
-            // PreviousHash and must not be checked against genesis
-            return Verify(_entries, out brokenAtSeq, requireGenesis: _trimmed == 0);
+            // a window that starts mid-chain links to the entry before it rather than to genesis
+            var expectedFirstPreviousHash = _trimmed == 0 ? string.Empty : _lastTrimmedHash;
+            return VerifyChain(_entries, expectedFirstPreviousHash, out brokenAtSeq);
         }
     }
 
@@ -229,33 +287,27 @@ public sealed class HashChainLedger : IGuardrailLedger, IDisposable
     /// <param name="brokenAtSeq">The first tampered entry's sequence number, or -1 when intact.</param>
     /// <param name="requireGenesis">
     /// When true the first entry must be the chain's genesis (empty previous hash). Pass false to
-    /// verify a trailing window, such as one retained under an in-memory cap.
+    /// verify a trailing window, such as one retained under an in-memory cap; its first entry's own
+    /// hash is still checked, but not what it links to.
     /// </param>
     /// <returns><c>true</c> if the sequence is intact; otherwise <c>false</c>.</returns>
     public static bool Verify(IReadOnlyList<GuardrailLedgerEntry> entries, out long brokenAtSeq, bool requireGenesis)
     {
         ArgumentNullException.ThrowIfNull(entries);
+        return VerifyChain(entries, requireGenesis ? string.Empty : null, out brokenAtSeq);
+    }
 
+    // expectedFirstPreviousHash is what the first entry must link to: empty for genesis, null when unknown
+    private static bool VerifyChain(
+        IReadOnlyList<GuardrailLedgerEntry> entries, string? expectedFirstPreviousHash, out long brokenAtSeq)
+    {
         for (var i = 0; i < entries.Count; i++)
         {
             var entry = entries[i];
+            var expectedPreviousHash = i == 0 ? expectedFirstPreviousHash : entries[i - 1].Hash;
 
-            if (i == 0 && !requireGenesis)
-            {
-                // nothing to link the window's first entry to; its own hash is still checked below
-            }
-            else
-            {
-                var expectedPrevHash = i == 0 ? string.Empty : entries[i - 1].Hash;
-                if (!StringsEqual(entry.PreviousHash, expectedPrevHash))
-                {
-                    brokenAtSeq = entry.Seq;
-                    return false;
-                }
-            }
-
-            var recomputed = ComputeHash(entry.Seq, entry.PreviousHash, entry.Decision);
-            if (!StringsEqual(entry.Hash, recomputed))
+            if ((expectedPreviousHash is not null && !StringsEqual(entry.PreviousHash, expectedPreviousHash))
+                || !HashMatches(entry))
             {
                 brokenAtSeq = entry.Seq;
                 return false;
@@ -270,42 +322,52 @@ public sealed class HashChainLedger : IGuardrailLedger, IDisposable
     /// Loads a ledger from an append-only JSONL file previously written by a ledger
     /// configured with a <c>jsonlFilePath</c>. The stored hashes are preserved as-is
     /// (not recomputed), so the returned ledger can be re-verified with <see cref="Verify()"/>
-    /// after a process restart.
+    /// after a process restart. The file is opened for shared reading, so it can be loaded while a
+    /// running ledger is still appending to it.
     /// </summary>
     /// <param name="jsonlFilePath">Path to the JSONL file to load.</param>
     /// <param name="resumeWriting">
     /// When <c>true</c>, the returned ledger keeps writing to <paramref name="jsonlFilePath"/>,
-    /// so appends extend the same persisted chain. When <c>false</c> (the default) the
+    /// so appends extend the same persisted chain, as with a ledger constructed over the file, but
+    /// with every persisted entry also held in memory. When <c>false</c> (the default) the
     /// returned ledger is in-memory only (verification-only) and does not write back.
     /// </param>
     /// <returns>A ledger populated with the persisted entries.</returns>
+    /// <exception cref="InvalidDataException">A line of the file is not a valid ledger entry.</exception>
     public static HashChainLedger Load(string jsonlFilePath, bool resumeWriting = false)
     {
         ArgumentNullException.ThrowIfNull(jsonlFilePath);
 
-        var ledger = new HashChainLedger(resumeWriting ? jsonlFilePath : null);
-        foreach (var line in File.ReadLines(jsonlFilePath))
+        var entries = new List<GuardrailLedgerEntry>();
+        using (var reader = new StreamReader(
+            new FileStream(jsonlFilePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)))
         {
-            if (string.IsNullOrWhiteSpace(line))
+            var lineNumber = 0;
+            while (reader.ReadLine() is { } line)
             {
-                continue;
+                lineNumber++;
+                if (!string.IsNullOrWhiteSpace(line))
+                {
+                    entries.Add(ParseEntry(line, jsonlFilePath, string.Create(CultureInfo.InvariantCulture, $"line {lineNumber}")));
+                }
             }
-
-            var entry = JsonSerializer.Deserialize<GuardrailLedgerEntry>(line, JsonReadOptions)
-                ?? throw new InvalidDataException($"Failed to deserialize ledger entry: {line}");
-            ledger._entries.Add(entry);
         }
 
+        // every entry is already in hand, so the file's tail is not read a second time
+        var ledger = new HashChainLedger(resumeWriting ? jsonlFilePath : null, maxInMemoryEntries: null, continuePersistedChain: false);
+        ledger._entries.AddRange(entries);
+
         // resuming has to continue the persisted numbering rather than restart it
-        if (resumeWriting && ledger._entries.Count > 0)
+        if (resumeWriting && entries.Count > 0)
         {
-            ledger._trimmed = ledger._entries[0].Seq;
+            ledger._trimmed = entries[0].Seq;
+            ledger._lastTrimmedHash = entries[0].PreviousHash;
         }
 
         return ledger;
     }
 
-    /// <summary>Serializes the entire ledger to an indented JSON array.</summary>
+    /// <summary>Serializes the entries held in memory to an indented JSON array.</summary>
     public string Export()
     {
         lock (_entriesLock)
@@ -313,6 +375,85 @@ public sealed class HashChainLedger : IGuardrailLedger, IDisposable
             return JsonSerializer.Serialize(_entries, JsonOptions);
         }
     }
+
+    private static GuardrailLedgerEntry ParseEntry(string line, string path, string location)
+    {
+        try
+        {
+            if (JsonSerializer.Deserialize<GuardrailLedgerEntry>(line, JsonReadOptions) is { } entry)
+                return entry;
+        }
+        catch (JsonException ex)
+        {
+            throw NotAnEntry(path, location, ex);
+        }
+
+        throw NotAnEntry(path, location, innerException: null);
+    }
+
+    private static InvalidDataException NotAnEntry(string path, string location, Exception? innerException) =>
+        new($"Ledger file '{path}': {location} is not a valid ledger entry. " +
+            "The file may end in an incomplete write or have been edited.", innerException);
+
+    private static int ReadLastByte(FileStream file)
+    {
+        file.Position = file.Length - 1;
+        return file.ReadByte();
+    }
+
+    // scans backwards from the end of the file in blocks, so only the last line is read however long
+    // the chain is. Returns null for a file that holds no line with content.
+    private static string? ReadLastLine(FileStream file, string path)
+    {
+        var buffer = new byte[4096];
+        long lineEnd = -1;
+        long lineStart = -1;
+
+        for (var position = file.Length; position > 0 && lineStart < 0;)
+        {
+            var count = (int)Math.Min(buffer.Length, position);
+            position -= count;
+            file.Position = position;
+            file.ReadExactly(buffer, 0, count);
+
+            for (var i = count - 1; i >= 0 && lineStart < 0; i--)
+            {
+                if (lineEnd < 0)
+                {
+                    if (!IsBlank(buffer[i]))
+                        lineEnd = position + i + 1;
+                }
+                else if (buffer[i] == '\n')
+                {
+                    lineStart = position + i + 1;
+                }
+            }
+
+            if (lineStart < 0 && lineEnd >= 0 && lineEnd - position > MaxEntryBytes)
+                throw NotAnEntry(path, "the last line", innerException: null);
+        }
+
+        if (lineEnd < 0)
+            return null;
+
+        lineStart = Math.Max(lineStart, 0);
+        var bytes = new byte[lineEnd - lineStart];
+        file.Position = lineStart;
+        file.ReadExactly(bytes);
+
+        // UTF-8 never encodes another character with a '\n' byte, so the split above is safe; a byte
+        // order mark can only precede the first line
+        return Encoding.UTF8.GetString(bytes).TrimStart('\uFEFF');
+    }
+
+    private static bool IsBlank(byte value) => value is (byte)'\n' or (byte)'\r' or (byte)' ' or (byte)'\t';
+
+    // entries read from a file hold null wherever the JSON did, which never matches
+    private static bool HashMatches(GuardrailLedgerEntry entry) =>
+        entry.Hash is not null
+        && entry.PreviousHash is not null
+        && entry.Decision?.RuleOutcomes is not null
+        && StringsEqual(entry.Hash, ComputeHash(entry.Seq, entry.PreviousHash, entry.Decision));
 
     // hashes are not secrets, so an ordinal compare is sufficient (and allocation-free)
     private static bool StringsEqual(string a, string b) => string.Equals(a, b, StringComparison.Ordinal);
@@ -356,7 +497,7 @@ public sealed class HashChainLedger : IGuardrailLedger, IDisposable
     private static void AppendField(StringBuilder sb, string? value)
     {
         value ??= string.Empty;
-        sb.Append(value.Length).Append(':').Append(value).Append('|');
+        sb.Append(value.Length.ToString(CultureInfo.InvariantCulture)).Append(':').Append(value).Append('|');
     }
 
     /// <summary>Computes the SHA-256 (hex) of a text value, for input/output hashes.</summary>

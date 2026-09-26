@@ -1,3 +1,4 @@
+using System.Globalization;
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Builders;
 using AgentGuard.Core.Configuration;
@@ -21,6 +22,7 @@ namespace AgentGuard.Hosting.Configuration;
 /// <summary>
 /// Maps <see cref="PolicyConfiguration"/> to <see cref="GuardrailPolicyBuilder"/> calls.
 /// LLM-based and ContentSafety rules resolve their dependencies from <see cref="IServiceProvider"/>.
+/// Out-of-range settings throw <see cref="InvalidOperationException"/> naming the rule type and setting.
 /// </summary>
 internal static class ConfigurationMapper
 {
@@ -61,8 +63,8 @@ internal static class ConfigurationMapper
                 break;
 
             case "piiredaction":
-                // Replacement is left null unless configured: hard-coding "[REDACTED]" here made
-                // config-driven PII silently differ from the code-driven default (<ENTITY_TYPE> tags).
+                // an unset Replacement leaves each entity replaced with its <ENTITY_TYPE> tag, the same
+                // default as the code-based RedactPii()
                 builder.RedactPii(new PiiOptions
                 {
                     Entities = rule.Entities is { Count: > 0 } ? rule.Entities : null,
@@ -72,7 +74,7 @@ internal static class ConfigurationMapper
                 break;
 
             case "tokenlimit":
-                var maxTokens = rule.MaxTokens ?? 4000;
+                var maxTokens = AtLeast(rule, rule.MaxTokens, nameof(RuleConfiguration.MaxTokens), minimum: 1) ?? 4000;
                 var phase = ParseEnum<GuardrailPhase>(rule.Phase, GuardrailPhase.Input);
                 var strategy = ParseEnum<TokenOverflowStrategy>(rule.OverflowStrategy,
                     phase == GuardrailPhase.Input ? TokenOverflowStrategy.Reject : TokenOverflowStrategy.Truncate);
@@ -95,29 +97,16 @@ internal static class ConfigurationMapper
                 break;
 
             case "onnxpromptinjection" when rule.ModelPath is not null:
-                // ModelPath used to be accepted and then ignored, quietly loading the bundled
-                // Defender model instead of the one that was configured.
+                // a ModelPath selects the generic DeBERTa rule; without one the bundled Defender model is used
                 goto case "debertapromptinjection";
 
             case "onnxpromptinjection":
             case "defenderpromptinjection":
-                builder.BlockPromptInjectionWithDefender(new DefenderPromptInjectionOptions
-                {
-                    // map the generic config threshold onto the multi-head main-head threshold;
-                    // aux veto and temperature use the model-calibrated defaults
-                    MainThreshold = rule.Threshold ?? 0.75f
-                });
+                builder.BlockPromptInjectionWithDefender(CreateDefenderOptions(rule));
                 break;
 
             case "debertapromptinjection":
-                builder.BlockPromptInjectionWithDeberta(new OnnxPromptInjectionOptions
-                {
-                    ModelPath = rule.ModelPath
-                        ?? throw new InvalidOperationException("DebertaPromptInjection requires ModelPath."),
-                    TokenizerPath = rule.TokenizerPath
-                        ?? throw new InvalidOperationException("DebertaPromptInjection requires TokenizerPath."),
-                    Threshold = rule.Threshold ?? 0.5f
-                });
+                builder.BlockPromptInjectionWithDeberta(CreateDebertaOptions(rule));
                 break;
 
             case "secrets":
@@ -233,6 +222,89 @@ internal static class ConfigurationMapper
         }
     }
 
+    /// <summary>Options for the bundled Defender model; settings left unset keep the options' defaults.</summary>
+    internal static DefenderPromptInjectionOptions CreateDefenderOptions(RuleConfiguration rule)
+    {
+        var defaults = new DefenderPromptInjectionOptions();
+        var (windowSize, windowOverlap, maxWindows) =
+            ReadWindowSettings(rule, defaults.WindowSize, defaults.WindowOverlap, defaults.MaxWindows);
+
+        return new DefenderPromptInjectionOptions
+        {
+            // the generic config threshold maps onto the multi-head main-head threshold;
+            // aux veto and temperature use the model-calibrated defaults
+            MainThreshold = ReadThreshold(rule, defaults.MainThreshold),
+            WindowSize = windowSize,
+            WindowOverlap = windowOverlap,
+            MaxWindows = maxWindows,
+        };
+    }
+
+    /// <summary>Options for a bring-your-own DeBERTa model; settings left unset keep the options' defaults.</summary>
+    internal static OnnxPromptInjectionOptions CreateDebertaOptions(RuleConfiguration rule)
+    {
+        var modelPath = rule.ModelPath
+            ?? throw new InvalidOperationException($"{rule.Type} requires ModelPath.");
+        var tokenizerPath = rule.TokenizerPath
+            ?? throw new InvalidOperationException($"{rule.Type} requires TokenizerPath.");
+
+        var defaults = new OnnxPromptInjectionOptions { ModelPath = modelPath, TokenizerPath = tokenizerPath };
+        var (windowSize, windowOverlap, maxWindows) =
+            ReadWindowSettings(rule, defaults.WindowSize, defaults.WindowOverlap, defaults.MaxWindows);
+
+        return new OnnxPromptInjectionOptions
+        {
+            ModelPath = modelPath,
+            TokenizerPath = tokenizerPath,
+            Threshold = ReadThreshold(rule, defaults.Threshold),
+            WindowSize = windowSize,
+            WindowOverlap = windowOverlap,
+            MaxWindows = maxWindows,
+        };
+    }
+
+    private static float ReadThreshold(RuleConfiguration rule, float defaultValue)
+    {
+        if (rule.Threshold is not { } threshold)
+            return defaultValue;
+
+        // written so that NaN, which fails every comparison, is rejected along with out-of-range values
+        if (threshold is not (>= 0f and <= 1f))
+        {
+            throw new InvalidOperationException(string.Create(CultureInfo.InvariantCulture,
+                $"{rule.Type}: Threshold must be a number from 0.0 to 1.0, but was {threshold}."));
+        }
+
+        return threshold;
+    }
+
+    private static (int WindowSize, int WindowOverlap, int MaxWindows) ReadWindowSettings(
+        RuleConfiguration rule, int defaultWindowSize, int defaultWindowOverlap, int defaultMaxWindows)
+    {
+        var windowSize = AtLeast(rule, rule.WindowSize, nameof(RuleConfiguration.WindowSize), minimum: 1) ?? defaultWindowSize;
+        var windowOverlap = AtLeast(rule, rule.WindowOverlap, nameof(RuleConfiguration.WindowOverlap), minimum: 0) ?? defaultWindowOverlap;
+        var maxWindows = AtLeast(rule, rule.MaxWindows, nameof(RuleConfiguration.MaxWindows), minimum: 0) ?? defaultMaxWindows;
+
+        if (windowOverlap >= windowSize)
+        {
+            throw new InvalidOperationException(string.Create(CultureInfo.InvariantCulture,
+                $"{rule.Type}: WindowOverlap ({windowOverlap}) must be smaller than WindowSize ({windowSize})."));
+        }
+
+        return (windowSize, windowOverlap, maxWindows);
+    }
+
+    private static int? AtLeast(RuleConfiguration rule, int? value, string setting, int minimum)
+    {
+        if (value is { } configured && configured < minimum)
+        {
+            throw new InvalidOperationException(string.Create(CultureInfo.InvariantCulture,
+                $"{rule.Type}: {setting} must be at least {minimum}, but was {configured}."));
+        }
+
+        return value;
+    }
+
     private static bool TryApplyFactory(
         GuardrailPolicyBuilder builder, RuleConfiguration rule, IServiceProvider? serviceProvider)
     {
@@ -270,10 +342,21 @@ internal static class ConfigurationMapper
         if (string.IsNullOrEmpty(value))
             return defaultValue;
 
-        // Enum.Parse handles the comma-separated flags form too ("SqlInjection, Ssrf")
-        return Enum.TryParse<T>(value, ignoreCase: true, out var parsed)
-            ? parsed
-            : throw new InvalidOperationException(
-                $"'{value}' is not a valid {typeof(T).Name}. Valid values: {string.Join(", ", Enum.GetNames<T>())}.");
+        // only member names are accepted, compared ordinally so the result does not depend on the
+        // current culture. Enum.TryParse alone would also take any number, including ones no member
+        // defines. A [Flags] enum takes a comma-separated list of names ("SqlInjection, Ssrf").
+        var names = Enum.GetNames<T>();
+        var parts = typeof(T).IsDefined(typeof(FlagsAttribute), inherit: false)
+            ? value.Split(',', StringSplitOptions.TrimEntries)
+            : [value.Trim()];
+
+        if (parts.All(part => names.Contains(part, StringComparer.OrdinalIgnoreCase))
+            && Enum.TryParse<T>(value, ignoreCase: true, out var parsed))
+        {
+            return parsed;
+        }
+
+        throw new InvalidOperationException(
+            $"'{value}' is not a valid {typeof(T).Name}. Valid values: {string.Join(", ", names)}.");
     }
 }

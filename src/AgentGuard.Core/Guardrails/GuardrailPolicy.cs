@@ -1,4 +1,5 @@
 using AgentGuard.Core.Abstractions;
+using AgentGuard.Core.Rules;
 using AgentGuard.Core.Streaming;
 using Microsoft.Extensions.AI;
 
@@ -67,17 +68,14 @@ public sealed class GuardrailPolicy : IGuardrailPolicy, IDisposable
             // a rule that fails to release its own resources must not stop the rest from doing so
             try
             {
-                (Unwrap(rule) as IDisposable)?.Dispose();
+                // a gated rule holds the resource-owning rule inside it
+                (rule.Unwrap() as IDisposable)?.Dispose();
             }
             catch (ObjectDisposedException)
             {
             }
         }
     }
-
-    // a gated rule holds the resource-owning rule inside it
-    private static IGuardrailRule Unwrap(IGuardrailRule rule) =>
-        rule is Rules.ConditionalGuardrailRule conditional ? Unwrap(conditional.InnerRule) : rule;
 
     /// <summary>
     /// Progressive streaming options, if progressive streaming is enabled for this policy.

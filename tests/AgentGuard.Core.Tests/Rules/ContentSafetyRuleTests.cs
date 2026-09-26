@@ -24,8 +24,8 @@ public class ContentSafetyRuleTests
         return mock;
     }
 
-    // AG-10: a rule with no classifier cannot reach a verdict. It still lets content through under
-    // the default FailOpen, but it now reports an error rather than looking like a clean check.
+    // a rule with no classifier cannot reach a verdict: under the default FailOpen it lets content
+    // through and reports an error
     [Fact]
     public async Task ShouldReportError_WhenNoClassifierConfigured()
     {
@@ -44,7 +44,7 @@ public class ContentSafetyRuleTests
         result.IsError.Should().BeTrue();
     }
 
-    // AG-11: a classifier that could not analyze must not be mistaken for one that found nothing.
+    // a classifier that could not analyze must not be mistaken for one that found nothing.
     [Fact]
     public async Task ShouldReportError_WhenClassifierReportsFailure()
     {

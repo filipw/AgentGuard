@@ -12,5 +12,8 @@
     <PackageReference Include="Microsoft.Extensions.AI" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
     <PackageReference Include="Microsoft.ML.Tokenizers" />
+    <PackageReference Include="Microsoft.ML.Tokenizers.Data.Cl100kBase" />
+    <PackageReference Include="Microsoft.ML.Tokenizers.Data.O200kBase" />
+    <PackageReference Include="Microsoft.Bcl.Memory" />
   </ItemGroup>
 </Project>

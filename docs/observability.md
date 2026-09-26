@@ -44,19 +44,19 @@ builder.Services.AddOpenTelemetry()
 
 | Span name | Description | Key tags |
 |-----------|-------------|----------|
-| `agentguard.pipeline.run` | Full pipeline evaluation | `agentguard.policy.name`, `agentguard.phase`, `agentguard.outcome`, `agentguard.agent.name` |
-| `agentguard.rule.evaluate {name}` | Individual rule evaluation | `agentguard.rule.name`, `agentguard.phase`, `agentguard.rule.order`, `agentguard.outcome` |
-| `agentguard.pipeline.reask` | Re-ask loop | `agentguard.policy.name`, `agentguard.reask.max_attempts`, `agentguard.reask.attempts_used`, `agentguard.outcome` |
-| `agentguard.streaming.pipeline` | Streaming pipeline evaluation | `agentguard.policy.name`, `agentguard.outcome` |
+| `agentguard.pipeline.run` | Full pipeline evaluation | `agentguard.policy.name`, `agentguard.phase`, `agentguard.outcome`, `agentguard.agent.name`; on a block also `agentguard.blocked.reason` and `agentguard.severity` |
+| `agentguard.rule.evaluate {name}` | Individual rule evaluation | `agentguard.rule.name`, `agentguard.phase`, `agentguard.rule.order`, `agentguard.outcome`; on a block also `agentguard.blocked.reason` and `agentguard.severity`, on a rule error `error.type`. Rule spans from progressive streaming also carry `agentguard.streaming.strategy` |
+| `agentguard.pipeline.reask` | Re-ask loop | `agentguard.policy.name`, `agentguard.reask.max_attempts`, `agentguard.reask.attempts_used`, `agentguard.outcome`; when the attempts run out also `agentguard.blocked.reason` and `agentguard.severity` |
+| `agentguard.streaming.pipeline` | Progressive streaming evaluation | `agentguard.policy.name`, `agentguard.outcome`, `agentguard.streaming.progressive_rules`, `agentguard.streaming.final_only_rules`, `agentguard.streaming.adaptive_rules`; on a block also `agentguard.blocked.reason` and `agentguard.severity` |
 
 ### AgentFramework middleware spans
 
 | Span name | Description | Key tags |
 |-----------|-------------|----------|
-| `agentguard.middleware.input` | MAF input guardrails | `agentguard.agent.name`, `agentguard.phase`, `agentguard.outcome` |
-| `agentguard.middleware.output` | MAF output guardrails | `agentguard.agent.name`, `agentguard.phase`, `agentguard.outcome`, `agentguard.tool_call.count` |
-| `agentguard.middleware.streaming` | MAF streaming guardrails | `agentguard.agent.name`, `agentguard.streaming.strategy` |
-| `agentguard.executor.guard` | Workflow executor guardrails | `agentguard.executor.id`, `agentguard.phase`, `agentguard.message.type`, `agentguard.outcome` |
+| `agentguard.middleware.input` | MAF input guardrails | `agentguard.agent.name`, `agentguard.phase`, `agentguard.outcome`; on a block also `agentguard.blocked.reason` and `agentguard.severity` |
+| `agentguard.middleware.output` | MAF output guardrails (also emitted under `agentguard.middleware.streaming` for buffered streaming) | `agentguard.agent.name`, `agentguard.phase`, `agentguard.outcome`, `agentguard.tool_call.count`; on a block also `agentguard.blocked.reason` and `agentguard.severity` |
+| `agentguard.middleware.streaming` | MAF streaming guardrails | `agentguard.agent.name`, `agentguard.streaming.strategy`, `agentguard.outcome` (the outcome of the whole streamed run: blocked on an input or output block, otherwise modified or passed); on a block also `agentguard.blocked.reason` and `agentguard.severity` |
+| `agentguard.executor.guard` | Workflow executor guardrails (`agentguard.executor.guard input` / `agentguard.executor.guard output` for executors with a typed output) | `agentguard.executor.id`, `agentguard.phase`, `agentguard.message.type`, `agentguard.outcome`; on a block also `agentguard.blocked.reason` and `agentguard.severity` |
 
 ### Span hierarchy
 
@@ -66,20 +66,26 @@ When using the MAF middleware, spans nest naturally under the existing MAF agent
 invoke_agent (MAF)
   └─ agentguard.middleware.input
        └─ agentguard.pipeline.run
-            ├─ agentguard.rule.evaluate PromptInjectionRule
-            ├─ agentguard.rule.evaluate DefenderPromptInjectionRule
+            ├─ agentguard.rule.evaluate prompt-injection
+            ├─ agentguard.rule.evaluate defender-prompt-injection
             └─ agentguard.rule.evaluate pii
   └─ agentguard.middleware.output
        └─ agentguard.pipeline.run
-            ├─ agentguard.rule.evaluate ToolCallGuardrailRule
-            └─ agentguard.rule.evaluate ContentSafetyRule
+            ├─ agentguard.rule.evaluate tool-call-guardrail
+            └─ agentguard.rule.evaluate content-safety
 ```
+
+Rule spans are named after the rule's `Name` (`prompt-injection`, `pii`, `tool-call-guardrail`, and so on). The adapters run the pipeline once per message they evaluate: `agentguard.middleware.input` holds one `agentguard.pipeline.run` for the newest user message plus one for each earlier user message whose verdict is not cached yet, and `agentguard.middleware.output` holds one per assistant message of the response. When a MAF policy has tool rules, each tool invocation adds pipeline runs under the sub-policy names `<policy>.tool-calls`, `<policy>.tool-results.text` and `<policy>.tool-results` (in the `agentguard.policy.name` tag).
 
 ### Span status
 
-- Pipeline and rule spans set `ActivityStatusCode.Error` when a rule blocks.
-- The `StatusDescription` is set to the block reason.
-- Blocked rule spans include an `agentguard.rule.blocked` event with `reason` and `severity` tags.
+A block is an expected outcome of a policy, not a failure, so error-rate alerts built on span status don't fire on policy decisions:
+
+- A blocked span records the block in `agentguard.outcome` = `blocked`, plus `agentguard.blocked.reason` and `agentguard.severity` where listed above, and leaves the span status unset. This includes running out of re-ask attempts.
+- Blocked rule spans from `GuardrailPipeline` also include an `agentguard.rule.blocked` event with `reason` and `severity` tags.
+- A rule that could not reach a verdict (a result with `IsError`) sets `ActivityStatusCode.Error` on its rule span, with the error detail in `error.type` and the status description. This applies whatever its `ErrorBehavior` did with the text, so a fail-open error is still visible.
+- An exception that escapes a rule, a pipeline run, a re-ask or a streaming evaluation sets `ActivityStatusCode.Error` on that span, with the exception type in `error.type`. Cancellation through the caller's token is not recorded as an error.
+- The MAF middleware and workflow executor spans follow the same rules: a block sets the outcome, reason and severity tags; an exception sets `ActivityStatusCode.Error`. A middleware span also sets it when the block came from a rule that could not reach a verdict and failed closed.
 
 ## Metrics
 
@@ -91,7 +97,7 @@ invoke_agent (MAF)
 | `agentguard.pipeline.duration` | Histogram | ms | Pipeline execution duration. Tags: `agentguard.policy.name`, `agentguard.phase`, `agentguard.outcome` |
 | `agentguard.rule.duration` | Histogram | ms | Per-rule execution duration. Tags: `agentguard.rule.name`, `agentguard.phase` |
 | `agentguard.pipeline.reask.attempts` | Counter | - | Re-ask attempts. Tags: `agentguard.policy.name` |
-| `agentguard.pipeline.modifications` | Counter | - | Text modifications (PII redaction, etc.). Tags: `agentguard.policy.name`, `agentguard.phase` |
+| `agentguard.pipeline.modifications` | Counter | - | Text modifications (PII redaction, etc.). Tags: `agentguard.policy.name`, `agentguard.phase` (the progressive streaming pipeline records only `agentguard.policy.name`) |
 | `agentguard.streaming.retractions` | Counter | - | Streaming retractions. Tags: `agentguard.policy.name` |
 
 ## Tag Keys
@@ -114,6 +120,7 @@ All tag keys are defined as constants in `AgentGuardTelemetry.Tags`:
 | `ToolCallCount` | `agentguard.tool_call.count` |
 | `ReaskMaxAttempts` | `agentguard.reask.max_attempts` |
 | `ReaskAttemptsUsed` | `agentguard.reask.attempts_used` |
+| `ErrorType` | `error.type` |
 
 ### Outcome values
 
@@ -122,7 +129,7 @@ All tag keys are defined as constants in `AgentGuardTelemetry.Tags`:
 | `passed` | All rules passed |
 | `blocked` | A rule blocked the text |
 | `modified` | A rule modified the text (e.g. PII redaction) |
-| `error` | A rule encountered an error |
+| `error` | A rule could not reach a verdict and did not block (rule spans and `agentguard.rule.evaluations` only) |
 
 ## Sensitive Data
 
@@ -141,16 +148,16 @@ Or via environment variable:
 export AGENTGUARD_CAPTURE_CONTENT=true
 ```
 
-When enabled, the pipeline span will include `agentguard.input` and `agentguard.output` events carrying a `text` tag with the input/output content.
+When enabled, the pipeline span includes an `agentguard.input` event and, when no rule blocked, an `agentguard.output` event, each carrying a `text` tag with the input/output content.
 
 ## Aspire Dashboard Example
 
-If you're using .NET Aspire, all AgentGuard spans and metrics appear automatically in the Aspire dashboard once registered:
+If you're using .NET Aspire, all AgentGuard spans and metrics appear automatically in the Aspire dashboard once registered in the service that runs the guardrails (for example in the ServiceDefaults OpenTelemetry setup, not in the AppHost):
 
 ```csharp
 using AgentGuard.Hosting;
 
-var builder = DistributedApplication.CreateBuilder(args);
+var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddOpenTelemetry()
     .WithTracing(t => t.AddAgentGuardInstrumentation())
@@ -168,9 +175,9 @@ The ledger types live in `AgentGuard.Core.Ledger` and are dependency-free (`Syst
 - `IGuardrailLedger` - append-only sink (`Append(GuardrailDecision)`).
 - `GuardrailDecision` - the immutable decision facts (policy, phase, outcome, blocking rule/severity/reason, per-rule outcomes, input/output hashes, timestamp).
 - `GuardrailLedgerEntry` - a chain record: the decision plus `Seq`, `PreviousHash`, and `Hash`.
-- `HashChainLedger` - the concrete tamper-evident store: thread-safe append, optional append-only JSONL file mirror, `Verify()` (recompute and compare the whole chain), `Export()` (JSON of the chain), and `Load(path)` (re-hydrate a persisted JSONL chain so it can be re-verified after a process restart).
+- `HashChainLedger` - the concrete tamper-evident store: thread-safe append, optional append-only JSONL file mirror, `Verify()` (recompute and compare the entries held in memory), `Export()` (JSON of those entries), and `Load(path)` (re-hydrate a persisted JSONL chain so it can be re-verified after a process restart). A ledger constructed over an existing JSONL file continues its chain.
 
-A decision is emitted once per pipeline evaluation, so every re-ask attempt is independently auditable.
+A decision is emitted once per pipeline evaluation, so every re-ask attempt is independently auditable. The adapters evaluate messages one at a time (each user message not answered from the verdict cache, each assistant message of a response), so a single request can add several entries.
 
 ### Enabling via Hosting
 
@@ -185,7 +192,14 @@ builder.Services.AddAgentGuard(options =>
 });
 ```
 
-The ledger is registered as a singleton and flows into every pipeline resolved from DI (including the MAF, Workflows, and `IChatClient` adapters). Resolve `IGuardrailLedger` (cast to `HashChainLedger`) anywhere to verify or export it.
+The ledger is registered as a singleton `IGuardrailLedger`. Two consumers resolve it from DI:
+
+- the `GuardrailPipeline` that `AddAgentGuard` registers;
+- the MAF agent middleware (`UseAgentGuard()` on `AIAgentBuilder`), from the service provider the agent is built with - build it with `.Build(serviceProvider)`, or pass the ledger to `UseAgentGuard(..., ledger: ledger)`.
+
+The `IChatClient` decorator and workflow executors build their own pipelines and don't read DI, so hand them the ledger: `chatClient.UseAgentGuard(configure, ledger: ledger)` and `new GuardedExecutorOptions { Ledger = ledger }`. Resolve `IGuardrailLedger` (cast to `HashChainLedger`) anywhere to verify or export it.
+
+`AddAgentGuard(IConfiguration)` has no ledger setting; register one yourself, for example `services.AddSingleton<IGuardrailLedger>(new HashChainLedger("audit/decisions.jsonl"))`, and the same resolution applies.
 
 ### Standalone
 
@@ -214,7 +228,9 @@ if (!loaded.Verify(out var brokenAtSeq))
     Console.WriteLine($"chain broken at entry {brokenAtSeq}");
 ```
 
-The loaded ledger is verification-only by default. Pass `resumeWriting: true` to keep appending to (and persisting into) the same chain after a restart. The JSONL directory is created eagerly when the ledger is constructed, so the first append cannot fail on a missing directory.
+A ledger constructed over a JSONL file that already holds entries - as `UseDecisionLedger(path)` does on every process start - continues that chain. It reads only the file's last line, gives its first entry the next sequence number, and links that entry to the last entry's hash. The file therefore stays one chain that `Load` verifies from genesis, while the new ledger holds only the entries appended since (its `Verify()` checks that they link to the persisted tail). If the last line is not an intact entry (an interrupted write, or an edit), the constructor throws `InvalidDataException` naming the file instead of starting a second chain; `Load` throws the same exception, naming the line, for any bad line.
+
+The loaded ledger is verification-only by default. Pass `resumeWriting: true` to keep appending to the same chain with every persisted entry also held in memory. The JSONL directory is created eagerly when the ledger is constructed, so the first append cannot fail on a missing directory.
 
 ### Failure isolation
 

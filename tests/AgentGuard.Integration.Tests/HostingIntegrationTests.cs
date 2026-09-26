@@ -1,5 +1,6 @@
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Guardrails;
+using AgentGuard.Core.Ledger;
 using AgentGuard.Hosting;
 using AgentGuard.Pii;
 using FluentAssertions;
@@ -135,6 +136,40 @@ public class HostingIntegrationTests
         var factory = provider.GetRequiredService<IAgentGuardFactory>();
         var policy = factory.GetDefaultPolicy();
         policy.Rules.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ShouldContinueTheLedgerFile_WhenTheServiceRestarts()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"agentguard-hosting-ledger-{Guid.NewGuid():N}.jsonl");
+        try
+        {
+            foreach (var text in new[] { "first run", "second run" })
+            {
+                var services = new ServiceCollection();
+                services.AddLogging();
+                services.AddAgentGuard(options =>
+                {
+                    options.DefaultPolicy(b => b.BlockPromptInjection());
+                    options.UseDecisionLedger(path);
+                });
+
+                using var provider = services.BuildServiceProvider();
+                await provider.GetRequiredService<GuardrailPipeline>()
+                    .RunAsync(new GuardrailContext { Text = text, Phase = GuardrailPhase.Input });
+
+                // registered as an instance, so the container leaves disposing it to its owner
+                ((HashChainLedger)provider.GetRequiredService<IGuardrailLedger>()).Dispose();
+            }
+
+            var chain = HashChainLedger.Load(path);
+            chain.Entries.Select(e => e.Seq).Should().Equal(0L, 1L);
+            chain.Verify().Should().BeTrue();
+        }
+        finally
+        {
+            File.Delete(path);
+        }
     }
 
     [Fact]

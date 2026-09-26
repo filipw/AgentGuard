@@ -581,8 +581,7 @@ public class StreamingGuardrailPipelineTests
             => ValueTask.FromResult(evaluate(context));
     }
 
-    // AG-08: a mid-stream modification used to end the stream, discarding everything the model had
-    // not yet produced. It must now rewrite the buffer and keep going.
+    // a mid-stream modification rewrites the buffer and keeps streaming
 
     [Fact]
     public async Task ShouldKeepStreaming_AfterAMidStreamModification()

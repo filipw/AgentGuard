@@ -8,7 +8,8 @@ namespace AgentGuard.RemoteClassifier;
 public sealed class RemotePromptInjectionOptions
 {
     /// <summary>
-    /// Labels that indicate an injection was detected. Case-insensitive comparison.
+    /// Labels that indicate an injection was detected, matched ignoring case and independently of the
+    /// current culture, whatever comparer the set itself uses. Must contain at least one label.
     /// Default: ["jailbreak", "injection", "malicious", "unsafe", "INJECTION"].
     /// </summary>
     public ISet<string> InjectionLabels { get; init; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -17,8 +18,10 @@ public sealed class RemotePromptInjectionOptions
     };
 
     /// <summary>
-    /// Confidence threshold for the injection label. Results below this threshold are treated as safe.
-    /// Default: 0.5.
+    /// Confidence threshold for the injection label (0.0-1.0; NaN is rejected). Input is blocked when an
+    /// injection label's score is at or above it: the predicted label's score, or, when the classifier
+    /// reports every label's score (<see cref="ClassificationResult.Scores"/>), the injection label's own
+    /// score even if another label scored higher. Default: 0.5.
     /// </summary>
     public float Threshold { get; init; } = 0.5f;
 
@@ -29,7 +32,8 @@ public sealed class RemotePromptInjectionOptions
     public bool IncludeConfidence { get; init; } = true;
 
     /// <summary>
-    /// What to do when the remote classifier is unreachable or returns an error.
+    /// What to do when the remote classifier is unreachable, times out, returns an error, or returns
+    /// a result without a usable label and score.
     /// Default: <see cref="ErrorBehavior.FailOpen"/>.
     /// </summary>
     public ErrorBehavior OnError { get; init; } = ErrorBehavior.FailOpen;
@@ -48,7 +52,8 @@ public sealed class RemotePromptInjectionOptions
     }
 
     /// <summary>
-    /// Timeout for the HTTP request. Default: 10 seconds.
+    /// Timeout for the classification call: a positive time span, or <c>Timeout.InfiniteTimeSpan</c>
+    /// for none. Default: 10 seconds.
     /// </summary>
     public TimeSpan Timeout { get; init; } = TimeSpan.FromSeconds(10);
 }

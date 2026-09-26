@@ -1,25 +1,40 @@
 using System.Runtime.CompilerServices;
-using System.Text;
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Guardrails;
 using AgentGuard.Core.Ledger;
 using AgentGuard.Core.Streaming;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 
 namespace AgentGuard.Core.ChatClient;
 
 /// <summary>
 /// An <see cref="IChatClient"/> decorator that runs AgentGuard guardrails transparently on every call.
-/// Input guardrails run on the last user message before the inner client is invoked.
-/// Output guardrails run on the response text before it is returned to the caller.
-/// Conversation history is automatically propagated to all rules from the messages passed to
-/// <see cref="GetResponseAsync"/> and <see cref="GetStreamingResponseAsync"/>.
+/// Input guardrails run on every user message in the request (see <see cref="ChatMessageGuard"/>)
+/// before the inner client is invoked; output guardrails run on each assistant message of the
+/// response, on its reasoning and on its tool calls and tool results. Conversation history is
+/// automatically propagated to all rules from the messages passed to <see cref="GetResponseAsync"/> and
+/// <see cref="GetStreamingResponseAsync"/>.
 /// </summary>
+/// <remarks>
+/// <para>
+/// Place the decorator inside a <c>FunctionInvokingChatClient</c> (add it after
+/// <c>UseFunctionInvocation()</c> on a <see cref="ChatClientBuilder"/>) to have tool-call guardrails
+/// vet every model turn before its tool calls run; outside it, they can only flag calls that have
+/// already been executed.
+/// </para>
+/// <para>
+/// A streamed response is buffered and guarded exactly like a non-streamed one, then replayed: as it
+/// arrived when nothing changed, otherwise rebuilt from the guarded messages with its ids, usage,
+/// finish reason and non-text content. With progressive streaming (see
+/// <see cref="IGuardrailPolicy.ProgressiveStreaming"/>) the text streams as it arrives and
+/// retraction/replacement events correct it, while everything else - tool calls and results, reasoning,
+/// usage, finish reason - is held back until the stream has passed its final check.
+/// </para>
+/// </remarks>
 public sealed class GuardrailChatClient : DelegatingChatClient
 {
-    private readonly GuardrailPipeline _pipeline;
+    private readonly ChatMessageGuard _guard;
     private readonly IGuardrailPolicy _policy;
     private readonly bool _ownsPolicy;
 
@@ -52,8 +67,14 @@ public sealed class GuardrailChatClient : DelegatingChatClient
     {
         _policy = policy ?? throw new ArgumentNullException(nameof(policy));
         _ownsPolicy = ownsPolicy;
-        _pipeline = new GuardrailPipeline(policy, logger ?? NullLogger<GuardrailPipeline>.Instance, ledger);
+        _guard = new ChatMessageGuard(policy, logger, ledger);
     }
+
+    /// <summary>
+    /// Well-known key used in <see cref="ChatResponseUpdate.AdditionalProperties"/> to carry
+    /// <see cref="StreamingGuardrailEvent"/> instances during progressive streaming.
+    /// </summary>
+    public const string GuardrailEventPropertyKey = "agentguard.event";
 
     /// <inheritdoc/>
     protected override void Dispose(bool disposing)
@@ -76,15 +97,13 @@ public sealed class GuardrailChatClient : DelegatingChatClient
     {
         var messageList = messages.ToList();
 
-        // Run input guardrails on the last user message, with full conversation history
+        // input guardrails cover every user message, with the full conversation as history
         var (inputBlocked, processedMessages) = await RunInputGuardrailsAsync(messageList, cancellationToken);
         if (inputBlocked is not null)
             return inputBlocked;
 
-        // Call inner client
         var response = await base.GetResponseAsync(processedMessages, options, cancellationToken);
 
-        // Run output guardrails on the response
         return await RunOutputGuardrailsAsync(response, processedMessages, cancellationToken);
     }
 
@@ -96,85 +115,73 @@ public sealed class GuardrailChatClient : DelegatingChatClient
     {
         var messageList = messages.ToList();
 
-        // Run input guardrails before streaming begins
+        // input guardrails run before streaming begins
         var (inputBlocked, processedMessages) = await RunInputGuardrailsAsync(messageList, cancellationToken);
         if (inputBlocked is not null)
         {
-            // Yield the violation message as a single update
-            var text = inputBlocked.Messages.FirstOrDefault()?.Text ?? "";
-            yield return new ChatResponseUpdate(ChatRole.Assistant, text);
+            yield return new ChatResponseUpdate(ChatRole.Assistant, inputBlocked.Messages.FirstOrDefault()?.Text ?? "");
             yield break;
         }
 
-        // A policy that opted into progressive streaming gets it here too; buffering the whole
-        // response would silently ignore the ProgressiveStreaming options it configured.
-        if (_policy.ProgressiveStreaming is not null)
-        {
-            await foreach (var update in StreamProgressivelyAsync(processedMessages, options, cancellationToken))
-                yield return update;
-            yield break;
-        }
+        // a policy that opted into progressive streaming gets it here too; buffering the whole
+        // response would silently ignore the ProgressiveStreaming options it configured
+        var stream = _policy.ProgressiveStreaming is not null
+            ? StreamProgressivelyAsync(processedMessages, options, cancellationToken)
+            : StreamBufferedAsync(processedMessages, options, cancellationToken);
 
-        await foreach (var update in StreamBufferedAsync(processedMessages, options, cancellationToken))
+        await foreach (var update in stream)
             yield return update;
     }
 
     private async IAsyncEnumerable<ChatResponseUpdate> StreamBufferedAsync(
-        List<ChatMessage> processedMessages,
+        IReadOnlyList<ChatMessage> processedMessages,
         ChatOptions? options,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        // Buffer streaming output so output guardrails can evaluate the full response
-        var chunks = new List<ChatResponseUpdate>();
-        var textBuilder = new StringBuilder();
-
+        var updates = new List<ChatResponseUpdate>();
         await foreach (var update in base.GetStreamingResponseAsync(processedMessages, options, cancellationToken))
-        {
-            chunks.Add(update);
-            if (!string.IsNullOrEmpty(update.Text))
-                textBuilder.Append(update.Text);
-        }
+            updates.Add(update);
 
-        var fullText = textBuilder.ToString();
+        // the buffered response is guarded exactly like a non-streamed one: message by message
+        var response = updates.ToChatResponse();
+        var result = await _guard.GuardOutputAsync(
+            [.. response.Messages], processedMessages, agentName: null, cancellationToken);
 
-        if (!string.IsNullOrWhiteSpace(fullText))
+        if (result.IsBlocked)
         {
-            var outputContext = new GuardrailContext
+            var msg = await _policy.ViolationHandler.HandleViolationAsync(
+                result.BlockingResult!, result.BlockingContext!, cancellationToken);
+
+            // a blocked response must not carry any of the original content through
+            yield return new ChatResponseUpdate(ChatRole.Assistant, msg)
             {
-                Text = fullText,
-                Phase = GuardrailPhase.Output,
-                Messages = processedMessages
+                ResponseId = response.ResponseId,
+                ConversationId = response.ConversationId,
+                ModelId = response.ModelId,
+                CreatedAt = response.CreatedAt
             };
-
-            var outputResult = await _pipeline.RunAsync(outputContext, cancellationToken);
-
-            if (outputResult.IsBlocked)
-            {
-                var msg = await _policy.ViolationHandler.HandleViolationAsync(
-                    outputResult.BlockingResult!, outputContext, cancellationToken);
-                yield return new ChatResponseUpdate(ChatRole.Assistant, msg);
-                yield break;
-            }
-
-            if (outputResult.WasModified)
-            {
-                yield return new ChatResponseUpdate(ChatRole.Assistant, outputResult.FinalText);
-                yield break;
-            }
+            yield break;
         }
 
-        // Output passed guardrails - yield all original chunks
-        foreach (var chunk in chunks)
-            yield return chunk;
+        if (!result.WasModified)
+        {
+            foreach (var update in updates)
+                yield return update;
+            yield break;
+        }
+
+        response.ContinuationToken = LastContinuationToken(updates);
+        foreach (var update in GuardrailChatContent.ToUpdates(response, result.Messages))
+            yield return update;
     }
 
     private async IAsyncEnumerable<ChatResponseUpdate> StreamProgressivelyAsync(
-        List<ChatMessage> processedMessages,
+        IReadOnlyList<ChatMessage> processedMessages,
         ChatOptions? options,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         var streamingPipeline = new StreamingGuardrailPipeline(
-            _policy, _policy.ProgressiveStreaming, ledger: _pipeline.Ledger);
+            _policy, _policy.ProgressiveStreaming, ledger: _guard.Pipeline.Ledger);
 
         var outputContext = new GuardrailContext
         {
@@ -183,8 +190,12 @@ public sealed class GuardrailChatClient : DelegatingChatClient
             Messages = processedMessages
         };
 
-        var textStream = ExtractTextAsync(
+        var upstream = new ProgressiveUpstream();
+        var textStream = upstream.ReadTextAsync(
             base.GetStreamingResponseAsync(processedMessages, options, cancellationToken), cancellationToken);
+
+        StreamingFinalResult? final = null;
+        var shownLength = 0;
 
         await foreach (var output in streamingPipeline.ProcessStreamAsync(
             textStream, outputContext, _policy.ViolationHandler, cancellationToken))
@@ -192,148 +203,125 @@ public sealed class GuardrailChatClient : DelegatingChatClient
             switch (output.Type)
             {
                 case StreamingOutputType.TextChunk:
-                    yield return new ChatResponseUpdate(ChatRole.Assistant, output.Text);
+                    shownLength += output.Text!.Length;
+                    yield return TextUpdate(output.Text, upstream.Current);
                     break;
 
                 case StreamingOutputType.GuardrailEvent:
-                    var eventUpdate = new ChatResponseUpdate(
-                        ChatRole.Assistant, output.GuardrailEvent?.ReplacementText ?? "");
-                    eventUpdate.AdditionalProperties ??= [];
-                    eventUpdate.AdditionalProperties[GuardrailEventPropertyKey] = output.GuardrailEvent!;
-                    yield return eventUpdate;
+                    if (output.GuardrailEvent!.Type == StreamingGuardrailEventType.Replacement)
+                        shownLength = output.GuardrailEvent.ReplacementText?.Length ?? 0;
+                    yield return EventUpdate(output.GuardrailEvent, upstream.Current);
+                    break;
+
+                case StreamingOutputType.Completed:
+                    final = output.FinalResult;
                     break;
             }
         }
-    }
 
-    /// <summary>
-    /// Well-known key used in <see cref="ChatResponseUpdate.AdditionalProperties"/> to carry
-    /// <see cref="StreamingGuardrailEvent"/> instances during progressive streaming.
-    /// </summary>
-    public const string GuardrailEventPropertyKey = "agentguard.event";
+        // the retraction already replaced a blocked response; what was held back goes with it
+        if (final is { IsBlocked: true })
+            yield break;
 
-    private static async IAsyncEnumerable<string> ExtractTextAsync(
-        IAsyncEnumerable<ChatResponseUpdate> updates,
-        [EnumeratorCancellation] CancellationToken cancellationToken)
-    {
-        await foreach (var update in updates.WithCancellation(cancellationToken))
+        // tool calls, tool results and reasoning were held back while the text streamed: check them now
+        var response = upstream.All.ToChatResponse();
+        var result = await _guard.GuardToolsAndReasoningAsync(
+            [.. response.Messages], processedMessages, agentName: null, cancellationToken);
+
+        if (result.IsBlocked)
         {
-            if (!string.IsNullOrEmpty(update.Text))
-                yield return update.Text;
+            var msg = await _policy.ViolationHandler.HandleViolationAsync(
+                result.BlockingResult!, result.BlockingContext!, cancellationToken);
+            yield return EventUpdate(StreamingGuardrailEvent.Retract(result.BlockingResult!, shownLength), upstream.Current);
+            yield return EventUpdate(StreamingGuardrailEvent.Replace(msg, result.BlockingResult!, shownLength), upstream.Current);
+            yield break;
         }
+
+        if (!result.WasModified)
+        {
+            foreach (var update in upstream.Held)
+                yield return update;
+            yield break;
+        }
+
+        // the text has already been delivered, so only the rest of the guarded messages goes out
+        response.ContinuationToken = LastContinuationToken(upstream.All);
+        foreach (var update in GuardrailChatContent.ToUpdates(response, WithoutText(result.Messages)))
+            yield return update;
     }
 
-    private async Task<(ChatResponse? blocked, List<ChatMessage> processedMessages)> RunInputGuardrailsAsync(
+    private static IEnumerable<ChatMessage> WithoutText(IEnumerable<ChatMessage> messages) =>
+        messages
+            .Select(message => string.IsNullOrEmpty(message.Text) ? message : GuardrailChatContent.WithText(message, ""))
+            .Where(message => message.Contents.Count > 0 || message.AdditionalProperties is { Count: > 0 });
+
+    private static ResponseContinuationToken? LastContinuationToken(List<ChatResponseUpdate> updates) =>
+        updates.LastOrDefault(update => update.ContinuationToken is not null)?.ContinuationToken;
+
+    // a streamed chunk keeps the ids of the update it came from
+    private static ChatResponseUpdate TextUpdate(string text, ChatResponseUpdate? source) =>
+        new(source?.Role ?? ChatRole.Assistant, text)
+        {
+            AuthorName = source?.AuthorName,
+            MessageId = source?.MessageId,
+            ResponseId = source?.ResponseId,
+            ConversationId = source?.ConversationId,
+            ModelId = source?.ModelId,
+            CreatedAt = source?.CreatedAt
+        };
+
+    private static ChatResponseUpdate EventUpdate(StreamingGuardrailEvent guardrailEvent, ChatResponseUpdate? source)
+    {
+        var update = TextUpdate(guardrailEvent.ReplacementText ?? "", source);
+        update.AdditionalProperties = new() { [GuardrailEventPropertyKey] = guardrailEvent };
+        return update;
+    }
+
+    private async Task<(ChatResponse? blocked, IReadOnlyList<ChatMessage> processedMessages)> RunInputGuardrailsAsync(
         List<ChatMessage> messages,
         CancellationToken cancellationToken)
     {
-        // Evaluate the last user message; pass the full message list as conversation history
-        var lastUserMessage = messages.LastOrDefault(m => m.Role == ChatRole.User);
-        var inputText = lastUserMessage?.Text ?? "";
+        var result = await _guard.GuardInputAsync(messages, agentName: null, cancellationToken);
 
-        if (string.IsNullOrWhiteSpace(inputText))
-            return (null, messages);
-
-        var inputContext = new GuardrailContext
-        {
-            Text = inputText,
-            Phase = GuardrailPhase.Input,
-            Messages = messages
-        };
-
-        var inputResult = await _pipeline.RunAsync(inputContext, cancellationToken);
-
-        if (inputResult.IsBlocked)
+        if (result.IsBlocked)
         {
             var msg = await _policy.ViolationHandler.HandleViolationAsync(
-                inputResult.BlockingResult!, inputContext, cancellationToken);
+                result.BlockingResult!, result.BlockingContext!, cancellationToken);
             return (new ChatResponse([new ChatMessage(ChatRole.Assistant, msg)]), messages);
         }
 
-        if (inputResult.WasModified && lastUserMessage is not null)
-        {
-            var modified = new List<ChatMessage>(messages);
-            var lastUserIdx = modified.LastIndexOf(lastUserMessage);
-            modified[lastUserIdx] = new ChatMessage(lastUserMessage.Role, inputResult.FinalText);
-            return (null, modified);
-        }
-
-        return (null, messages);
+        return (null, result.Messages);
     }
 
     private async Task<ChatResponse> RunOutputGuardrailsAsync(
         ChatResponse response,
-        List<ChatMessage> messages,
+        IReadOnlyList<ChatMessage> messages,
         CancellationToken cancellationToken)
     {
-        var responseText = response.Text ?? "";
+        var responseMessages = response.Messages as IReadOnlyList<ChatMessage> ?? [.. response.Messages];
+        var result = await _guard.GuardOutputAsync(responseMessages, messages, agentName: null, cancellationToken);
 
-        if (string.IsNullOrWhiteSpace(responseText))
-            return response;
-
-        var outputContext = new GuardrailContext
-        {
-            Text = responseText,
-            Phase = GuardrailPhase.Output,
-            Messages = messages
-        };
-
-        var outputResult = await _pipeline.RunAsync(outputContext, cancellationToken);
-
-        if (outputResult.IsBlocked)
+        if (result.IsBlocked)
         {
             var msg = await _policy.ViolationHandler.HandleViolationAsync(
-                outputResult.BlockingResult!, outputContext, cancellationToken);
-            return ReplaceText(response, msg, keepOtherContent: false);
+                result.BlockingResult!, result.BlockingContext!, cancellationToken);
+
+            // a blocked response must not carry any of the original content through
+            return WithMessages(response, [new ChatMessage(ChatRole.Assistant, msg)], blocked: true);
         }
 
-        if (outputResult.WasModified)
-            return ReplaceText(response, outputResult.FinalText, keepOtherContent: true);
-
-        return response;
+        return result.WasModified
+            ? WithMessages(response, [.. result.Messages], blocked: false)
+            : response;
     }
 
     /// <summary>
-    /// Rebuilds a response around new assistant text while preserving the response-level metadata
-    /// (id, usage, model, finish reason) and, for a modification, the non-text content such as
-    /// function calls. Returning a bare <c>new ChatResponse([...])</c> would drop all of it.
+    /// Rebuilds a response around new messages while preserving the response-level metadata (id,
+    /// usage, model, finish reason). A blocked response also drops the continuation token, so the rest
+    /// of it can't be fetched.
     /// </summary>
-    private static ChatResponse ReplaceText(ChatResponse response, string text, bool keepOtherContent)
-    {
-        List<ChatMessage> messages;
-
-        if (keepOtherContent)
-        {
-            messages = [.. response.Messages];
-            var index = messages.FindLastIndex(m => m.Role == ChatRole.Assistant && !string.IsNullOrEmpty(m.Text));
-
-            if (index >= 0)
-            {
-                var original = messages[index];
-                var contents = original.Contents
-                    .Where(c => c is not TextContent)
-                    .Prepend<AIContent>(new TextContent(text))
-                    .ToList();
-
-                messages[index] = new ChatMessage(original.Role, contents)
-                {
-                    AuthorName = original.AuthorName,
-                    MessageId = original.MessageId,
-                    AdditionalProperties = original.AdditionalProperties
-                };
-            }
-            else
-            {
-                messages.Add(new ChatMessage(ChatRole.Assistant, text));
-            }
-        }
-        else
-        {
-            // a blocked response must not carry any of the original content through
-            messages = [new ChatMessage(ChatRole.Assistant, text)];
-        }
-
-        return new ChatResponse(messages)
+    private static ChatResponse WithMessages(ChatResponse response, IList<ChatMessage> messages, bool blocked) =>
+        new(messages)
         {
             ResponseId = response.ResponseId,
             ConversationId = response.ConversationId,
@@ -341,7 +329,45 @@ public sealed class GuardrailChatClient : DelegatingChatClient
             CreatedAt = response.CreatedAt,
             FinishReason = response.FinishReason,
             Usage = response.Usage,
+            ContinuationToken = blocked ? null : response.ContinuationToken,
             AdditionalProperties = response.AdditionalProperties
         };
+
+    // splits the upstream stream: its text goes to the streaming pipeline as it arrives, everything
+    // else waits in Held until the stream has passed its final check
+    private sealed class ProgressiveUpstream
+    {
+        public List<ChatResponseUpdate> All { get; } = [];
+
+        public List<ChatResponseUpdate> Held { get; } = [];
+
+        public ChatResponseUpdate? Current { get; private set; }
+
+        public async IAsyncEnumerable<string> ReadTextAsync(
+            IAsyncEnumerable<ChatResponseUpdate> updates,
+            [EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            await foreach (var update in updates.WithCancellation(cancellationToken))
+            {
+                All.Add(update);
+                Current = update;
+
+                var text = update.Text;
+                if (string.IsNullOrEmpty(text))
+                {
+                    Held.Add(update);
+                    continue;
+                }
+
+                var rest = GuardrailChatContent.WithText(update, "");
+                if (rest.Contents.Count > 0 || rest.FinishReason is not null ||
+                    rest.ContinuationToken is not null || rest.AdditionalProperties is { Count: > 0 })
+                {
+                    Held.Add(rest);
+                }
+
+                yield return text;
+            }
+        }
     }
 }

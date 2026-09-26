@@ -97,6 +97,21 @@ public class RetrievalGuardrailRuleTests
     }
 
     [Fact]
+    public async Task ShouldFilter_WhenJwtTokenFollowsALongRunOfTokenCharacters()
+    {
+        var rule = new RetrievalGuardrailRule();
+        var jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U";
+        var chunks = new List<RetrievedChunk>
+        {
+            new() { Content = "x " + string.Concat(Enumerable.Repeat("eyJ", 100_000)) + " token " + jwt, Source = "dump.txt" },
+        };
+
+        var result = await rule.EvaluateAsync(CreateContext("What is in the dump?", chunks));
+
+        result.IsModified.Should().BeTrue("the token after the padding is still found");
+    }
+
+    [Fact]
     public async Task ShouldFilter_WhenChunkContainsJwtToken()
     {
         var rule = new RetrievalGuardrailRule();
@@ -306,8 +321,7 @@ public class RetrievalGuardrailRuleTests
         result.IsModified.Should().BeTrue();
     }
 
-    // AG-13: EvaluateChunkContent returned on the first match, so SanitizeContent only ever removed
-    // one kind of problem and the chunk was approved with the rest intact.
+    // every problem in a chunk is sanitized, not just the first one found
 
     [Fact]
     public async Task ShouldSanitizeEveryTriggeredFilter_NotJustTheFirst()
@@ -328,6 +342,44 @@ public class RetrievalGuardrailRuleTests
         approved.Content.Should().NotContain("AKIAIOSFODNN7EXAMPLE", "the secret filter must run too");
         approved.Content.Should().NotContain("Ignore all previous instructions");
         await Task.CompletedTask;
+    }
+
+    // sanitizing removes the whole private key block
+
+    private static string PemBlock(string label) =>
+        $"-----BEGIN {label}-----\n"
+        + "MIIEowIBAAKCAQEAu1SU1LfVLPHCozMxH2Mo4lgOEePzNm0tRgeLezV6ffAt0gun\n"
+        + "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEYAAAABBBBCCCCDDDDEEEEFFFF12\n"
+        + $"-----END {label}-----";
+
+    [Theory]
+    [InlineData("RSA PRIVATE KEY")]
+    [InlineData("OPENSSH PRIVATE KEY")]
+    [InlineData("PGP PRIVATE KEY BLOCK")]
+    public void ShouldSanitizeTheWholeBlock_WhenAChunkContainsAPrivateKey(string label)
+    {
+        var rule = new RetrievalGuardrailRule(new RetrievalGuardrailOptions { Action = RetrievalFilterAction.Sanitize });
+
+        var result = rule.EvaluateChunks(
+        [
+            new RetrievedChunk { Content = $"Deploy key:\n{PemBlock(label)}\nRotate it yearly." }
+        ]);
+
+        var approved = result.ApprovedChunks.Should().ContainSingle().Subject;
+        approved.Content.Should().Be("Deploy key:\n[FILTERED]\nRotate it yearly.");
+    }
+
+    [Fact]
+    public void ShouldSanitizeToTheEnd_WhenThePrivateKeyBlockIsUnterminated()
+    {
+        var rule = new RetrievalGuardrailRule(new RetrievalGuardrailOptions { Action = RetrievalFilterAction.Sanitize });
+
+        var result = rule.EvaluateChunks(
+        [
+            new RetrievedChunk { Content = "Deploy key:\n" + PemBlock("EC PRIVATE KEY").Split("\n-----END")[0] }
+        ]);
+
+        result.ApprovedChunks.Should().ContainSingle().Which.Content.Should().Be("Deploy key:\n[FILTERED]");
     }
 
     [Fact]

@@ -1,3 +1,6 @@
+using AgentGuard.Core.Guardrails;
+using Microsoft.Extensions.AI;
+
 namespace AgentGuard.Core.Abstractions;
 
 /// <summary>Which side of an agent turn a rule inspects.</summary>
@@ -45,6 +48,14 @@ public sealed record GuardrailResult
     /// </summary>
     public bool IsError { get; init; }
 
+    /// <summary>
+    /// True when the text was let through but the rule wants the outcome surfaced rather than
+    /// recorded quietly. <see cref="Error"/> sets it for <see cref="ErrorBehavior.Warn"/>. The
+    /// pipeline logs such a result at Warning level and lists it in
+    /// <see cref="GuardrailPipelineResult.Warnings"/>.
+    /// </summary>
+    public bool IsWarning { get; init; }
+
     /// <summary>The text was checked and is acceptable.</summary>
     public static GuardrailResult Passed() => new() { IsBlocked = false };
 
@@ -61,9 +72,16 @@ public sealed record GuardrailResult
         new() { IsModified = true, ModifiedText = modifiedText, Reason = reason };
 
     /// <summary>
-    /// Creates an error result based on the configured <see cref="ErrorBehavior"/>.
-    /// Always sets <see cref="IsError"/> = true and includes error metadata.
+    /// Creates the result for a rule that could not reach a verdict, shaped by <paramref name="behavior"/>.
+    /// Every error result has <see cref="IsError"/> set and carries <c>error</c> (plus
+    /// <c>errorDetail</c> when a detail is given) in <see cref="Metadata"/>:
+    /// <see cref="ErrorBehavior.FailOpen"/> passes with no <see cref="Reason"/>,
+    /// <see cref="ErrorBehavior.Warn"/> passes with a <see cref="Reason"/> and <see cref="IsWarning"/> set,
+    /// and <see cref="ErrorBehavior.FailClosed"/> blocks with <see cref="GuardrailSeverity.High"/>.
     /// </summary>
+    /// <param name="ruleName">The rule's name, used in the reason.</param>
+    /// <param name="behavior">How the error is handled.</param>
+    /// <param name="detail">What went wrong, recorded as <c>errorDetail</c> metadata.</param>
     public static GuardrailResult Error(string ruleName, ErrorBehavior behavior, string? detail = null)
     {
         var metadata = new Dictionary<string, object> { ["error"] = true };
@@ -84,6 +102,8 @@ public sealed record GuardrailResult
             {
                 IsBlocked = false,
                 IsError = true,
+                IsWarning = true,
+                Reason = $"{ruleName} encountered an error and ErrorBehavior is Warn; the text passed without this check",
                 Metadata = metadata
             },
             _ => new GuardrailResult
@@ -98,13 +118,22 @@ public sealed record GuardrailResult
 
 /// <summary>
 /// Configures what happens when a guardrail rule encounters an error
-/// (e.g. API timeout, model unavailable, HTTP failure).
+/// (e.g. API timeout, model unavailable, HTTP failure). Under every behavior the result has
+/// <see cref="GuardrailResult.IsError"/> set and error metadata attached, so telemetry and the
+/// decision ledger record the failure.
 /// </summary>
 public enum ErrorBehavior
 {
-    /// <summary>Pass the text through (fail-open). Default for most rules.</summary>
+    /// <summary>
+    /// Pass the text through quietly (fail-open): the result carries no reason and the pipeline logs
+    /// the error at Debug level. Default for most rules.
+    /// </summary>
     FailOpen = 0,
-    /// <summary>Pass the text through but attach error metadata for downstream inspection.</summary>
+    /// <summary>
+    /// Pass the text through but surface the error: the result carries a reason and has
+    /// <see cref="GuardrailResult.IsWarning"/> set, the pipeline logs it at Warning level, and
+    /// <see cref="GuardrailPipelineResult.Warnings"/> lists it.
+    /// </summary>
     Warn = 1,
     /// <summary>Block the text (fail-closed). Use when safety is more important than availability.</summary>
     FailClosed = 2
@@ -146,7 +175,7 @@ public sealed record GuardrailContext
     public required GuardrailPhase Phase { get; init; }
 
     /// <summary>The conversation so far, when the caller supplied it. Used by the LLM judge rules.</summary>
-    public IReadOnlyList<Microsoft.Extensions.AI.ChatMessage>? Messages { get; init; }
+    public IReadOnlyList<ChatMessage>? Messages { get; init; }
 
     /// <summary>The agent this evaluation belongs to, when known. Recorded on spans and ledger entries.</summary>
     public string? AgentName { get; init; }

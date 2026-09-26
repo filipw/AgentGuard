@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Guardrails;
 using AgentGuard.Core.Rules.PromptInjection;
@@ -7,6 +8,7 @@ using AgentGuard.AgentFramework.Workflows;
 using FluentAssertions;
 using Microsoft.Agents.AI.Workflows;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 using Moq;
 using Xunit;
 
@@ -14,8 +16,6 @@ namespace AgentGuard.AgentFramework.Workflows.Tests;
 
 public class GuardedExecutorTests
 {
-    // --- Helpers ---
-
     private static GuardrailPolicy PolicyWith(params IGuardrailRule[] rules)
         => new GuardrailPolicy("test", rules);
 
@@ -27,8 +27,6 @@ public class GuardedExecutorTests
 
     private static TestRule ModifyingRule(string newText, GuardrailPhase phase = GuardrailPhase.Both)
         => new("modify", phase, _ => ValueTask.FromResult(GuardrailResult.Modified(newText, "modified")));
-
-    // --- GuardedExecutor<TInput> (void return) ---
 
     [Fact]
     public async Task VoidExecutor_ShouldPassThrough_WhenNoViolation()
@@ -103,8 +101,6 @@ public class GuardedExecutorTests
         guarded.Id.Should().Be("guarded-my-executor");
     }
 
-    // --- GuardedExecutor<TInput, TOutput> (typed return) ---
-
     [Fact]
     public async Task TypedExecutor_ShouldReturnOutput_WhenNoViolation()
     {
@@ -178,8 +174,6 @@ public class GuardedExecutorTests
         result.Should().Be("");
     }
 
-    // --- Extension method overloads ---
-
     [Fact]
     public async Task ShouldAcceptBuilderConfigure_ForVoidExecutor()
     {
@@ -216,7 +210,72 @@ public class GuardedExecutorTests
         extractorMock.Verify(e => e.ExtractText("anything"), Times.Once);
     }
 
-    // --- Null input ---
+    [Fact]
+    public async Task VoidExecutor_ShouldPassRebuiltMessage_WhenExtractorRebuildsRewrittenType()
+    {
+        Ticket? received = null;
+        var inner = new TestVoidExecutor<Ticket>("inner", (msg, _) => { received = msg; return ValueTask.CompletedTask; });
+        var guarded = inner.WithGuardrails(
+            PolicyWith(ModifyingRule("my [redacted] expired")),
+            new GuardedExecutorOptions { TextExtractor = new TicketTextExtractor() });
+
+        await guarded.HandleAsync(new Ticket("my secret expired", Priority: 2), Mock.Of<IWorkflowContext>());
+
+        received.Should().Be(new Ticket("my [redacted] expired", Priority: 2));
+    }
+
+    [Fact]
+    public async Task TypedExecutor_ShouldReturnRebuiltOutput_WhenExtractorRebuildsRewrittenType()
+    {
+        var inner = new TestTypedExecutor<string, Ticket>("inner", (msg, _) => ValueTask.FromResult(new Ticket($"re: {msg}", Priority: 1)));
+        var guarded = inner.WithGuardrails(
+            PolicyWith(ModifyingRule("re: [redacted]", GuardrailPhase.Output)),
+            new GuardedExecutorOptions { TextExtractor = new TicketTextExtractor() });
+
+        var result = await guarded.HandleAsync("secret", Mock.Of<IWorkflowContext>());
+
+        result.Should().Be(new Ticket("re: [redacted]", Priority: 1));
+    }
+
+    [Fact]
+    public async Task VoidExecutor_ShouldPassOriginalAndLogWarning_WhenRewrittenTypeCannotBeRebuilt()
+    {
+        Ticket? received = null;
+        var logger = new ListLogger();
+        var inner = new TestVoidExecutor<Ticket>("inner", (msg, _) => { received = msg; return ValueTask.CompletedTask; });
+        var guarded = inner.WithGuardrails(
+            PolicyWith(ModifyingRule("rewritten")),
+            new GuardedExecutorOptions { Logger = logger });
+
+        var original = new Ticket("original", Priority: 1);
+        await guarded.HandleAsync(original, Mock.Of<IWorkflowContext>());
+
+        received.Should().BeSameAs(original);
+        logger.Entries.Should().ContainSingle(e => e.Level == LogLevel.Warning)
+            .Which.Message.Should().Contain("'inner'").And.Contain(nameof(Ticket)).And.Contain("could NOT be applied");
+    }
+
+    [Fact]
+    public async Task VoidExecutor_ShouldPassOriginalAndLogWarning_WhenRebuiltMessageIsNotTheDeclaredType()
+    {
+        Ticket? received = null;
+        var logger = new ListLogger();
+        var extractor = new Mock<ITextExtractor>();
+        extractor.Setup(e => e.ExtractText(It.IsAny<object?>())).Returns("text");
+        object? wrongType = "not a ticket";
+        extractor.Setup(e => e.TryRebuild(It.IsAny<object>(), It.IsAny<string>(), out wrongType)).Returns(true);
+
+        var inner = new TestVoidExecutor<Ticket>("inner", (msg, _) => { received = msg; return ValueTask.CompletedTask; });
+        var guarded = inner.WithGuardrails(
+            PolicyWith(ModifyingRule("rewritten")),
+            new GuardedExecutorOptions { TextExtractor = extractor.Object, Logger = logger });
+
+        var original = new Ticket("original", Priority: 1);
+        await guarded.HandleAsync(original, Mock.Of<IWorkflowContext>());
+
+        received.Should().BeSameAs(original);
+        logger.Entries.Should().ContainSingle(e => e.Level == LogLevel.Warning);
+    }
 
     [Fact]
     public async Task VoidExecutor_ShouldSkipGuardrails_WhenInputIsNull()
@@ -230,8 +289,6 @@ public class GuardedExecutorTests
 
         received.Should().BeNull();
     }
-
-    // --- Real rule integration ---
 
     [Fact]
     public async Task VoidExecutor_ShouldRedactPii_WhenPiiRedactionRuleIsUsed()
@@ -303,8 +360,6 @@ public class GuardedExecutorTests
         innerCalled.Should().BeFalse();
     }
 
-    // --- GuardrailViolationException ---
-
     [Fact]
     public void ViolationException_ShouldContainExpectedProperties()
     {
@@ -316,8 +371,6 @@ public class GuardedExecutorTests
         ex.ExecutorId.Should().Be("exec-1");
         ex.Message.Should().Contain("exec-1").And.Contain("Output").And.Contain("test reason");
     }
-
-    // --- Test doubles ---
 
     private class TestVoidExecutor(string id, Func<string, IWorkflowContext, ValueTask> handler) : Executor<string>(id)
     {
@@ -335,6 +388,38 @@ public class GuardedExecutorTests
     {
         public override ValueTask<string> HandleAsync(string message, IWorkflowContext context, CancellationToken cancellationToken = default)
             => handler(message, context);
+    }
+
+    private class TestTypedExecutor<TIn, TOut>(string id, Func<TIn, IWorkflowContext, ValueTask<TOut>> handler) : Executor<TIn, TOut>(id)
+    {
+        public override ValueTask<TOut> HandleAsync(TIn message, IWorkflowContext context, CancellationToken cancellationToken = default)
+            => handler(message, context);
+    }
+
+    private sealed record Ticket(string Body, int Priority);
+
+    private sealed class TicketTextExtractor : ITextExtractor
+    {
+        public string? ExtractText(object? message) =>
+            message is Ticket ticket ? ticket.Body : DefaultTextExtractor.Instance.ExtractText(message);
+
+        public bool TryRebuild(object message, string text, [NotNullWhen(true)] out object? rebuilt)
+        {
+            rebuilt = message is Ticket ticket ? ticket with { Body = text } : null;
+            return rebuilt is not null;
+        }
+    }
+
+    private sealed class ListLogger : ILogger
+    {
+        public List<(LogLevel Level, string Message)> Entries { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+            => Entries.Add((logLevel, formatter(state, exception)));
     }
 
     private class TestRule(string name, GuardrailPhase phase, Func<GuardrailContext, ValueTask<GuardrailResult>> eval) : IGuardrailRule

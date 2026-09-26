@@ -14,6 +14,21 @@ namespace AgentGuard.Core.Rules;
 /// </remarks>
 internal static class RegexPatterns
 {
+    /// <summary>
+    /// A whole PEM private key block: the <c>-----BEGIN ... PRIVATE KEY-----</c> header (RSA, EC,
+    /// DSA, OPENSSH, ENCRYPTED, plain PKCS#8, PGP's <c>PRIVATE KEY BLOCK</c> or <c>SECRET KEY BLOCK</c>,
+    /// or the SSH2 <c>---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----</c> form), the key body including
+    /// any headers such as <c>Proc-Type: 4,ENCRYPTED</c>, and the END line carrying the same label -
+    /// or everything to the end of the text when that END line never comes.
+    /// </summary>
+    /// <remarks>
+    /// An unterminated or mismatched block runs to the end of the text on purpose: over-redacting a
+    /// truncated key is the safe failure. The body is a lazy scan that tests two alternatives per
+    /// character, so the whole match is linear in the text length.
+    /// </remarks>
+    internal const string PemPrivateKeyBlock =
+        @"-{4,5} ?BEGIN\s+(?<label>(?:[A-Z0-9]+\s+){0,3}(?:PRIVATE|SECRET)\s+KEY(?:\s+BLOCK)?) ?-{4,5}(?s:.*?)(?:-{4,5} ?END\s+\k<label> ?-{4,5}|\z)";
+
     /// <summary>Runs each pattern once so the first real request does not pay IL generation.</summary>
     internal static void Warm(IEnumerable<Regex> patterns)
     {
@@ -63,5 +78,26 @@ internal static class RegexPatterns
         {
             return text;
         }
+    }
+
+    /// <summary>
+    /// Collects every match, stopping at a timeout rather than letting the exception escape. The
+    /// matches found before the budget ran out are kept: each one is a real match.
+    /// </summary>
+    internal static List<Match> MatchesUntilTimeout(this Regex pattern, string text)
+    {
+        var matches = new List<Match>();
+
+        try
+        {
+            for (var match = pattern.Match(text); match.Success; match = match.NextMatch())
+                matches.Add(match);
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            // the scan could not finish; what it found so far still stands
+        }
+
+        return matches;
     }
 }

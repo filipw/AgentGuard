@@ -178,9 +178,7 @@ public sealed class LlmPromptInjectionRule : LlmGuardrailRule
         if (verdict == LlmVerdict.Negative)
             return GuardrailResult.Passed();
 
-        // "No injection found." and similar chatter used to read as a positive verdict because the
-        // whole response was searched for the token. An off-format response is an error now, so
-        // ErrorBehavior decides instead of a substring match.
+        // an off-format response is a rule error, so ErrorBehavior decides rather than a substring match
         if (verdict == LlmVerdict.Unparseable)
             return UnparseableVerdict(responseText);
 

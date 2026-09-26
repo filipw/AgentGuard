@@ -9,7 +9,10 @@ namespace AgentGuard.AgentFramework.Workflows;
 public sealed class GuardedExecutorOptions
 {
     /// <summary>
-    /// Custom text extractor for converting typed messages to strings for guardrail evaluation.
+    /// Custom text extractor for converting typed messages to strings for guardrail evaluation, and for
+    /// rebuilding message types the executor can't rebuild itself when a rule rewrites their text
+    /// (<see cref="ITextExtractor.TryRebuild"/>). It is not consulted for chat payloads (<c>ChatMessage</c>,
+    /// chat message collections, <c>AgentResponse</c>), which the executor guards message by message.
     /// If null, <see cref="DefaultTextExtractor.Instance"/> is used.
     /// </summary>
     public ITextExtractor? TextExtractor { get; set; }

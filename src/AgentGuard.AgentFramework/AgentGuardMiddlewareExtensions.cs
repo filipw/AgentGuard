@@ -1,19 +1,19 @@
 using System.Diagnostics;
-using System.Text;
-using System.Text.Json;
-using AgentGuard.AgentFramework.Workflows;
+using System.Runtime.CompilerServices;
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Builders;
+using AgentGuard.Core.ChatClient;
 using AgentGuard.Core.Guardrails;
 using AgentGuard.Core.Ledger;
+using AgentGuard.Core.Rules;
 using AgentGuard.Core.Rules.ToolCall;
 using AgentGuard.Core.Rules.ToolResult;
 using AgentGuard.Core.Streaming;
 using AgentGuard.Core.Telemetry;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace AgentGuard.AgentFramework;
@@ -24,10 +24,15 @@ namespace AgentGuard.AgentFramework;
 public static class AgentGuardMiddlewareExtensions
 {
     /// <summary>
-    /// Adds AgentGuard guardrails to the MAF agent pipeline using a fluent builder configuration.
+    /// Well-known key used in <see cref="AgentResponseUpdate.AdditionalProperties"/>
+    /// to carry <see cref="StreamingGuardrailEvent"/> instances during progressive streaming.
     /// </summary>
+    public const string GuardrailEventPropertyKey = "agentguard.event";
+
     /// <summary>
     /// Adds AgentGuard guardrails to the MAF agent pipeline using a fluent builder configuration.
+    /// See <see cref="UseAgentGuard(AIAgentBuilder, IGuardrailPolicy, ToolResultMiddlewareOptions?, ILogger{GuardrailPipeline}?, IGuardrailLedger?)"/>
+    /// for what is guarded and how.
     /// </summary>
     /// <param name="builder">The agent builder.</param>
     /// <param name="configure">Configures the policy.</param>
@@ -48,6 +53,8 @@ public static class AgentGuardMiddlewareExtensions
 
     /// <summary>
     /// Adds AgentGuard guardrails to the MAF agent pipeline using a pre-built policy.
+    /// See <see cref="UseAgentGuard(AIAgentBuilder, IGuardrailPolicy, ToolResultMiddlewareOptions?, ILogger{GuardrailPipeline}?, IGuardrailLedger?)"/>
+    /// for what is guarded and how.
     /// </summary>
     /// <param name="builder">The agent builder.</param>
     /// <param name="policy">The policy to enforce.</param>
@@ -62,21 +69,46 @@ public static class AgentGuardMiddlewareExtensions
 
     /// <summary>
     /// Adds AgentGuard guardrails to the MAF agent pipeline using a pre-built policy and explicit
-    /// tool-result middleware options.
+    /// tool middleware options.
     /// </summary>
     /// <param name="builder">The agent builder.</param>
     /// <param name="policy">The policy to enforce.</param>
-    /// <param name="toolResultOptions">Tool-result interception options, or null for the defaults.</param>
+    /// <param name="toolResultOptions">Tool call and tool result interception options, or null for the defaults.</param>
     /// <param name="logger">Optional logger for the pipeline.</param>
     /// <param name="ledger">
     /// Optional decision ledger. When omitted, one registered in DI is resolved automatically, so
     /// <c>AddAgentGuard(o =&gt; o.UseDecisionLedger(...))</c> reaches the middleware's own pipeline.
     /// </param>
     /// <remarks>
-    /// When the policy contains a <see cref="ToolResultGuardrailRule"/> and
-    /// <see cref="ToolResultMiddlewareOptions.Enabled"/> is true (the default), a function-invocation
-    /// middleware is wired so tool results are inspected BEFORE being fed back to the LLM.
+    /// <para>
+    /// Input guardrails run on every user message of the request and output guardrails on every
+    /// assistant message of the response, its reasoning, and its tool calls and results (see
+    /// <see cref="ChatMessageGuard"/>). A streamed response is buffered and guarded the same way, then
+    /// replayed, rebuilt from the guarded messages when anything changed. With progressive streaming
+    /// the text streams as it arrives and retraction/replacement events (under
+    /// <see cref="GuardrailEventPropertyKey"/>) correct it, while everything else - tool calls and
+    /// results, reasoning, usage, finish reason - is held back until the stream has passed its final
+    /// check, and dropped if it ends blocked.
+    /// </para>
+    /// <para>
+    /// When the policy contains a <see cref="ToolCallGuardrailRule"/> or a <see cref="ToolResultGuardrailRule"/>
+    /// (gated with <c>.When()</c>/<c>.Unless()</c> or not) and <see cref="ToolResultMiddlewareOptions.Enabled"/>
+    /// is true (the default), a function-invocation middleware is wired: each tool call's arguments are
+    /// checked BEFORE the tool runs, and each tool result is inspected BEFORE it is fed back to the LLM.
     /// Requires the inner agent to have a <c>FunctionInvokingChatClient</c> in its pipeline.
+    /// </para>
+    /// <para>
+    /// A <c>ChatClientAgent</c> saves each response to its session before this middleware sees it. When
+    /// an output guardrail blocks or rewrites the response, the middleware puts what the caller received
+    /// in its place, so the next turn does not replay unguarded output to the model. That works for the
+    /// default <see cref="InMemoryChatHistoryProvider"/> in a run with a session and no server-side
+    /// conversation (<see cref="ChatClientAgentSession.ConversationId"/>). With other chat history
+    /// providers, or a conversation the service stores, the saved history keeps the unguarded response;
+    /// when it must never hold unguarded output, guard the agent's <see cref="IChatClient"/> instead
+    /// (<see cref="GuardrailChatClientExtensions.UseAgentGuard(IChatClient, IGuardrailPolicy, ILogger{GuardrailPipeline}?, IGuardrailLedger?)"/>):
+    /// the <see cref="GuardrailChatClient"/> decorator runs before the agent saves the response, except
+    /// for progressive streaming, which delivers text before it is checked.
+    /// </para>
     /// </remarks>
     public static AIAgentBuilder UseAgentGuard(
         this AIAgentBuilder builder,
@@ -85,74 +117,65 @@ public static class AgentGuardMiddlewareExtensions
         ILogger<GuardrailPipeline>? logger = null,
         IGuardrailLedger? ledger = null)
     {
-        var hasToolResultRule = policy.Rules.Any(r => r is ToolResultGuardrailRule);
+        var hasToolRule = policy.Rules.Any(r => r.Unwrap() is ToolResultGuardrailRule or ToolCallGuardrailRule);
         var trOptions = toolResultOptions ?? new ToolResultMiddlewareOptions();
 
-        if (hasToolResultRule && trOptions.Enabled)
+        if (hasToolRule && trOptions.Enabled)
         {
-            builder = WireToolResultMiddleware(builder, policy, trOptions, logger, ledger);
+            builder = WireToolMiddleware(builder, policy, trOptions, logger, ledger);
         }
 
-        // the pipeline is built inside the agent factory so the service provider is in scope: that
-        // is what lets a ledger registered with AddAgentGuard reach this pipeline without the
-        // caller threading it through by hand.
+        // the guard is built inside the agent factory so the service provider is in scope: that is
+        // what lets a ledger registered with AddAgentGuard reach this pipeline without the caller
+        // threading it through by hand.
         return builder.Use((innerAgent, services) =>
         {
-            var pipeline = new GuardrailPipeline(
-                policy,
-                logger ?? NullLogger<GuardrailPipeline>.Instance,
-                ledger ?? services?.GetService<IGuardrailLedger>());
+            var guard = new ChatMessageGuard(policy, logger, ledger ?? services?.GetService<IGuardrailLedger>());
 
             var guarded = new AIAgentBuilder(innerAgent);
             guarded.Use(
-                runFunc: async (messages, session, options, inner, ct) =>
-                {
-                    // materialize once: the caller may hand us a lazily-produced sequence, and the
-                    // guardrail path used to enumerate it five times (which throws on a one-shot one).
-                    var messageList = messages as IReadOnlyList<ChatMessage> ?? messages.ToList();
-
-                    var (blocked, processedMessages) = await RunInputGuardrails(pipeline, policy, messageList, inner.Name, ct);
-                    if (blocked is not null)
-                        return blocked;
-
-                    var response = await inner.RunAsync(processedMessages, session, options, ct);
-
-                    return await RunOutputGuardrails(pipeline, policy, response, processedMessages, inner.Name, ct);
-                },
+                runFunc: (messages, session, options, inner, ct) =>
+                    RunWithGuardrailsAsync(guard, policy, Materialize(messages), session, options, inner, ct),
                 runStreamingFunc: (messages, session, options, inner, ct) =>
-                {
-                    var messageList = messages as IReadOnlyList<ChatMessage> ?? messages.ToList();
-                    return StreamWithGuardrails(pipeline, policy, messageList, session, options, inner, ct);
-                });
+                    StreamWithGuardrails(guard, policy, Materialize(messages), session, options, inner, ct));
 
             return guarded.Build(services);
         });
     }
 
+    // the caller may hand over a lazily-produced sequence that can only be enumerated once
+    private static IReadOnlyList<ChatMessage> Materialize(IEnumerable<ChatMessage> messages) =>
+        messages as IReadOnlyList<ChatMessage> ?? messages.ToList();
+
     /// <summary>
-    /// Wires a function-invocation middleware that intercepts each tool result and runs a filtered
-    /// sub-pipeline (tool-result and PII/secrets rules) BEFORE the result is fed back to the LLM.
-    /// Blocked results are replaced with a placeholder; sanitized results substitute the modified content.
+    /// Wires a function-invocation middleware that checks each tool call's arguments before the tool
+    /// runs, and runs a filtered sub-pipeline (tool-result and PII/secrets rules) on each tool result
+    /// BEFORE the result is fed back to the LLM.
     /// </summary>
-    private static AIAgentBuilder WireToolResultMiddleware(
+    private static AIAgentBuilder WireToolMiddleware(
         AIAgentBuilder builder,
         IGuardrailPolicy policy,
         ToolResultMiddlewareOptions options,
         ILogger<GuardrailPipeline>? logger,
         IGuardrailLedger? ledger)
     {
-        // the sub-policy is split in two. The text rules (PII, secrets, LLM PII) rewrite the tool
-        // result; the tool-result rule then inspects what they produced. Running them in one pass
-        // meant the tool-result rule sanitized the *original* entry from the property bag, and the
-        // middleware preferred that output - throwing away the PII redaction that had just run.
-        var included = policy.Rules
-            .Where(r => r.Phase.HasFlag(GuardrailPhase.Output) && options.IncludeRuleOrders.Contains(r.Order))
-            .ToList();
+        // gated rules (.When/.Unless) are matched by what they wrap but still evaluated through the
+        // gate, so their predicate keeps applying.
+        var toolCallRules = policy.Rules.Where(r => r.Unwrap() is ToolCallGuardrailRule).ToList();
 
-        var textRules = included.Where(r => r is not ToolResultGuardrailRule).ToList();
-        var toolResultRules = included.Where(r => r is ToolResultGuardrailRule).ToList();
+        // the result sub-policy is split in two: the text rules (PII, secrets, LLM PII) rewrite the
+        // tool result, then the tool-result rule inspects what they produced
+        var inspectResults = policy.Rules.Any(r => r.Unwrap() is ToolResultGuardrailRule);
+        var included = inspectResults
+            ? policy.Rules
+                .Where(r => r.Phase.HasFlag(GuardrailPhase.Output) && options.IncludeRuleOrders.Contains(r.Order))
+                .ToList()
+            : [];
 
-        if (included.Count == 0)
+        var textRules = included.Where(r => r.Unwrap() is not (ToolResultGuardrailRule or ToolCallGuardrailRule)).ToList();
+        var toolResultRules = included.Where(r => r.Unwrap() is ToolResultGuardrailRule).ToList();
+
+        if (toolCallRules.Count == 0 && included.Count == 0)
         {
             return builder;
         }
@@ -174,7 +197,14 @@ public static class AgentGuardMiddlewareExtensions
                         effectiveLedger);
 
             var subBuilder = new AIAgentBuilder(innerAgent);
-            subBuilder.Use(BuildFunctionMiddleware(
+
+            // FunctionInvokingChatClient swallows exceptions thrown by function middleware, so a HardFail
+            // violation stops the run from inside and this wrapper throws it once the run has returned
+            if (options.HardFail)
+                subBuilder.Use(ToolInvocationGuard.RunAsync, ToolInvocationGuard.RunStreamingAsync);
+
+            subBuilder.Use(ToolInvocationGuard.CreateMiddleware(
+                Build(toolCallRules, "tool-calls"),
                 Build(textRules, "tool-results.text"),
                 Build(toolResultRules, "tool-results"),
                 options));
@@ -182,113 +212,49 @@ public static class AgentGuardMiddlewareExtensions
         });
     }
 
-    private static Func<AIAgent, FunctionInvocationContext, Func<FunctionInvocationContext, CancellationToken, ValueTask<object?>>, CancellationToken, ValueTask<object?>>
-        BuildFunctionMiddleware(
-            GuardrailPipeline? textPipeline,
-            GuardrailPipeline? toolResultPipeline,
-            ToolResultMiddlewareOptions options)
+    private static async Task<AgentResponse> RunWithGuardrailsAsync(
+        ChatMessageGuard guard,
+        IGuardrailPolicy policy,
+        IReadOnlyList<ChatMessage> messages,
+        AgentSession? session,
+        AgentRunOptions? options,
+        AIAgent inner,
+        CancellationToken ct)
     {
-        return async (agent, ctx, next, ct) =>
+        var input = await RunInputGuardrails(guard, policy, messages, inner.Name, ct);
+        if (input.Result.IsBlocked)
+            return new AgentResponse([new ChatMessage(ChatRole.Assistant, input.ViolationMessage)]);
+
+        var response = await inner.RunAsync(input.Result.Messages, session, options, ct);
+
+        var responseMessages = response.Messages as IReadOnlyList<ChatMessage> ?? [.. response.Messages];
+        var output = await RunOutputGuardrails(guard, policy, responseMessages, input.Result.Messages, inner.Name, ct);
+
+        AgentResponse guarded;
+        if (output.Result.IsBlocked)
         {
-            var raw = await next(ctx, ct);
-            var content = ToolResultToString(raw);
-
-            if (string.IsNullOrEmpty(content))
-            {
-                return raw;
-            }
-
-            var messages = ctx.Messages?.ToList();
-            var changed = false;
-
-            // pass 1: text rules rewrite the content in place
-            if (textPipeline is not null)
-            {
-                var textContext = new GuardrailContext
-                {
-                    Text = content,
-                    Phase = GuardrailPhase.Output,
-                    Messages = messages,
-                    AgentName = agent.Name
-                };
-
-                var textResult = await textPipeline.RunAsync(textContext, ct);
-                if (textResult.IsBlocked)
-                    return Blocked(agent, ctx, options, textResult);
-
-                if (textResult.WasModified)
-                {
-                    content = textResult.FinalText;
-                    changed = true;
-                }
-            }
-
-            // pass 2: the tool-result rule sees whatever pass 1 produced
-            if (toolResultPipeline is not null)
-            {
-                var entry = new ToolResultEntry { ToolName = ctx.Function.Name, Content = content };
-                var trContext = new GuardrailContext
-                {
-                    Text = content,
-                    Phase = GuardrailPhase.Output,
-                    Messages = messages,
-                    AgentName = agent.Name
-                };
-                trContext.Properties[ToolResultGuardrailRule.ToolResultsKey] = new[] { entry };
-
-                var trResult = await toolResultPipeline.RunAsync(trContext, ct);
-                if (trResult.IsBlocked)
-                    return Blocked(agent, ctx, options, trResult);
-
-                if (trResult.WasModified &&
-                    trContext.Properties.TryGetValue(ToolResultGuardrailRule.SanitizedResultsKey, out var sanitizedObj) &&
-                    sanitizedObj is IReadOnlyList<ToolResultEntry> sanitized && sanitized.Count > 0)
-                {
-                    content = sanitized[0].Content;
-                    changed = true;
-                }
-            }
-
-            return changed ? content : raw;
-        };
-    }
-
-    private static string Blocked(
-        AIAgent agent, FunctionInvocationContext ctx, ToolResultMiddlewareOptions options, GuardrailPipelineResult result)
-    {
-        if (options.HardFail)
+            // a blocked response must not carry any of the original content through
+            guarded = WithMessages(response, [new ChatMessage(ChatRole.Assistant, output.ViolationMessage)], blocked: true);
+        }
+        else if (output.Result.WasModified)
         {
-            throw new GuardrailViolationException(
-                result.BlockingResult!,
-                GuardrailPhase.Output,
-                $"{agent.Name ?? "agent"}.tool-result.{ctx.Function.Name}");
+            guarded = WithMessages(response, [.. output.Result.Messages], blocked: false);
+        }
+        else
+        {
+            return response;
         }
 
-        return options.BlockedPlaceholder;
+        // the response the agent saved is the very list it returned, so the saved messages are found by reference
+        SessionHistoryRewriter.ReplaceSavedResponse(
+            inner, session, (response.RawRepresentation as ChatResponse)?.ConversationId,
+            responseMessages, [.. guarded.Messages], matchByReference: true);
+
+        return guarded;
     }
 
-    /// <summary>
-    /// Converts a tool result <see cref="object"/> into a string for guardrail evaluation.
-    /// Strings are passed through; complex objects are JSON-serialized.
-    /// </summary>
-    private static string ToolResultToString(object? raw)
-    {
-        if (raw is null)
-            return "";
-        if (raw is string s)
-            return s;
-        try
-        {
-            return JsonSerializer.Serialize(raw);
-        }
-        catch
-        {
-            return raw.ToString() ?? "";
-        }
-    }
-
-    private static async Task<(AgentResponse? blocked, IReadOnlyList<ChatMessage> messages)> RunInputGuardrails(
-        GuardrailPipeline pipeline,
+    private static async Task<Verdict> RunInputGuardrails(
+        ChatMessageGuard guard,
         IGuardrailPolicy policy,
         IReadOnlyList<ChatMessage> messages,
         string? agentName,
@@ -300,53 +266,25 @@ public static class AgentGuardMiddlewareExtensions
         inputActivity?.SetTag(AgentGuardTelemetry.Tags.AgentName, agentName);
         inputActivity?.SetTag(AgentGuardTelemetry.Tags.Phase, "input");
 
-        // the last *user* message, not simply the last one. Taking whatever came last meant a
-        // trailing assistant message was evaluated as untrusted user input, and it disagreed with
-        // GuardrailChatClient, which has always used the last user message.
-        var lastMessage = messages.LastOrDefault(m => m.Role == ChatRole.User);
-        var inputText = lastMessage?.Text ?? "";
-
-        if (string.IsNullOrEmpty(inputText))
+        try
         {
-            inputActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Passed);
-            return (null, messages);
+            // every user message is guarded: a client may send the whole transcript (AG-UI does), and
+            // every message in it reaches the model
+            var result = await guard.GuardInputAsync(messages, agentName, ct);
+            return await ConcludeAsync(inputActivity, policy, result, ct);
         }
-
-        var inputContext = new GuardrailContext
+        catch (Exception ex)
         {
-            Text = inputText,
-            Phase = GuardrailPhase.Input,
-            Messages = messages,
-            AgentName = agentName
-        };
-
-        var inputResult = await pipeline.RunAsync(inputContext, ct);
-
-        if (inputResult.IsBlocked)
-        {
-            inputActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Blocked);
-            inputActivity?.SetStatus(ActivityStatusCode.Error, inputResult.BlockingResult?.Reason);
-            var msg = await policy.ViolationHandler.HandleViolationAsync(inputResult.BlockingResult!, inputContext, ct);
-            return (new AgentResponse([new ChatMessage(ChatRole.Assistant, msg)]), messages);
+            RecordFailure(inputActivity, ex);
+            throw;
         }
-
-        if (inputResult.WasModified && lastMessage is not null)
-        {
-            inputActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Modified);
-            var modified = messages.ToList();
-            modified[modified.LastIndexOf(lastMessage)] = new ChatMessage(lastMessage.Role, inputResult.FinalText);
-            return (null, modified);
-        }
-
-        inputActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Passed);
-        return (null, messages);
     }
 
-    private static async Task<AgentResponse> RunOutputGuardrails(
-        GuardrailPipeline pipeline,
+    private static async Task<Verdict> RunOutputGuardrails(
+        ChatMessageGuard guard,
         IGuardrailPolicy policy,
-        AgentResponse response,
-        IReadOnlyList<ChatMessage> messages,
+        IReadOnlyList<ChatMessage> responseMessages,
+        IReadOnlyList<ChatMessage> requestMessages,
         string? agentName,
         CancellationToken ct)
     {
@@ -355,391 +293,217 @@ public static class AgentGuardMiddlewareExtensions
 
         outputActivity?.SetTag(AgentGuardTelemetry.Tags.AgentName, agentName);
         outputActivity?.SetTag(AgentGuardTelemetry.Tags.Phase, "output");
+        outputActivity?.SetTag(AgentGuardTelemetry.Tags.ToolCallCount,
+            responseMessages.SelectMany(m => m.Contents).OfType<FunctionCallContent>().Count());
 
-        var responseText = response.Messages
-            .Where(m => m.Role == ChatRole.Assistant)
-            .Select(m => m.Text)
-            .LastOrDefault() ?? "";
-
-        // extract tool calls from the response for ToolCallGuardrailRule
-        var toolCalls = ExtractToolCalls(response.Messages);
-        outputActivity?.SetTag(AgentGuardTelemetry.Tags.ToolCallCount, toolCalls.Count);
-
-        // safety-net: extract any tool results that landed in the response messages
-        // (covers tools that bypass FunctionInvokingChatClient - e.g. hosted tools, MCP)
-        var toolResults = ExtractToolResults(response.Messages);
-
-        // nothing to evaluate if no text, tool calls, or tool results
-        if (string.IsNullOrEmpty(responseText) && toolCalls.Count == 0 && toolResults.Count == 0)
+        try
         {
-            outputActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Passed);
-            return response;
+            // every assistant message is checked on its own - the text a model writes alongside a tool
+            // call is shown to the user too - together with the response's tool calls and, as a safety
+            // net for tools that bypass FunctionInvokingChatClient (hosted tools, MCP), its tool results
+            var result = await guard.GuardOutputAsync(responseMessages, requestMessages, agentName, ct);
+            return await ConcludeAsync(outputActivity, policy, result, ct);
+        }
+        catch (Exception ex)
+        {
+            RecordFailure(outputActivity, ex);
+            throw;
+        }
+    }
+
+    private static async Task<Verdict> ConcludeAsync(
+        Activity? activity, IGuardrailPolicy policy, ChatMessageGuardResult result, CancellationToken ct)
+    {
+        if (!result.IsBlocked)
+        {
+            activity?.SetTag(AgentGuardTelemetry.Tags.Outcome,
+                result.WasModified ? AgentGuardTelemetry.Outcomes.Modified : AgentGuardTelemetry.Outcomes.Passed);
+            return new Verdict(result, "");
         }
 
-        var outputContext = new GuardrailContext
-        {
-            Text = responseText ?? "",
-            Phase = GuardrailPhase.Output,
-            Messages = messages,
-            AgentName = agentName
-        };
+        RecordBlock(activity, result.BlockingResult);
+        var message = await policy.ViolationHandler.HandleViolationAsync(result.BlockingResult!, result.BlockingContext!, ct);
+        return new Verdict(result, message);
+    }
 
-        if (toolCalls.Count > 0)
-            outputContext.Properties[ToolCallGuardrailRule.ToolCallsKey] = toolCalls;
+    // a block is an expected policy outcome, recorded by the outcome tag and not as a span error; a rule
+    // that could not reach a verdict and failed closed is a real failure
+    private static void RecordBlock(Activity? activity, GuardrailResult? blockingResult)
+    {
+        if (activity is null)
+            return;
 
-        if (toolResults.Count > 0)
-            outputContext.Properties[ToolResultGuardrailRule.ToolResultsKey] = toolResults;
+        activity.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Blocked);
 
-        var outputResult = await pipeline.RunAsync(outputContext, ct);
+        if (blockingResult is null)
+            return;
 
-        if (outputResult.IsBlocked)
-        {
-            outputActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Blocked);
-            outputActivity?.SetStatus(ActivityStatusCode.Error, outputResult.BlockingResult?.Reason);
-            var msg = await policy.ViolationHandler.HandleViolationAsync(outputResult.BlockingResult!, outputContext, ct);
-            return ReplaceText(response, msg, keepOtherContent: false);
-        }
+        activity.SetTag(AgentGuardTelemetry.Tags.BlockedReason, blockingResult.Reason);
+        activity.SetTag(AgentGuardTelemetry.Tags.Severity, blockingResult.Severity.ToString().ToLowerInvariant());
 
-        if (outputResult.WasModified)
-        {
-            outputActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Modified);
-            return ReplaceText(response, outputResult.FinalText, keepOtherContent: true);
-        }
+        if (blockingResult.IsError)
+            activity.SetStatus(ActivityStatusCode.Error, blockingResult.Reason);
+    }
 
-        outputActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Passed);
-        return response;
+    // the caller's cancellation is not a failure of the guardrails
+    private static void RecordFailure(Activity? activity, Exception exception)
+    {
+        if (activity is null || exception is OperationCanceledException)
+            return;
+
+        activity.SetTag(AgentGuardTelemetry.Tags.ErrorType, exception.GetType().FullName);
+        activity.SetStatus(ActivityStatusCode.Error, exception.Message);
     }
 
     /// <summary>
-    /// Rebuilds a response around new assistant text while keeping the response-level metadata
-    /// (id, agent id, usage, created-at) and, for a modification, the non-text content such as
-    /// function calls. A bare <c>new AgentResponse([...])</c> discarded all of it, so a PII
-    /// redaction on a tool-calling turn used to erase the tool calls and break the agent loop.
+    /// Rebuilds a response around new messages while keeping the response-level metadata (id, agent
+    /// id, usage, created-at, finish reason).
     /// </summary>
-    private static AgentResponse ReplaceText(AgentResponse response, string text, bool keepOtherContent)
-    {
-        List<ChatMessage> messages;
-
-        if (keepOtherContent)
-        {
-            messages = [.. response.Messages];
-            var index = messages.FindLastIndex(m => m.Role == ChatRole.Assistant && !string.IsNullOrEmpty(m.Text));
-
-            if (index >= 0)
-            {
-                var original = messages[index];
-                var contents = original.Contents
-                    .Where(c => c is not TextContent)
-                    .Prepend<AIContent>(new TextContent(text))
-                    .ToList();
-
-                messages[index] = new ChatMessage(original.Role, contents)
-                {
-                    AuthorName = original.AuthorName,
-                    MessageId = original.MessageId,
-                    AdditionalProperties = original.AdditionalProperties
-                };
-            }
-            else
-            {
-                messages.Add(new ChatMessage(ChatRole.Assistant, text));
-            }
-        }
-        else
-        {
-            // a blocked response must not carry any of the original content through
-            messages = [new ChatMessage(ChatRole.Assistant, text)];
-        }
-
-        return new AgentResponse(messages)
+    private static AgentResponse WithMessages(AgentResponse response, IList<ChatMessage> messages, bool blocked) =>
+        new(messages)
         {
             ResponseId = response.ResponseId,
             AgentId = response.AgentId,
             CreatedAt = response.CreatedAt,
             Usage = response.Usage,
+            FinishReason = blocked ? null : response.FinishReason,
             AdditionalProperties = response.AdditionalProperties
         };
-    }
-
-    /// <summary>
-    /// Extracts <see cref="AgentToolCall"/> instances from MAF response messages by
-    /// reading <see cref="FunctionCallContent"/> items embedded in the message contents.
-    /// </summary>
-    private static List<AgentToolCall> ExtractToolCalls(IEnumerable<ChatMessage> responseMessages)
-    {
-        var toolCalls = new List<AgentToolCall>();
-
-        foreach (var message in responseMessages)
-        {
-            foreach (var fc in message.Contents.OfType<FunctionCallContent>())
-            {
-                var args = new Dictionary<string, string>();
-                if (fc.Arguments is not null)
-                {
-                    foreach (var (key, value) in fc.Arguments)
-                    {
-                        args[key] = value?.ToString() ?? "";
-                    }
-                }
-
-                toolCalls.Add(new AgentToolCall
-                {
-                    ToolName = fc.Name ?? "",
-                    Arguments = args
-                });
-            }
-        }
-
-        return toolCalls;
-    }
-
-    /// <summary>
-    /// Extracts <see cref="ToolResultEntry"/> instances from MAF response messages by reading
-    /// <see cref="FunctionResultContent"/> items embedded in the message contents. Used as a
-    /// post-hoc safety net for tool implementations that bypass <c>FunctionInvokingChatClient</c>
-    /// (hosted tools, MCP). Pre-execution interception via the function-invocation middleware
-    /// is preferred because it can prevent injection from reaching the LLM in the first place.
-    /// </summary>
-    private static List<ToolResultEntry> ExtractToolResults(IEnumerable<ChatMessage> responseMessages)
-    {
-        var materialized = responseMessages as IList<ChatMessage> ?? responseMessages.ToList();
-        var callIdToName = BuildCallIdToToolNameMap(materialized.SelectMany(m => m.Contents));
-        var results = new List<ToolResultEntry>();
-
-        foreach (var message in materialized)
-        {
-            foreach (var fr in message.Contents.OfType<FunctionResultContent>())
-            {
-                AppendResult(results, fr, callIdToName);
-            }
-        }
-
-        return results;
-    }
-
-    /// <summary>
-    /// Extracts <see cref="ToolResultEntry"/> instances from streaming response updates.
-    /// </summary>
-    private static List<ToolResultEntry> ExtractToolResultsFromUpdates(IEnumerable<AgentResponseUpdate> updates)
-    {
-        var materialized = updates as IList<AgentResponseUpdate> ?? updates.ToList();
-        var callIdToName = BuildCallIdToToolNameMap(materialized.SelectMany(u => u.Contents));
-        var results = new List<ToolResultEntry>();
-
-        foreach (var update in materialized)
-        {
-            foreach (var fr in update.Contents.OfType<FunctionResultContent>())
-            {
-                AppendResult(results, fr, callIdToName);
-            }
-        }
-
-        return results;
-    }
-
-    private static Dictionary<string, string> BuildCallIdToToolNameMap(IEnumerable<AIContent> contents)
-    {
-        var map = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var fc in contents.OfType<FunctionCallContent>())
-        {
-            if (!string.IsNullOrEmpty(fc.CallId) && !string.IsNullOrEmpty(fc.Name))
-                map[fc.CallId] = fc.Name;
-        }
-        return map;
-    }
-
-    private static void AppendResult(
-        List<ToolResultEntry> results,
-        FunctionResultContent fr,
-        Dictionary<string, string> callIdToName)
-    {
-        var content = fr.Result switch
-        {
-            null => "",
-            string s => s,
-            var other => SafeSerialize(other)
-        };
-
-        if (string.IsNullOrEmpty(content))
-            return;
-
-        var toolName = (fr.CallId is not null && callIdToName.TryGetValue(fr.CallId, out var name))
-            ? name
-            : (fr.CallId ?? "unknown");
-
-        results.Add(new ToolResultEntry
-        {
-            ToolName = toolName,
-            Content = content
-        });
-    }
-
-    private static string SafeSerialize(object value)
-    {
-        try { return JsonSerializer.Serialize(value); }
-        catch { return value.ToString() ?? ""; }
-    }
-
-    /// <summary>
-    /// Extracts <see cref="AgentToolCall"/> instances from streaming response updates.
-    /// </summary>
-    private static List<AgentToolCall> ExtractToolCallsFromUpdates(IEnumerable<AgentResponseUpdate> updates)
-    {
-        var toolCalls = new List<AgentToolCall>();
-
-        foreach (var update in updates)
-        {
-            foreach (var fc in update.Contents.OfType<FunctionCallContent>())
-            {
-                var args = new Dictionary<string, string>();
-                if (fc.Arguments is not null)
-                {
-                    foreach (var (key, value) in fc.Arguments)
-                    {
-                        args[key] = value?.ToString() ?? "";
-                    }
-                }
-
-                toolCalls.Add(new AgentToolCall
-                {
-                    ToolName = fc.Name ?? "",
-                    Arguments = args
-                });
-            }
-        }
-
-        return toolCalls;
-    }
 
     private static async IAsyncEnumerable<AgentResponseUpdate> StreamWithGuardrails(
-        GuardrailPipeline pipeline,
+        ChatMessageGuard guard,
         IGuardrailPolicy policy,
         IReadOnlyList<ChatMessage> messages,
         AgentSession? session,
         AgentRunOptions? options,
         AIAgent innerAgent,
-        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+        [EnumeratorCancellation] CancellationToken ct)
     {
         using var streamingActivity = AgentGuardTelemetry.ActivitySource.StartActivity(
             AgentGuardTelemetry.Spans.MiddlewareStreaming);
 
         streamingActivity?.SetTag(AgentGuardTelemetry.Tags.AgentName, innerAgent.Name);
 
-        // run input guardrails before streaming
-        var (blocked, processedMessages) = await RunInputGuardrails(pipeline, policy, messages, innerAgent.Name, ct);
-        if (blocked is not null)
+        var outcome = new StreamOutcome();
+        await using var updates = GuardStream(guard, policy, messages, session, options, innerAgent, outcome, streamingActivity, ct)
+            .GetAsyncEnumerator(ct);
+
+        while (await MoveNextAsync(updates, streamingActivity))
+            yield return updates.Current;
+
+        outcome.Record(streamingActivity);
+    }
+
+    private static async ValueTask<bool> MoveNextAsync(IAsyncEnumerator<AgentResponseUpdate> updates, Activity? activity)
+    {
+        try
         {
-            streamingActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Blocked);
-            var text = blocked.Messages.FirstOrDefault()?.Text ?? "";
-            yield return new AgentResponseUpdate(ChatRole.Assistant, text);
+            return await updates.MoveNextAsync();
+        }
+        catch (Exception ex)
+        {
+            RecordFailure(activity, ex);
+            throw;
+        }
+    }
+
+    private static async IAsyncEnumerable<AgentResponseUpdate> GuardStream(
+        ChatMessageGuard guard,
+        IGuardrailPolicy policy,
+        IReadOnlyList<ChatMessage> messages,
+        AgentSession? session,
+        AgentRunOptions? options,
+        AIAgent innerAgent,
+        StreamOutcome outcome,
+        Activity? streamingActivity,
+        [EnumeratorCancellation] CancellationToken ct)
+    {
+        // input guardrails run before streaming
+        var input = await RunInputGuardrails(guard, policy, messages, innerAgent.Name, ct);
+        if (input.Result.IsBlocked)
+        {
+            outcome.Blocked(input.Result.BlockingResult);
+            yield return new AgentResponseUpdate(ChatRole.Assistant, input.ViolationMessage);
             yield break;
         }
 
-        // use progressive streaming if configured, otherwise buffer-then-release
-        if (policy.ProgressiveStreaming is not null)
-        {
-            streamingActivity?.SetTag(AgentGuardTelemetry.Tags.StreamingStrategy, "progressive");
-            await foreach (var update in StreamWithProgressiveGuardrails(
-                pipeline, policy, processedMessages, session, options, innerAgent, ct))
-            {
-                yield return update;
-            }
-        }
-        else
-        {
-            streamingActivity?.SetTag(AgentGuardTelemetry.Tags.StreamingStrategy, "buffered");
-            await foreach (var update in StreamWithBufferedGuardrails(
-                pipeline, policy, processedMessages, session, options, innerAgent, ct))
-            {
-                yield return update;
-            }
-        }
+        var progressive = policy.ProgressiveStreaming is not null;
+        streamingActivity?.SetTag(AgentGuardTelemetry.Tags.StreamingStrategy, progressive ? "progressive" : "buffered");
 
-        streamingActivity?.SetTag(AgentGuardTelemetry.Tags.Outcome, AgentGuardTelemetry.Outcomes.Passed);
+        var stream = progressive
+            ? StreamWithProgressiveGuardrails(guard, policy, input.Result.Messages, session, options, innerAgent, outcome, ct)
+            : StreamWithBufferedGuardrails(guard, policy, input.Result.Messages, session, options, innerAgent, outcome, ct);
+
+        await foreach (var update in stream)
+            yield return update;
     }
 
     private static async IAsyncEnumerable<AgentResponseUpdate> StreamWithBufferedGuardrails(
-        GuardrailPipeline pipeline,
+        ChatMessageGuard guard,
         IGuardrailPolicy policy,
         IReadOnlyList<ChatMessage> processedMessages,
         AgentSession? session,
         AgentRunOptions? options,
         AIAgent innerAgent,
-        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+        StreamOutcome outcome,
+        [EnumeratorCancellation] CancellationToken ct)
     {
-        // buffer the streaming output so we can run output guardrails
-        var chunks = new List<AgentResponseUpdate>();
-        var textBuilder = new StringBuilder();
-
+        var updates = new List<AgentResponseUpdate>();
         await foreach (var update in innerAgent.RunStreamingAsync(processedMessages, session, options, ct))
+            updates.Add(update);
+
+        // the buffered response is guarded exactly like a non-streamed one: message by message
+        var agentResponse = updates.ToAgentResponse();
+        var response = agentResponse.AsChatResponse();
+        var saved = response.Messages as IReadOnlyList<ChatMessage> ?? [.. response.Messages];
+
+        var output = await RunOutputGuardrails(guard, policy, saved, processedMessages, innerAgent.Name, ct);
+
+        if (output.Result.IsBlocked)
         {
-            chunks.Add(update);
-            if (!string.IsNullOrEmpty(update.Text))
-                textBuilder.Append(update.Text);
+            outcome.Blocked(output.Result.BlockingResult);
+            SessionHistoryRewriter.ReplaceSavedResponse(
+                innerAgent, session, response.ConversationId, saved,
+                [new ChatMessage(ChatRole.Assistant, output.ViolationMessage)], matchByReference: false);
+
+            // a blocked response must not carry any of the original content through
+            yield return ToAgentUpdate(new ChatResponseUpdate(ChatRole.Assistant, output.ViolationMessage)
+            {
+                ResponseId = response.ResponseId,
+                ConversationId = response.ConversationId,
+                ModelId = response.ModelId,
+                CreatedAt = response.CreatedAt
+            }, agentResponse.AgentId);
+            yield break;
         }
 
-        var fullText = textBuilder.ToString();
-
-        // extract tool calls from streaming chunks
-        var toolCalls = ExtractToolCallsFromUpdates(chunks);
-        var toolResults = ExtractToolResultsFromUpdates(chunks);
-
-        // run output guardrails on the accumulated text and/or tool calls
-        if (!string.IsNullOrEmpty(fullText) || toolCalls.Count > 0 || toolResults.Count > 0)
+        if (!output.Result.WasModified)
         {
-            var outputContext = new GuardrailContext
-            {
-                Text = fullText ?? "",
-                Phase = GuardrailPhase.Output,
-                Messages = processedMessages,
-                AgentName = innerAgent.Name
-            };
-
-            if (toolCalls.Count > 0)
-                outputContext.Properties[ToolCallGuardrailRule.ToolCallsKey] = toolCalls;
-
-            if (toolResults.Count > 0)
-                outputContext.Properties[ToolResultGuardrailRule.ToolResultsKey] = toolResults;
-
-            var outputResult = await pipeline.RunAsync(outputContext, ct);
-
-            if (outputResult.IsBlocked)
-            {
-                var msg = await policy.ViolationHandler.HandleViolationAsync(outputResult.BlockingResult!, outputContext, ct);
-                yield return new AgentResponseUpdate(ChatRole.Assistant, msg);
-                yield break;
-            }
-
-            if (outputResult.WasModified)
-            {
-                yield return new AgentResponseUpdate(ChatRole.Assistant, outputResult.FinalText);
-                yield break;
-            }
+            foreach (var update in updates)
+                yield return update;
+            yield break;
         }
 
-        // output passed guardrails - yield all original chunks
-        foreach (var chunk in chunks)
-        {
-            yield return chunk;
-        }
+        outcome.Modified();
+        SessionHistoryRewriter.ReplaceSavedResponse(
+            innerAgent, session, response.ConversationId, saved, output.Result.Messages, matchByReference: false);
+
+        response.ContinuationToken = LastContinuationToken(updates);
+        foreach (var update in GuardrailChatContent.ToUpdates(response, output.Result.Messages))
+            yield return ToAgentUpdate(update, agentResponse.AgentId);
     }
 
-    /// <summary>
-    /// Well-known key used in <see cref="AgentResponseUpdate.AdditionalProperties"/>
-    /// to carry <see cref="StreamingGuardrailEvent"/> instances during progressive streaming.
-    /// </summary>
-    public const string GuardrailEventPropertyKey = "agentguard.event";
-
     private static async IAsyncEnumerable<AgentResponseUpdate> StreamWithProgressiveGuardrails(
-        GuardrailPipeline pipeline,
+        ChatMessageGuard guard,
         IGuardrailPolicy policy,
         IReadOnlyList<ChatMessage> processedMessages,
         AgentSession? session,
         AgentRunOptions? options,
         AIAgent innerAgent,
-        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+        StreamOutcome outcome,
+        [EnumeratorCancellation] CancellationToken ct)
     {
-        var streamingPipeline = new StreamingGuardrailPipeline(policy, policy.ProgressiveStreaming, ledger: pipeline.Ledger);
+        var streamingPipeline = new StreamingGuardrailPipeline(policy, policy.ProgressiveStreaming, ledger: guard.Pipeline.Ledger);
 
         var outputContext = new GuardrailContext
         {
@@ -749,106 +513,203 @@ public static class AgentGuardMiddlewareExtensions
             AgentName = innerAgent.Name
         };
 
-        // collect tool calls and tool results from streaming updates alongside text extraction.
-        // both are evaluated after the stream completes (FinalOnly semantics).
-        var collectedToolCalls = new List<AgentToolCall>();
-        var collectedCallIdToName = new Dictionary<string, string>(StringComparer.Ordinal);
-        var collectedToolResults = new List<FunctionResultContent>();
-        var textStream = ExtractTextAndToolCalls(
-            innerAgent.RunStreamingAsync(processedMessages, session, options, ct),
-            collectedToolCalls, collectedCallIdToName, collectedToolResults, ct);
+        var upstream = new ProgressiveUpstream();
+        var textStream = upstream.ReadTextAsync(innerAgent.RunStreamingAsync(processedMessages, session, options, ct), ct);
+
+        StreamingFinalResult? final = null;
+        var shownLength = 0;
 
         await foreach (var output in streamingPipeline.ProcessStreamAsync(textStream, outputContext, policy.ViolationHandler, ct))
         {
             switch (output.Type)
             {
                 case StreamingOutputType.TextChunk:
-                    yield return new AgentResponseUpdate(ChatRole.Assistant, output.Text);
+                    shownLength += output.Text!.Length;
+                    yield return ToAgentUpdate(TextUpdate(output.Text, upstream.Current), upstream.Current?.AgentId);
                     break;
 
                 case StreamingOutputType.GuardrailEvent:
-                    var eventUpdate = new AgentResponseUpdate(ChatRole.Assistant, output.GuardrailEvent?.ReplacementText ?? "");
-                    eventUpdate.AdditionalProperties ??= [];
-                    eventUpdate.AdditionalProperties[GuardrailEventPropertyKey] = output.GuardrailEvent!;
-                    yield return eventUpdate;
+                    if (output.GuardrailEvent!.Type == StreamingGuardrailEventType.Replacement)
+                        shownLength = output.GuardrailEvent.ReplacementText?.Length ?? 0;
+                    yield return EventUpdate(output.GuardrailEvent, upstream.Current);
                     break;
 
                 case StreamingOutputType.Completed:
-                    // after stream completes, evaluate any collected tool calls and tool results
-                    if (collectedToolCalls.Count > 0 || collectedToolResults.Count > 0)
-                    {
-                        if (collectedToolCalls.Count > 0)
-                            outputContext.Properties[ToolCallGuardrailRule.ToolCallsKey] = (IReadOnlyList<AgentToolCall>)collectedToolCalls;
-
-                        if (collectedToolResults.Count > 0)
-                        {
-                            var toolResults = new List<ToolResultEntry>(collectedToolResults.Count);
-                            foreach (var fr in collectedToolResults)
-                                AppendResult(toolResults, fr, collectedCallIdToName);
-                            if (toolResults.Count > 0)
-                                outputContext.Properties[ToolResultGuardrailRule.ToolResultsKey] = (IReadOnlyList<ToolResultEntry>)toolResults;
-                        }
-
-                        var toolCallResult = await pipeline.RunAsync(outputContext, ct);
-                        if (toolCallResult.IsBlocked)
-                        {
-                            var msg = await policy.ViolationHandler.HandleViolationAsync(
-                                toolCallResult.BlockingResult!, outputContext, ct);
-                            var retractUpdate = new AgentResponseUpdate(ChatRole.Assistant, msg);
-                            retractUpdate.AdditionalProperties ??= [];
-                            retractUpdate.AdditionalProperties[GuardrailEventPropertyKey] =
-                                StreamingGuardrailEvent.Replace(msg, toolCallResult.BlockingResult!, 0);
-                            yield return retractUpdate;
-                        }
-                    }
+                    final = output.FinalResult;
                     break;
             }
         }
+
+        // the response as the agent saved it
+        var agentResponse = upstream.All.ToAgentResponse();
+        var response = agentResponse.AsChatResponse();
+        var saved = response.Messages as IReadOnlyList<ChatMessage> ?? [.. response.Messages];
+
+        if (final is { IsBlocked: true })
+        {
+            // the retraction already replaced the text; what was held back goes with it
+            outcome.Blocked(final.BlockingResult);
+            SessionHistoryRewriter.ReplaceSavedResponse(
+                innerAgent, session, response.ConversationId, saved,
+                [new ChatMessage(ChatRole.Assistant, final.ReplacementText ?? "")], matchByReference: false);
+            yield break;
+        }
+
+        // tool calls, tool results and reasoning were held back while the text streamed: check them now
+        var result = await guard.GuardToolsAndReasoningAsync(saved, processedMessages, innerAgent.Name, ct);
+
+        if (result.IsBlocked)
+        {
+            var msg = await policy.ViolationHandler.HandleViolationAsync(result.BlockingResult!, result.BlockingContext!, ct);
+
+            outcome.Blocked(result.BlockingResult);
+            SessionHistoryRewriter.ReplaceSavedResponse(
+                innerAgent, session, response.ConversationId, saved,
+                [new ChatMessage(ChatRole.Assistant, msg)], matchByReference: false);
+
+            yield return EventUpdate(StreamingGuardrailEvent.Retract(result.BlockingResult!, shownLength), upstream.Current);
+            yield return EventUpdate(StreamingGuardrailEvent.Replace(msg, result.BlockingResult!, shownLength), upstream.Current);
+            yield break;
+        }
+
+        var rewrittenText = final is { WasModified: true } ? final.ReplacementText : null;
+        if (rewrittenText is not null || result.WasModified)
+        {
+            // the caller now holds the rewritten text as one answer, plus the guarded rest of the response
+            outcome.Modified();
+            SessionHistoryRewriter.ReplaceSavedResponse(
+                innerAgent, session, response.ConversationId, saved,
+                rewrittenText is null ? result.Messages : GuardrailChatContent.ReplaceAnswer(result.Messages, rewrittenText),
+                matchByReference: false);
+        }
+
+        if (!result.WasModified)
+        {
+            foreach (var update in upstream.Held)
+                yield return update;
+            yield break;
+        }
+
+        // the text has already been delivered, so only the rest of the guarded messages goes out
+        response.ContinuationToken = LastContinuationToken(upstream.All);
+        foreach (var update in GuardrailChatContent.ToUpdates(response, WithoutText(result.Messages)))
+            yield return ToAgentUpdate(update, agentResponse.AgentId);
     }
 
-    /// <summary>
-    /// Extracts text from streaming updates while also collecting any <see cref="FunctionCallContent"/>
-    /// tool calls and <see cref="FunctionResultContent"/> tool results into the provided lists.
-    /// </summary>
-    private static async IAsyncEnumerable<string> ExtractTextAndToolCalls(
-        IAsyncEnumerable<AgentResponseUpdate> updates,
-        List<AgentToolCall> collectedToolCalls,
-        Dictionary<string, string> collectedCallIdToName,
-        List<FunctionResultContent> collectedToolResults,
-        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+    private static IEnumerable<ChatMessage> WithoutText(IEnumerable<ChatMessage> messages) =>
+        messages
+            .Select(message => string.IsNullOrEmpty(message.Text) ? message : GuardrailChatContent.WithText(message, ""))
+            .Where(message => message.Contents.Count > 0 || message.AdditionalProperties is { Count: > 0 });
+
+    private static ResponseContinuationToken? LastContinuationToken(List<AgentResponseUpdate> updates) =>
+        updates.LastOrDefault(update => update.ContinuationToken is not null)?.ContinuationToken;
+
+    // wrapped the way ChatClientAgent wraps its updates, so AsChatResponseUpdate() still yields the
+    // conversation id and model, and nothing of the original content
+    private static AgentResponseUpdate ToAgentUpdate(ChatResponseUpdate update, string? agentId) =>
+        new(update) { AgentId = agentId };
+
+    // a streamed chunk keeps the ids of the update it came from
+    private static ChatResponseUpdate TextUpdate(string text, AgentResponseUpdate? source)
     {
-        await foreach (var update in updates.WithCancellation(ct))
+        var raw = source?.RawRepresentation as ChatResponseUpdate;
+        return new ChatResponseUpdate(source?.Role ?? ChatRole.Assistant, text)
         {
-            // collect tool calls
-            foreach (var fc in update.Contents.OfType<FunctionCallContent>())
+            AuthorName = source?.AuthorName,
+            MessageId = source?.MessageId,
+            ResponseId = source?.ResponseId,
+            ConversationId = raw?.ConversationId,
+            ModelId = raw?.ModelId,
+            CreatedAt = source?.CreatedAt
+        };
+    }
+
+    private static AgentResponseUpdate EventUpdate(StreamingGuardrailEvent guardrailEvent, AgentResponseUpdate? source)
+    {
+        var update = TextUpdate(guardrailEvent.ReplacementText ?? "", source);
+        update.AdditionalProperties = new() { [GuardrailEventPropertyKey] = guardrailEvent };
+        return ToAgentUpdate(update, source?.AgentId);
+    }
+
+    // everything but the text of an update, which is held back while its text streams
+    private static AgentResponseUpdate WithoutText(AgentResponseUpdate update)
+    {
+        var raw = update.RawRepresentation as ChatResponseUpdate;
+        return ToAgentUpdate(new ChatResponseUpdate(update.Role, GuardrailChatContent.ReplaceText(update.Contents, ""))
+        {
+            AuthorName = update.AuthorName,
+            MessageId = update.MessageId,
+            ResponseId = update.ResponseId,
+            ConversationId = raw?.ConversationId,
+            ModelId = raw?.ModelId,
+            CreatedAt = update.CreatedAt,
+            FinishReason = update.FinishReason,
+            ContinuationToken = update.ContinuationToken,
+            AdditionalProperties = update.AdditionalProperties
+        }, update.AgentId);
+    }
+
+    // a guard's outcome, and the text the caller sees instead when it blocked
+    private readonly record struct Verdict(ChatMessageGuardResult Result, string ViolationMessage);
+
+    // the outcome a stream ended with, recorded on the streaming span once the stream is done
+    private sealed class StreamOutcome
+    {
+        private string _outcome = AgentGuardTelemetry.Outcomes.Passed;
+        private GuardrailResult? _blockingResult;
+
+        public void Modified() => _outcome = AgentGuardTelemetry.Outcomes.Modified;
+
+        public void Blocked(GuardrailResult? blockingResult)
+        {
+            _outcome = AgentGuardTelemetry.Outcomes.Blocked;
+            _blockingResult = blockingResult;
+        }
+
+        public void Record(Activity? activity)
+        {
+            if (_outcome == AgentGuardTelemetry.Outcomes.Blocked)
+                RecordBlock(activity, _blockingResult);
+            else
+                activity?.SetTag(AgentGuardTelemetry.Tags.Outcome, _outcome);
+        }
+    }
+
+    // splits the upstream stream: its text goes to the streaming pipeline as it arrives, everything
+    // else waits in Held until the stream has passed its final check
+    private sealed class ProgressiveUpstream
+    {
+        public List<AgentResponseUpdate> All { get; } = [];
+
+        public List<AgentResponseUpdate> Held { get; } = [];
+
+        public AgentResponseUpdate? Current { get; private set; }
+
+        public async IAsyncEnumerable<string> ReadTextAsync(
+            IAsyncEnumerable<AgentResponseUpdate> updates,
+            [EnumeratorCancellation] CancellationToken ct)
+        {
+            await foreach (var update in updates.WithCancellation(ct))
             {
-                var args = new Dictionary<string, string>();
-                if (fc.Arguments is not null)
+                All.Add(update);
+                Current = update;
+
+                var text = update.Text;
+                if (string.IsNullOrEmpty(text))
                 {
-                    foreach (var (key, value) in fc.Arguments)
-                    {
-                        args[key] = value?.ToString() ?? "";
-                    }
+                    Held.Add(update);
+                    continue;
                 }
-                collectedToolCalls.Add(new AgentToolCall
+
+                var rest = WithoutText(update);
+                if (rest.Contents.Count > 0 || rest.FinishReason is not null ||
+                    rest.ContinuationToken is not null || rest.AdditionalProperties is { Count: > 0 })
                 {
-                    ToolName = fc.Name ?? "",
-                    Arguments = args
-                });
+                    Held.Add(rest);
+                }
 
-                if (!string.IsNullOrEmpty(fc.CallId) && !string.IsNullOrEmpty(fc.Name))
-                    collectedCallIdToName[fc.CallId] = fc.Name;
+                yield return text;
             }
-
-            // collect tool results
-            foreach (var fr in update.Contents.OfType<FunctionResultContent>())
-            {
-                collectedToolResults.Add(fr);
-            }
-
-            // yield text chunks
-            if (!string.IsNullOrEmpty(update.Text))
-                yield return update.Text;
         }
     }
 }
