@@ -226,4 +226,26 @@ public class SecretsHighEntropyLargeInputTests
         result.IsModified.Should().BeTrue();
         result.ModifiedText.Should().EndWith("\npassword=[SECRET_REDACTED]");
     }
+
+    // a line far too long to scan inside the match timeout costs only its own chunk of the text, so
+    // the secret on the next line is still found
+    [Fact]
+    public async Task ShouldDetectTheSecret_WhenAnEarlierLineIsTooLongToScanInTime()
+    {
+        var longLine = string.Concat(Enumerable.Repeat("getUserAccountSettingsHandler 9f86d081884c7d659a2feaa0c55ad015 ", 190_000));
+        var rule = new SecretsDetectionRule(new SecretsDetectionOptions
+        {
+            Categories = SecretCategory.GenericHighEntropy,
+            Action = SecretAction.Redact
+        });
+
+        var result = await rule.EvaluateAsync(new GuardrailContext
+        {
+            Text = longLine + "\npassword=Xk9mP2vL7q!z",
+            Phase = GuardrailPhase.Output
+        });
+
+        result.IsModified.Should().BeTrue();
+        result.ModifiedText.Should().EndWith("\npassword=[SECRET_REDACTED]");
+    }
 }

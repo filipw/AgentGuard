@@ -46,6 +46,10 @@ internal sealed class HighEntropyDetector
 
     private static readonly string[] SubresourceIntegrityPrefixes = ["sha1-", "sha256-", "sha384-", "sha512-"];
 
+    // how much text one scan covers; a chunk ends at a line break, so a line longer than this is
+    // scanned whole
+    private const int ChunkLength = 64 * 1024;
+
     private readonly Regex _tokenPattern;
     private readonly Regex _keyedValuePattern;
     private readonly Regex _excludedSpanPattern;
@@ -83,8 +87,10 @@ internal sealed class HighEntropyDetector
     /// without one the scan stops at the first.
     /// </summary>
     /// <remarks>
-    /// A pattern that exceeds its match timeout ends the scan; what was found up to that point
-    /// still counts, and is still replaced.
+    /// No match of the three patterns crosses a line break - tokens, URLs and JWTs hold no whitespace,
+    /// and a keyed value allows spaces but no line break - so the text is scanned in chunks of whole
+    /// lines. A pattern that exceeds its match timeout ends only the chunk it was scanning: what was
+    /// found up to that point still counts, and a long line cannot hide a secret on another line.
     /// </remarks>
     public bool Scan(string text, string? replacement, out string rewritten)
     {
@@ -92,46 +98,13 @@ internal sealed class HighEntropyDetector
         var findings = new List<(int Start, int Length)>();
         var firstOnly = replacement is null;
 
-        try
+        for (var chunkStart = 0; chunkStart < text.Length;)
         {
-            // values assigned to a secret-like key name come first: they are judged more leniently,
-            // and the bare scan below skips them
-            var keyedSpans = new List<(int Start, int End)>();
-            foreach (Match match in _keyedValuePattern.Matches(text))
-            {
-                var value = match.Groups["value"];
-                keyedSpans.Add((value.Index, value.Index + value.Length));
-                if (IsRandom(text, value.Index, value.Length, keyed: true))
-                {
-                    findings.Add((value.Index, value.Length));
-                    if (firstOnly)
-                        return true;
-                }
-            }
+            var chunkEnd = ChunkEnd(text, chunkStart);
+            if (ScanChunk(text, chunkStart, chunkEnd - chunkStart, findings, firstOnly))
+                return true;
 
-            var excludedSpans = new List<(int Start, int End)>();
-            foreach (Match match in _excludedSpanPattern.Matches(text))
-                excludedSpans.Add((match.Index, match.Index + match.Length));
-
-            var keyedIndex = 0;
-            var excludedIndex = 0;
-            foreach (Match match in _tokenPattern.Matches(text))
-            {
-                var (start, end) = (match.Index, match.Index + match.Length);
-                if (Overlaps(keyedSpans, ref keyedIndex, start, end) || Overlaps(excludedSpans, ref excludedIndex, start, end))
-                    continue;
-
-                if (IsRandom(text, start, match.Length, keyed: false))
-                {
-                    findings.Add((start, match.Length));
-                    if (firstOnly)
-                        return true;
-                }
-            }
-        }
-        catch (RegexMatchTimeoutException)
-        {
-            // the scan could not finish inside its budget; keep what it found
+            chunkStart = chunkEnd;
         }
 
         if (findings.Count == 0 || replacement is null)
@@ -148,6 +121,72 @@ internal sealed class HighEntropyDetector
 
         rewritten = builder.Append(text, copied, text.Length - copied).ToString();
         return true;
+    }
+
+    // where the chunk that starts at start ends: after the last line break within ChunkLength, so a
+    // long line gets a chunk of its own, or after the line that runs past it
+    private static int ChunkEnd(string text, int start)
+    {
+        var limit = start + ChunkLength;
+        if (limit >= text.Length)
+            return text.Length;
+
+        var lastBreak = text.LastIndexOf('\n', limit - 1, limit - start);
+        if (lastBreak >= start)
+            return lastBreak + 1;
+
+        var nextBreak = text.IndexOf('\n', limit);
+        return nextBreak < 0 ? text.Length : nextBreak + 1;
+    }
+
+    // scans text[start, start + length) and adds what it finds to findings; with firstOnly it returns
+    // true at the first finding. Match(text, start, length) keeps the scan inside the chunk and
+    // reports positions in the whole text.
+    private bool ScanChunk(string text, int start, int length, List<(int Start, int Length)> findings, bool firstOnly)
+    {
+        try
+        {
+            // values assigned to a secret-like key name come first: they are judged more leniently,
+            // and the bare scan below skips them
+            var keyedSpans = new List<(int Start, int End)>();
+            for (var match = _keyedValuePattern.Match(text, start, length); match.Success; match = match.NextMatch())
+            {
+                var value = match.Groups["value"];
+                keyedSpans.Add((value.Index, value.Index + value.Length));
+                if (IsRandom(text, value.Index, value.Length, keyed: true))
+                {
+                    findings.Add((value.Index, value.Length));
+                    if (firstOnly)
+                        return true;
+                }
+            }
+
+            var excludedSpans = new List<(int Start, int End)>();
+            for (var match = _excludedSpanPattern.Match(text, start, length); match.Success; match = match.NextMatch())
+                excludedSpans.Add((match.Index, match.Index + match.Length));
+
+            var keyedIndex = 0;
+            var excludedIndex = 0;
+            for (var match = _tokenPattern.Match(text, start, length); match.Success; match = match.NextMatch())
+            {
+                var (tokenStart, tokenEnd) = (match.Index, match.Index + match.Length);
+                if (Overlaps(keyedSpans, ref keyedIndex, tokenStart, tokenEnd) || Overlaps(excludedSpans, ref excludedIndex, tokenStart, tokenEnd))
+                    continue;
+
+                if (IsRandom(text, tokenStart, match.Length, keyed: false))
+                {
+                    findings.Add((tokenStart, match.Length));
+                    if (firstOnly)
+                        return true;
+                }
+            }
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            // the chunk could not be scanned inside the budget; what it found still counts
+        }
+
+        return false;
     }
 
     /// <summary>
