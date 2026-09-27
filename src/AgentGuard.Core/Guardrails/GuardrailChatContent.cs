@@ -1,5 +1,6 @@
 using System.Text.Encodings.Web;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using AgentGuard.Core.Rules.ToolCall;
 using AgentGuard.Core.Rules.ToolResult;
 using Microsoft.Extensions.AI;
@@ -382,9 +383,10 @@ public static class GuardrailChatContent
     /// Converts a tool result or argument value to the text the rules should see.
     /// </summary>
     /// <remarks>
-    /// Tools built with <c>AIFunctionFactory</c> return their value as a <see cref="JsonElement"/>. A
-    /// string value is unwrapped rather than re-serialized, so the rules see the text itself. Other
-    /// values are serialized as readable JSON.
+    /// Tools built with <c>AIFunctionFactory</c> return their value as a <see cref="JsonElement"/>, and
+    /// Agent-Hooks hands values over as <see cref="JsonNode"/>. A string value of either is unwrapped
+    /// rather than re-serialized, so the rules see the text itself. Other values are serialized as
+    /// readable JSON.
     /// </remarks>
     /// <param name="value">The value.</param>
     /// <returns>The text, or an empty string for null.</returns>
@@ -400,6 +402,8 @@ public static class GuardrailChatContent
                 return element.GetString() ?? "";
             case JsonElement { ValueKind: JsonValueKind.Null or JsonValueKind.Undefined }:
                 return "";
+            case JsonValue jsonValue when jsonValue.TryGetValue<string>(out var jsonText):
+                return jsonText;
             case TextContent textContent:
                 return textContent.Text;
             case IEnumerable<AIContent> items when items.All(item => item is TextContent):

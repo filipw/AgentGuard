@@ -1,0 +1,28 @@
+<!-- PackageVersion is local to this project, so the prerelease suffix below also applies to a version
+     passed on the command line (eng/pack.sh, the release workflow) -->
+<Project Sdk="Microsoft.NET.Sdk" TreatAsLocalProperty="PackageVersion">
+  <PropertyGroup>
+    <Description>Agent-Hooks (AGENT-HOOKS-0.1) integration for AgentGuard: an interceptor that enforces an AgentGuard policy at every interception point - input, each model call, each tool call and result, and output - and a Microsoft Agent Framework factory that builds an agent enforcing it, with history persisted only after the verdict. Prerelease: it depends on the alpha Microsoft.Agents.AI.AgentHooks and ResponsibleAI.AgentHooks packages.</Description>
+    <PackageId>AgentGuard.AgentHooks</PackageId>
+    <RootNamespace>AgentGuard.AgentHooks</RootNamespace>
+    <PackageTags>$(PackageTags);agent-hooks;interception</PackageTags>
+    <!-- the Agent-Hooks packages are alpha, and NuGet doesn't let a stable package depend on a prerelease one -->
+    <VersionSuffix>alpha</VersionSuffix>
+    <PackageVersion Condition="'$(PackageVersion)' != '' And !$(PackageVersion.Contains('-'))">$(PackageVersion)-alpha</PackageVersion>
+    <!-- the Agent-Hooks wire format serializes arbitrary tool arguments and results through reflection -->
+    <IsAotCompatible>false</IsAotCompatible>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="AgentGuard.AgentHooks.Tests" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../AgentGuard.AgentFramework/AgentGuard.AgentFramework.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Agents.AI" />
+    <PackageReference Include="Microsoft.Agents.AI.AgentHooks" />
+    <PackageReference Include="ResponsibleAI.AgentHooks" />
+    <PackageReference Include="Microsoft.Extensions.AI" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+  </ItemGroup>
+</Project>

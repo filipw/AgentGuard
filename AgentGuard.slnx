@@ -3,6 +3,7 @@
     <Project Path="src/AgentGuard/AgentGuard.csproj" />
     <Project Path="src/AgentGuard.Core/AgentGuard.Core.csproj" />
     <Project Path="src/AgentGuard.AgentFramework/AgentGuard.AgentFramework.csproj" />
+    <Project Path="src/AgentGuard.AgentHooks/AgentGuard.AgentHooks.csproj" />
     <Project Path="src/AgentGuard.Azure/AgentGuard.Azure.csproj" />
     <Project Path="src/AgentGuard.Hosting/AgentGuard.Hosting.csproj" />
     <Project Path="src/AgentGuard.Onnx/AgentGuard.Onnx.csproj" />
@@ -13,6 +14,7 @@
   <Folder Name="/tests/">
     <Project Path="tests/AgentGuard.Core.Tests/AgentGuard.Core.Tests.csproj" />
     <Project Path="tests/AgentGuard.AgentFramework.Tests/AgentGuard.AgentFramework.Tests.csproj" />
+    <Project Path="tests/AgentGuard.AgentHooks.Tests/AgentGuard.AgentHooks.Tests.csproj" />
     <Project Path="tests/AgentGuard.Azure.Tests/AgentGuard.Azure.Tests.csproj" />
     <Project Path="tests/AgentGuard.E2E.Tests/AgentGuard.E2E.Tests.csproj" />
     <Project Path="tests/AgentGuard.Integration.Tests/AgentGuard.Integration.Tests.csproj" />
@@ -37,5 +39,6 @@
     <Project Path="samples/AgentFrameworkPii/AgentFrameworkPii.csproj" />
     <Project Path="samples/DecisionLedger/DecisionLedger.csproj" />
     <Project Path="samples/RemotePii/RemotePii.csproj" />
+    <Project Path="samples/AgentHooksGuardrails/AgentHooksGuardrails.csproj" />
   </Folder>
 </Solution>

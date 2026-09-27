@@ -5,32 +5,35 @@
 
   <ItemGroup>
     <!-- Microsoft Agent Framework -->
-    <PackageVersion Include="Microsoft.Agents.AI" Version="1.8.0" />
-    <PackageVersion Include="Microsoft.Agents.AI.Workflows" Version="1.8.0" />
+    <PackageVersion Include="Microsoft.Agents.AI" Version="1.22.0" />
+    <PackageVersion Include="Microsoft.Agents.AI.Workflows" Version="1.22.0" />
+    <!-- Agent-Hooks interception (alpha; AgentGuard.AgentHooks only) -->
+    <PackageVersion Include="Microsoft.Agents.AI.AgentHooks" Version="1.22.0-alpha.260918.1" />
+    <PackageVersion Include="ResponsibleAI.AgentHooks" Version="0.1.0-alpha.5" />
 
     <!-- Microsoft.Extensions.AI -->
-    <PackageVersion Include="Microsoft.Extensions.AI" Version="10.6.0" />
-    <PackageVersion Include="Microsoft.Extensions.AI.Abstractions" Version="10.6.0" />
-    <PackageVersion Include="Microsoft.Extensions.AI.OpenAI" Version="10.6.0" />
+    <PackageVersion Include="Microsoft.Extensions.AI" Version="10.10.0" />
+    <PackageVersion Include="Microsoft.Extensions.AI.Abstractions" Version="10.10.1" />
+    <PackageVersion Include="Microsoft.Extensions.AI.OpenAI" Version="10.10.1" />
 
     <!-- Azure AI Content Safety -->
     <PackageVersion Include="Azure.AI.ContentSafety" Version="1.0.0" />
     <PackageVersion Include="Azure.Identity" Version="1.13.2" />
 
     <!-- Microsoft Extensions -->
-    <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.8" />
-    <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.8" />
-    <PackageVersion Include="Microsoft.Extensions.Logging" Version="10.0.8" />
-    <PackageVersion Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.8" />
-    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.8" />
-    <PackageVersion Include="Microsoft.Extensions.Configuration" Version="10.0.8" />
-    <PackageVersion Include="Microsoft.Extensions.Configuration.Json" Version="10.0.8" />
-    <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.8" />
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.12" />
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.12" />
+    <PackageVersion Include="Microsoft.Extensions.Logging" Version="10.0.12" />
+    <PackageVersion Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.12" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.12" />
+    <PackageVersion Include="Microsoft.Extensions.Configuration" Version="10.0.12" />
+    <PackageVersion Include="Microsoft.Extensions.Configuration.Json" Version="10.0.12" />
+    <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.12" />
 
     <!-- Tokenization -->
     <!-- the Data packages carry the tiktoken vocabularies; they target netstandard2.0 only, and the
          Microsoft.Bcl.Memory pin lifts the vulnerable 9.0.4 they depend on -->
-    <PackageVersion Include="Microsoft.Bcl.Memory" Version="10.0.8" />
+    <PackageVersion Include="Microsoft.Bcl.Memory" Version="10.0.12" />
     <PackageVersion Include="Microsoft.ML.Tokenizers.Data.Cl100kBase" Version="2.0.0" />
     <PackageVersion Include="Microsoft.ML.Tokenizers.Data.O200kBase" Version="2.0.0" />
     <PackageVersion Include="Microsoft.ML.Tokenizers" Version="2.0.0" />
@@ -50,6 +53,6 @@
     <PackageVersion Include="coverlet.collector" Version="6.0.2" />
 
     <!-- OpenTelemetry -->
-    <PackageVersion Include="OpenTelemetry.Api" Version="1.15.3" />
+    <PackageVersion Include="OpenTelemetry.Api" Version="1.19.1" />
   </ItemGroup>
 </Project>

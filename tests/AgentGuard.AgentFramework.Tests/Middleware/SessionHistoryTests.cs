@@ -108,10 +108,11 @@ public class SessionHistoryTests
 
         var response = await agent.RunAsync("who is my rep?", session);
 
-        // the service holds the conversation from here on, out of this middleware's reach
+        // the service holds the conversation from here on: the agent keeps no local copy of it, and the
+        // middleware writes none of its own
         response.Text.Should().Be("Your rep is <EMAIL_ADDRESS>.");
         ((ChatClientAgentSession)session).ConversationId.Should().Be("conv-1");
-        History(agent, session).Select(m => m.Text).Should().Equal("who is my rep?", $"Your rep is {Email}.");
+        History(agent, session).Should().BeEmpty();
     }
 
     private static async Task<(AIAgent Agent, AgentSession Session)> BuildAsync(

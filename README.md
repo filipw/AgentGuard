@@ -232,6 +232,7 @@ The ledger is **hash-only by default** (records `InputHash`/`OutputHash`, not ra
 | `AgentGuard` | **All-in-one package**: core rules engine, bundled Defender multi-head ONNX model, offline PII engine | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.svg)](https://www.nuget.org/packages/AgentGuard) |
 | `AgentGuard.Core` | Framework-agnostic core only: abstractions, rules engine, fluent builder, and the built-in rule set | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Core.svg)](https://www.nuget.org/packages/AgentGuard.Core) |
 | `AgentGuard.AgentFramework` | Microsoft Agent Framework adapter: `UseAgentGuard()` middleware + workflow guardrails via `.WithGuardrails()` | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.AgentFramework.svg)](https://www.nuget.org/packages/AgentGuard.AgentFramework) |
+| `AgentGuard.AgentHooks` | *(preview)* Agent-Hooks (AGENT-HOOKS-0.1) interceptor and `AsAIAgentWithAgentGuard()`: a policy enforced at every interception point of a MAF agent run, with history saved only after the output verdict | [![NuGet](https://img.shields.io/nuget/vpre/AgentGuard.AgentHooks.svg)](https://www.nuget.org/packages/AgentGuard.AgentHooks) |
 | `AgentGuard.Onnx` | ONNX-based ML classifiers - bundled StackOne Defender multi-head model (minilm-multihead-v5, shipped in its Kyoto dependency) + optional DeBERTa v3 and PIGuard injection classifiers + Opir multilingual content-safety classifier + GLiNER NER for PII (`RedactPiiWithNer()`) | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Onnx.svg)](https://www.nuget.org/packages/AgentGuard.Onnx) |
 | `AgentGuard.RemoteClassifier` | Remote ML classifier via HTTP - call Sentinel-v2, Ollama, vLLM, or custom endpoints | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.RemoteClassifier.svg)](https://www.nuget.org/packages/AgentGuard.RemoteClassifier) |
 | `AgentGuard.Pii` | Offline PII detection and de-identification over the TasmanianDevil engine: the order-20 `PiiRule` and `.RedactPii()` | [![NuGet](https://img.shields.io/nuget/v/AgentGuard.Pii.svg)](https://www.nuget.org/packages/AgentGuard.Pii) |
@@ -348,6 +349,24 @@ var agent = innerAgent
 Restoration is by exact token match, so it survives the model echoing a token anywhere in its answer, even glued to other characters; a token the model paraphrases or drops is not restored. Only tokens the middleware minted are restored: those of the current request and, when the run has an `AgentSession`, those of earlier turns in the same session (their ciphertext - never the values - is kept in the session's state, the most recent 4,096). A token from anywhere else - another session, a log, a tool result, or text a user pastes in - is left as is, even under the same key. Streaming output is restored the same way: text that could still be the start of a token is held back until it can be decided, so the streamed text matches the non-streamed text. `UsePiiReversibleRedaction(key, piiOptions)` takes the detection settings (entities, countries, language, threshold, allow-list) and always anonymizes with the reversible `encrypt` operator. To add remote or Azure detectors, or to share one engine across agents, pass a `PiiEngine` you own: `UsePiiReversibleRedaction(engine, key)`. Detection runs on the engine's async path, so remote and Azure detectors take part, and the anonymized text is always what reaches the model - spans an engine anonymizes with a non-reversible operator are removed but not restored.
 
 When an agent also uses `UseAgentGuard(g => g.RedactPii())`, register `UsePiiReversibleRedaction` first so it is the outermost layer: the first registered middleware sees the request first, and the reversible layer has to encrypt the PII before the redaction rule would replace it.
+
+### With Agent-Hooks (preview)
+
+```bash
+dotnet add package AgentGuard.AgentHooks --prerelease
+```
+
+`AsAIAgentWithAgentGuard()` builds a MAF agent that enforces a policy through [Agent-Hooks](https://github.com/responsibleai/agent-hooks) (AGENT-HOOKS-0.1): the input, each model call, each tool call and tool result, and the output are checked before the run moves on, and the agent saves nothing until the output verdict, whatever history provider it uses.
+
+```csharp
+using AgentGuard.AgentHooks;
+
+var agent = chatClient.AsAIAgentWithAgentGuard(
+    g => g.BlockPromptInjection().RedactPii().GuardToolCalls().GuardToolResults(),
+    new ChatClientAgentOptions { ChatOptions = new ChatOptions { Tools = [lookupOrders] } });
+```
+
+A blocked tool call never runs and the model gets a tool error, so the run carries on; a blocked input or answer ends the run with the violation message. `EnforcementMode.EvaluateOnly` runs a policy in shadow mode. See [Agent-Hooks Enforcement](docs/agent-hooks.md) for what each interception point checks, the options and the limitations.
 
 ### With LLM-based rules
 
@@ -603,6 +622,7 @@ Rules execute in order of their `Order` property (lower = first). Built-in rules
 - [Tool Result Guardrails](samples/ToolResultGuardrails/) - detecting indirect prompt injection in tool results (poisoned emails, documents); standalone rule + MAF function-invocation interception
 - [Dynamic Guardrails](samples/DynamicGuardrails/) - per-request rule enabling with `.When()` / `.Unless()` (e.g. disabling the English-centric Defender classifier for non-English users)
 - [Decision Ledger](samples/DecisionLedger/) - tamper-evident, hash-chained audit trail of pipeline decisions: recording, chain verification, tamper detection, and JSON export
+- [Agent-Hooks Guardrails](samples/AgentHooksGuardrails/) - `AsAIAgentWithAgentGuard()`: input redaction and blocking, a blocked tool call the model recovers from, tool-result redaction, a blocked answer that is never saved, and shadow mode with a ledger. Runs offline against a scripted model
 - [Remote PII](samples/RemotePii/) - out-of-process PII detection: a generic HTTP detector via `.RedactPiiWithRemote()` (an in-process stub that wraps GLiNER when the `AGENTGUARD_GLINER_*` variables are set) and Azure AI Language's native PERSON/ADDRESS via `.RedactPiiWithAzure()` (gated on `AZURE_LANGUAGE_ENDPOINT`/`AZURE_LANGUAGE_KEY`)
 
 ## Documentation
@@ -614,11 +634,13 @@ Rules execute in order of their `Order` property (lower = first). Built-in rules
 - [Observability (OpenTelemetry)](docs/observability.md)
 - [Azure Integration](docs/azure-integration.md)
 - [Remote PII Detection](docs/remote-pii.md)
+- [Agent-Hooks Enforcement](docs/agent-hooks.md)
 
 ## Requirements
 
 - .NET 10.0 or later
-- Microsoft Agent Framework 1.8.0 or later *(only if using `AgentGuard.AgentFramework`)*
+- Microsoft Agent Framework 1.22.0 or later *(only if using `AgentGuard.AgentFramework` or `AgentGuard.AgentHooks`)*
+- linux-x64, osx-x64, osx-arm64 or win-x64 *(only if using `AgentGuard.AgentHooks`, whose Agent-Hooks dependency ships a native library for these platforms)*
 
 ### Optional ONNX models
 

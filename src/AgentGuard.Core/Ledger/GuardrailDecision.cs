@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using AgentGuard.Core.Abstractions;
 
 namespace AgentGuard.Core.Ledger;
@@ -26,6 +27,14 @@ public sealed record GuardrailDecision
 
     /// <summary>The agent name, if available.</summary>
     public string? AgentName { get; init; }
+
+    /// <summary>
+    /// Where in the host the decision was made (see <see cref="GuardrailContext.Stage"/>), for example an
+    /// Agent-Hooks interception point; null when the host didn't say. It is part of the entry's hash only
+    /// when set, so chains recorded without it keep verifying.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Stage { get; init; }
 
     /// <summary>The overall outcome (passed / blocked / modified). Uses
     /// <see cref="Telemetry.AgentGuardTelemetry.Outcomes"/> values.</summary>

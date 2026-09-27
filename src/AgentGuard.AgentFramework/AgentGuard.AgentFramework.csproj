@@ -6,6 +6,7 @@
   </PropertyGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="AgentGuard.AgentFramework.Tests" />
+    <InternalsVisibleTo Include="AgentGuard.AgentHooks" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../AgentGuard/AgentGuard.csproj" />

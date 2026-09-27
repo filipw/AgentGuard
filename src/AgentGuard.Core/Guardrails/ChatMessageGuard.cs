@@ -45,6 +45,13 @@ public sealed class ChatMessageGuard
     private readonly GuardrailPipeline _checkPipeline;
     private readonly VerdictCache _verdicts;
 
+    // where the host runs this guard (see GuardrailContext.Stage); null for a guard made by the constructor
+    private readonly string? _stage;
+
+    // whether a response's tool calls and results are evaluated; a host that checks them where they
+    // happen turns this off
+    private readonly bool _guardToolContent = true;
+
     /// <summary>Initializes a new instance of the <see cref="ChatMessageGuard"/> class.</summary>
     /// <param name="policy">The policy to enforce.</param>
     /// <param name="logger">Optional logger for the pipelines.</param>
@@ -68,11 +75,42 @@ public sealed class ChatMessageGuard
         _verdicts = new VerdictCache(verdictCacheCapacity);
     }
 
+    // a view over an existing guard: same pipelines and verdict cache, its own stage and tool setting
+    private ChatMessageGuard(ChatMessageGuard source, string? stage, bool guardToolContent)
+    {
+        Pipeline = source.Pipeline;
+        _checkPipeline = source._checkPipeline;
+        _verdicts = source._verdicts;
+        _stage = stage;
+        _guardToolContent = guardToolContent;
+    }
+
     /// <summary>
     /// The pipeline that evaluates the messages, for callers that run the policy on text of their own
     /// (it records to the same ledger).
     /// </summary>
     public GuardrailPipeline Pipeline { get; }
+
+    /// <summary>
+    /// Returns a guard that shares this guard's pipelines and verdict cache but marks every evaluation
+    /// with <paramref name="stage"/> (see <see cref="GuardrailContext.Stage"/>), so ledger decisions
+    /// record where in the host they were made.
+    /// </summary>
+    /// <param name="stage">Where the host runs the returned guard, for example <c>input</c>.</param>
+    /// <returns>The guard.</returns>
+    public ChatMessageGuard WithStage(string stage)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(stage);
+        return new ChatMessageGuard(this, stage, _guardToolContent);
+    }
+
+    /// <summary>
+    /// Returns a guard that shares this guard's pipelines and verdict cache but leaves out the tool calls
+    /// and tool results in a response, for hosts that check them where they happen - each call before it
+    /// runs, each result before it reaches the model.
+    /// </summary>
+    /// <returns>The guard.</returns>
+    public ChatMessageGuard WithoutToolContent() => new(this, _stage, guardToolContent: false);
 
     /// <summary>
     /// Guards the user messages of a request. The result carries either the block or the messages to
@@ -118,18 +156,52 @@ public sealed class ChatMessageGuard
 
             if (verdict.IsBlocked)
             {
-                // attachments go too: they belonged to a turn the policy rejected
-                (rewritten ??= [.. messages])[i] = new ChatMessage(message.Role, RemovedMessagePlaceholder)
-                {
-                    AuthorName = message.AuthorName,
-                    MessageId = message.MessageId,
-                    CreatedAt = message.CreatedAt
-                };
+                (rewritten ??= [.. messages])[i] = Removed(message);
             }
             else if (verdict.ModifiedText is { } modifiedText)
             {
                 (rewritten ??= [.. messages])[i] = GuardrailChatContent.WithText(message, modifiedText);
             }
+        }
+
+        return rewritten is null
+            ? ChatMessageGuardResult.Unchanged(messages)
+            : ChatMessageGuardResult.Modified(rewritten);
+    }
+
+    /// <summary>
+    /// Guards the user and system messages of a model request, for hosts that see the whole request
+    /// rather than only what the caller sent: history loaded from a store, messages a context provider
+    /// added. Each distinct text is judged once and the verdict reused - from the same cache
+    /// <see cref="GuardInputAsync"/> fills, so the caller's own messages, already judged as input, are
+    /// not evaluated again. A blocked message is replaced with <see cref="RemovedMessagePlaceholder"/>
+    /// and a rewritten one keeps its non-text content; the request as a whole is never blocked.
+    /// </summary>
+    /// <param name="messages">The request's messages.</param>
+    /// <param name="agentName">The agent the request is for, when known.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The outcome: the messages to send on, with any rewrites applied.</returns>
+    public async ValueTask<ChatMessageGuardResult> GuardRequestAsync(
+        IReadOnlyList<ChatMessage> messages,
+        string? agentName = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(messages);
+
+        List<ChatMessage>? rewritten = null;
+
+        for (var i = 0; i < messages.Count; i++)
+        {
+            var message = messages[i];
+            if (!IsGuardedRequestMessage(message))
+                continue;
+
+            var verdict = await GetVerdictAsync(messages, i, agentName, cancellationToken).ConfigureAwait(false);
+
+            if (verdict.IsBlocked)
+                (rewritten ??= [.. messages])[i] = Removed(message);
+            else if (verdict.ModifiedText is { } modifiedText)
+                (rewritten ??= [.. messages])[i] = GuardrailChatContent.WithText(message, modifiedText);
         }
 
         return rewritten is null
@@ -210,7 +282,7 @@ public sealed class ChatMessageGuard
         bool guardText,
         CancellationToken cancellationToken)
     {
-        var contents = responseMessages.SelectMany(m => m.Contents).ToList();
+        var contents = _guardToolContent ? responseMessages.SelectMany(m => m.Contents).ToList() : [];
         var toolCalls = GuardrailChatContent.ExtractToolCalls(contents);
         var toolResults = GuardrailChatContent.ExtractToolResults(contents);
 
@@ -382,14 +454,27 @@ public sealed class ChatMessageGuard
             context.Properties[ToolResultGuardrailRule.ToolResultsKey] = (IReadOnlyList<ToolResultEntry>)toolResults;
     }
 
-    private static GuardrailContext CreateContext(
+    private GuardrailContext CreateContext(
         string text, GuardrailPhase phase, IReadOnlyList<ChatMessage>? messages, string? agentName) => new()
         {
             Text = text,
             Phase = phase,
             Messages = messages,
-            AgentName = agentName
+            AgentName = agentName,
+            Stage = _stage
         };
+
+    // attachments go too: they belonged to a message the policy rejected
+    private static ChatMessage Removed(ChatMessage message) =>
+        new(message.Role, RemovedMessagePlaceholder)
+        {
+            AuthorName = message.AuthorName,
+            MessageId = message.MessageId,
+            CreatedAt = message.CreatedAt
+        };
+
+    private static bool IsGuardedRequestMessage(ChatMessage message) =>
+        (message.Role == ChatRole.User || message.Role == ChatRole.System) && !string.IsNullOrWhiteSpace(message.Text);
 
     private static bool IsGuardedUserMessage(ChatMessage message) =>
         message.Role == ChatRole.User && !string.IsNullOrWhiteSpace(message.Text);

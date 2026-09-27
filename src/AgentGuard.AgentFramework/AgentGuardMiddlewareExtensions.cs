@@ -159,23 +159,7 @@ public static class AgentGuardMiddlewareExtensions
         ILogger<GuardrailPipeline>? logger,
         IGuardrailLedger? ledger)
     {
-        // gated rules (.When/.Unless) are matched by what they wrap but still evaluated through the
-        // gate, so their predicate keeps applying.
-        var toolCallRules = policy.Rules.Where(r => r.Unwrap() is ToolCallGuardrailRule).ToList();
-
-        // the result sub-policy is split in two: the text rules (PII, secrets, LLM PII) rewrite the
-        // tool result, then the tool-result rule inspects what they produced
-        var inspectResults = policy.Rules.Any(r => r.Unwrap() is ToolResultGuardrailRule);
-        var included = inspectResults
-            ? policy.Rules
-                .Where(r => r.Phase.HasFlag(GuardrailPhase.Output) && options.IncludeRuleOrders.Contains(r.Order))
-                .ToList()
-            : [];
-
-        var textRules = included.Where(r => r.Unwrap() is not (ToolResultGuardrailRule or ToolCallGuardrailRule)).ToList();
-        var toolResultRules = included.Where(r => r.Unwrap() is ToolResultGuardrailRule).ToList();
-
-        if (toolCallRules.Count == 0 && included.Count == 0)
+        if (!ToolRulePipelines.Applies(policy, options.IncludeRuleOrders))
         {
             return builder;
         }
@@ -185,16 +169,11 @@ public static class AgentGuardMiddlewareExtensions
             if (innerAgent.GetService<FunctionInvokingChatClient>() is null)
                 return innerAgent;
 
-            var effectiveLedger = ledger ?? services?.GetService<IGuardrailLedger>();
-            var effectiveLogger = logger ?? NullLogger<GuardrailPipeline>.Instance;
-
-            GuardrailPipeline? Build(List<IGuardrailRule> rules, string suffix) =>
-                rules.Count == 0
-                    ? null
-                    : new GuardrailPipeline(
-                        new GuardrailPolicy($"{policy.Name}.{suffix}", rules, policy.ViolationHandler),
-                        effectiveLogger,
-                        effectiveLedger);
+            var pipelines = ToolRulePipelines.Create(
+                policy,
+                options.IncludeRuleOrders,
+                logger ?? NullLogger<GuardrailPipeline>.Instance,
+                ledger ?? services?.GetService<IGuardrailLedger>());
 
             var subBuilder = new AIAgentBuilder(innerAgent);
 
@@ -203,11 +182,7 @@ public static class AgentGuardMiddlewareExtensions
             if (options.HardFail)
                 subBuilder.Use(ToolInvocationGuard.RunAsync, ToolInvocationGuard.RunStreamingAsync);
 
-            subBuilder.Use(ToolInvocationGuard.CreateMiddleware(
-                Build(toolCallRules, "tool-calls"),
-                Build(textRules, "tool-results.text"),
-                Build(toolResultRules, "tool-results"),
-                options));
+            subBuilder.Use(ToolInvocationGuard.CreateMiddleware(pipelines, options));
             return subBuilder.Build(services);
         });
     }

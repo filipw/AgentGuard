@@ -29,6 +29,7 @@ internal static class GuardrailDecisionFactory
             PolicyName = policyName,
             Phase = context.Phase,
             AgentName = context.AgentName,
+            Stage = context.Stage,
             Outcome = outcome,
             BlockingRuleName = blockingResult?.RuleName,
             Severity = blockingResult?.Severity ?? GuardrailSeverity.None,

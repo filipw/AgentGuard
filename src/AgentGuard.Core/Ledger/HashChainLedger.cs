@@ -488,6 +488,14 @@ public sealed class HashChainLedger : IGuardrailLedger, IDisposable
             AppendField(sb, ro.Outcome);
         }
 
+        // appended only when present, so decisions recorded without a stage hash as they always have;
+        // the rule-outcome count above fixes where the outcomes end, so this can't be mistaken for one
+        if (d.Stage is not null)
+        {
+            AppendField(sb, "stage");
+            AppendField(sb, d.Stage);
+        }
+
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(sb.ToString()));
         return Convert.ToHexStringLower(bytes);
     }

@@ -156,6 +156,8 @@ public static class AgentGuardTelemetry
         public const string RuleOrder = "agentguard.rule.order";
         /// <summary>The workflow executor being guarded.</summary>
         public const string ExecutorId = "agentguard.executor.id";
+        /// <summary>The Agent-Hooks interception point being evaluated, for example <c>pre_tool_call</c>.</summary>
+        public const string InterceptionPoint = "agentguard.hooks.point";
         /// <summary>CLR type name of the workflow message.</summary>
         public const string MessageType = "agentguard.message.type";
         /// <summary>buffered or progressive.</summary>
@@ -191,6 +193,11 @@ public static class AgentGuardTelemetry
         public const string MiddlewareStreaming = "agentguard.middleware.streaming";
         /// <summary>Workflow executor guardrails.</summary>
         public const string ExecutorGuard = "agentguard.executor.guard";
+        /// <summary>
+        /// Prefix of the Agent-Hooks interception spans; each span is named after its interception point,
+        /// for example <c>agentguard.hooks.input</c>.
+        /// </summary>
+        public const string Hooks = "agentguard.hooks";
     }
 
     /// <summary>
