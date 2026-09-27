@@ -516,6 +516,42 @@ public class HashChainLedgerTests
     }
 
     [Fact]
+    public void ShouldFailVerification_WhenAStageIsAddedToARecordedDecision()
+    {
+        var ledger = new HashChainLedger();
+        ledger.Append(Decision());
+        var entry = ledger.Entries[0];
+
+        var verified = HashChainLedger.Verify([entry with { Decision = entry.Decision with { Stage = "output" } }], out _, requireGenesis: true);
+
+        verified.Should().BeFalse("the stage is part of the hashed decision");
+    }
+
+    [Fact]
+    public void ShouldKeepTheStage_WhenAChainIsExportedAndLoaded()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"agentguard-ledger-{Guid.NewGuid():N}.jsonl");
+        try
+        {
+            using (var ledger = new HashChainLedger(path))
+            {
+                ledger.Append(Decision() with { Stage = "pre_tool_call" });
+                ledger.Append(Decision());
+            }
+
+            using var loaded = HashChainLedger.Load(path);
+
+            loaded.Entries.Select(e => e.Decision.Stage).Should().Equal("pre_tool_call", null);
+            loaded.Verify().Should().BeTrue();
+            File.ReadLines(path).Last().Should().NotContain("\"stage\"", "a decision without a stage doesn't write one");
+        }
+        finally
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
+    }
+
+    [Fact]
     public void ShouldNotWriteBack_WhenLoadedWithoutResume()
     {
         var path = Path.Combine(Path.GetTempPath(), $"agentguard-ledger-{Guid.NewGuid():N}.jsonl");

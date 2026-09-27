@@ -181,6 +181,13 @@ public sealed record GuardrailContext
     public string? AgentName { get; init; }
 
     /// <summary>
+    /// Where in the host this evaluation happens, for example an Agent-Hooks interception point such as
+    /// <c>input</c> or <c>pre_tool_call</c>. Recorded on ledger decisions; null when the host doesn't
+    /// say.
+    /// </summary>
+    public string? Stage { get; init; }
+
+    /// <summary>
     /// Structured side-channel shared by every rule in a run. Well-known keys are declared as
     /// constants on the rules that use them.
     /// </summary>

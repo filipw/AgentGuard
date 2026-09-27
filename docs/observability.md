@@ -58,6 +58,12 @@ builder.Services.AddOpenTelemetry()
 | `agentguard.middleware.streaming` | MAF streaming guardrails | `agentguard.agent.name`, `agentguard.streaming.strategy`, `agentguard.outcome` (the outcome of the whole streamed run: blocked on an input or output block, otherwise modified or passed); on a block also `agentguard.blocked.reason` and `agentguard.severity` |
 | `agentguard.executor.guard` | Workflow executor guardrails (`agentguard.executor.guard input` / `agentguard.executor.guard output` for executors with a typed output) | `agentguard.executor.id`, `agentguard.phase`, `agentguard.message.type`, `agentguard.outcome`; on a block also `agentguard.blocked.reason` and `agentguard.severity` |
 
+### Agent-Hooks spans
+
+| Span name | Description | Key tags |
+|-----------|-------------|----------|
+| `agentguard.hooks.<point>` | One Agent-Hooks interception point handled by `AgentGuardInterceptor` (`agentguard.hooks.input`, `agentguard.hooks.pre_tool_call`, `agentguard.hooks.output` and so on); the pipeline and rule spans of its evaluations nest under it | `agentguard.hooks.point`, `agentguard.policy.name`, `agentguard.agent.name`, `agentguard.outcome`; on a block also `agentguard.blocked.reason` and `agentguard.severity`; when the interceptor throws, `error.type` |
+
 ### Span hierarchy
 
 When using the MAF middleware, spans nest naturally under the existing MAF agent invocation span:
@@ -85,7 +91,7 @@ A block is an expected outcome of a policy, not a failure, so error-rate alerts 
 - Blocked rule spans from `GuardrailPipeline` also include an `agentguard.rule.blocked` event with `reason` and `severity` tags.
 - A rule that could not reach a verdict (a result with `IsError`) sets `ActivityStatusCode.Error` on its rule span, with the error detail in `error.type` and the status description. This applies whatever its `ErrorBehavior` did with the text, so a fail-open error is still visible.
 - An exception that escapes a rule, a pipeline run, a re-ask or a streaming evaluation sets `ActivityStatusCode.Error` on that span, with the exception type in `error.type`. Cancellation through the caller's token is not recorded as an error.
-- The MAF middleware and workflow executor spans follow the same rules: a block sets the outcome, reason and severity tags; an exception sets `ActivityStatusCode.Error`. A middleware span also sets it when the block came from a rule that could not reach a verdict and failed closed.
+- The MAF middleware, Agent-Hooks and workflow executor spans follow the same rules: a block sets the outcome, reason and severity tags; an exception sets `ActivityStatusCode.Error`. A middleware or Agent-Hooks span also sets it when the block came from a rule that could not reach a verdict and failed closed.
 
 ## Metrics
 
@@ -120,6 +126,7 @@ All tag keys are defined as constants in `AgentGuardTelemetry.Tags`:
 | `ToolCallCount` | `agentguard.tool_call.count` |
 | `ReaskMaxAttempts` | `agentguard.reask.max_attempts` |
 | `ReaskAttemptsUsed` | `agentguard.reask.attempts_used` |
+| `InterceptionPoint` | `agentguard.hooks.point` |
 | `ErrorType` | `error.type` |
 
 ### Outcome values
@@ -173,7 +180,7 @@ Beyond traces and metrics, AgentGuard can keep a **tamper-evident audit trail** 
 The ledger types live in `AgentGuard.Core.Ledger` and are dependency-free (`System.Security.Cryptography` + `System.Text.Json`):
 
 - `IGuardrailLedger` - append-only sink (`Append(GuardrailDecision)`).
-- `GuardrailDecision` - the immutable decision facts (policy, phase, outcome, blocking rule/severity/reason, per-rule outcomes, input/output hashes, timestamp).
+- `GuardrailDecision` - the immutable decision facts (policy, phase, outcome, blocking rule/severity/reason, per-rule outcomes, input/output hashes, timestamp, and the `Stage` in the host where the evaluation ran - the interception point for Agent-Hooks, null elsewhere).
 - `GuardrailLedgerEntry` - a chain record: the decision plus `Seq`, `PreviousHash`, and `Hash`.
 - `HashChainLedger` - the concrete tamper-evident store: thread-safe append, optional append-only JSONL file mirror, `Verify()` (recompute and compare the entries held in memory), `Export()` (JSON of those entries), and `Load(path)` (re-hydrate a persisted JSONL chain so it can be re-verified after a process restart). A ledger constructed over an existing JSONL file continues its chain.
 

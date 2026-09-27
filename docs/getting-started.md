@@ -5,6 +5,7 @@
 ```bash
 dotnet add package AgentGuard --prerelease                 # core + offline PII + ONNX classifiers (bundled Defender model)
 dotnet add package AgentGuard.AgentFramework --prerelease  # optional: MAF middleware + workflow guardrails
+dotnet add package AgentGuard.AgentHooks --prerelease      # optional (preview): MAF agents enforced through Agent-Hooks
 dotnet add package AgentGuard.Azure --prerelease           # optional: Azure AI Content Safety + Azure AI Language PII
 dotnet add package AgentGuard.Hosting --prerelease         # optional: DI + config binding
 dotnet add package AgentGuard.RemoteClassifier --prerelease # optional: remote ML classifier via HTTP
@@ -100,6 +101,8 @@ Supports both `RunAsync` and `RunStreamingAsync`, including progressive streamin
 `ChatClientAgent` saves its response to the session's chat history before this middleware sees it. With the default in-memory history provider, an output block or rewrite is applied to the stored response too, so the next turn doesn't replay what was blocked or redacted. Other history providers and service-side conversations keep the raw response; if that matters, also add `UseAgentGuard()` to the agent's `IChatClient`, which guards the response before the agent saves it.
 
 When the agent invokes functions through a `FunctionInvokingChatClient` (`ChatClientAgent` has one), `GuardToolCalls()` checks each call's arguments before the tool runs - a blocked call is never executed and the model receives `ToolResultMiddlewareOptions.BlockedToolCallPlaceholder` instead - and `GuardToolResults()` checks each tool result before the model sees it.
+
+For an agent built from an `IChatClient`, `AsAIAgentWithAgentGuard()` from the `AgentGuard.AgentHooks` preview package is the stricter alternative: it enforces the policy through Agent-Hooks interception points, before and after each model call and tool call, and the agent saves nothing to its history until the output verdict. See [Agent-Hooks Enforcement](agent-hooks.md).
 
 ## How It Works
 
@@ -223,3 +226,4 @@ Every pipeline run, rule evaluation, re-ask attempt, and streaming retraction is
 - [Observability](observability.md) - spans, metrics, and sensitive data
 - [Azure Integration](azure-integration.md) - production content safety
 - [Remote PII Detection](remote-pii.md) - out-of-process and Azure AI Language PII detectors
+- [Agent-Hooks Enforcement](agent-hooks.md) - a policy enforced at every Agent-Hooks interception point of a MAF agent (preview)

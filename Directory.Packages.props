@@ -7,6 +7,9 @@
     <!-- Microsoft Agent Framework -->
     <PackageVersion Include="Microsoft.Agents.AI" Version="1.22.0" />
     <PackageVersion Include="Microsoft.Agents.AI.Workflows" Version="1.22.0" />
+    <!-- Agent-Hooks interception (alpha; AgentGuard.AgentHooks only) -->
+    <PackageVersion Include="Microsoft.Agents.AI.AgentHooks" Version="1.22.0-alpha.260918.1" />
+    <PackageVersion Include="ResponsibleAI.AgentHooks" Version="0.1.0-alpha.5" />
 
     <!-- Microsoft.Extensions.AI -->
     <PackageVersion Include="Microsoft.Extensions.AI" Version="10.10.0" />

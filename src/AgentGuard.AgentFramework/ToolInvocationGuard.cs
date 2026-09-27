@@ -28,11 +28,7 @@ internal static class ToolInvocationGuard
     /// placeholder; sanitized results substitute the modified content.
     /// </summary>
     internal static Func<AIAgent, FunctionInvocationContext, Func<FunctionInvocationContext, CancellationToken, ValueTask<object?>>, CancellationToken, ValueTask<object?>>
-        CreateMiddleware(
-            GuardrailPipeline? toolCallPipeline,
-            GuardrailPipeline? textPipeline,
-            GuardrailPipeline? toolResultPipeline,
-            ToolResultMiddlewareOptions options)
+        CreateMiddleware(ToolRulePipelines pipelines, ToolResultMiddlewareOptions options)
     {
         return async (agent, ctx, next, ct) =>
         {
@@ -45,91 +41,28 @@ internal static class ToolInvocationGuard
 
             var messages = ctx.Messages?.ToList();
 
-            // pass 0: the call's arguments, checked before the tool runs
-            if (toolCallPipeline is not null)
-            {
-                var callContext = new GuardrailContext
-                {
-                    Text = "",
-                    Phase = GuardrailPhase.Output,
-                    Messages = messages,
-                    AgentName = agent.Name
-                };
-                callContext.Properties[ToolCallGuardrailRule.ToolCallsKey] =
-                    (IReadOnlyList<AgentToolCall>)[GuardrailChatContent.ToToolCall(ctx.Function.Name, ctx.Arguments)];
-
-                var callResult = await toolCallPipeline.RunAsync(callContext, ct);
-                if (callResult.IsBlocked)
-                    return Blocked(agent, ctx, options, callResult, options.BlockedToolCallPlaceholder, "tool-call");
-            }
+            // the call's arguments, checked before the tool runs
+            var blockedCall = await pipelines.CheckCallsAsync(
+                [GuardrailChatContent.ToToolCall(ctx.Function.Name, ctx.Arguments)], messages, agent.Name, stage: null, ct);
+            if (blockedCall is not null)
+                return Blocked(agent, ctx, options, blockedCall, options.BlockedToolCallPlaceholder, "tool-call");
 
             var raw = await next(ctx, ct);
 
-            if (textPipeline is null && toolResultPipeline is null)
+            if (!pipelines.ChecksResults)
                 return raw;
 
             // AIFunctionFactory tools return a JsonElement; the rules evaluate the text the tool returned,
             // not its JSON encoding
             var content = GuardrailChatContent.ToText(raw);
-
             if (string.IsNullOrEmpty(content))
-            {
                 return raw;
-            }
 
-            var changed = false;
+            var check = await pipelines.CheckResultAsync(ctx.Function.Name, content, messages, agent.Name, stage: null, ct);
+            if (check.IsBlocked)
+                return Blocked(agent, ctx, options, check.Blocking!, options.BlockedPlaceholder, "tool-result");
 
-            // pass 1: text rules rewrite the content in place
-            if (textPipeline is not null)
-            {
-                var textContext = new GuardrailContext
-                {
-                    Text = content,
-                    Phase = GuardrailPhase.Output,
-                    Messages = messages,
-                    AgentName = agent.Name
-                };
-
-                var textResult = await textPipeline.RunAsync(textContext, ct);
-                if (textResult.IsBlocked)
-                    return Blocked(agent, ctx, options, textResult, options.BlockedPlaceholder, "tool-result");
-
-                if (textResult.WasModified)
-                {
-                    content = textResult.FinalText;
-                    changed = true;
-                }
-            }
-
-            // pass 2: the tool-result rule sees whatever pass 1 produced
-            if (toolResultPipeline is not null)
-            {
-                var entry = new ToolResultEntry { ToolName = ctx.Function.Name, Content = content };
-                var trContext = new GuardrailContext
-                {
-                    Text = content,
-                    Phase = GuardrailPhase.Output,
-                    Messages = messages,
-                    AgentName = agent.Name
-                };
-                trContext.Properties[ToolResultGuardrailRule.ToolResultsKey] = (IReadOnlyList<ToolResultEntry>)[entry];
-
-                var trResult = await toolResultPipeline.RunAsync(trContext, ct);
-                if (trResult.IsBlocked)
-                    return Blocked(agent, ctx, options, trResult, options.BlockedPlaceholder, "tool-result");
-
-                // the rule hands cleaned content back through the property bag, not as FinalText (its
-                // text is not the tool result), so WasModified never signals it
-                if (trContext.Properties.TryGetValue(ToolResultGuardrailRule.SanitizedResultsKey, out var sanitizedObj) &&
-                    sanitizedObj is IReadOnlyList<ToolResultEntry> { Count: > 0 } sanitized &&
-                    !string.Equals(sanitized[0].Content, content, StringComparison.Ordinal))
-                {
-                    content = sanitized[0].Content;
-                    changed = true;
-                }
-            }
-
-            return changed ? RestoreShape(raw, content) : raw;
+            return check.Content is { } rewritten ? RestoreShape(raw, rewritten) : raw;
         };
     }
 
