@@ -621,6 +621,201 @@ public class SecretsDetectionRuleTests
         caseInsensitive.Should().NotBeEmpty();
         caseInsensitive.Should().OnlyContain(p => p.Options.HasFlag(RegexOptions.CultureInvariant));
     }
+    // ── AWS secret access keys ───────────────────────────────────
+
+    [Theory]
+    [InlineData("Secret access key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")]
+    [InlineData("secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")]
+    [InlineData("AWS key wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")]
+    public async Task ShouldBlock_WhenAnAwsSecretKeyIsLabelled(string text)
+    {
+        var result = await new SecretsDetectionRule().EvaluateAsync(CreateContext(text));
+
+        result.IsBlocked.Should().BeTrue();
+        result.Reason.Should().Contain("aws-secret-key");
+    }
+
+    // redacting the access key id must not take away what marks the value beside it as its secret
+    [Fact]
+    public async Task ShouldRedactTheSecretKey_WhenItSitsNextToItsAccessKeyId()
+    {
+        var rule = new SecretsDetectionRule(new() { Action = SecretAction.Redact });
+
+        var result = await rule.EvaluateAsync(CreateContext(
+            "Access key ID: AKIAIOSFODNN7EXAMPLE\nKey: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"));
+
+        result.ModifiedText.Should().Be("Access key ID: [SECRET_REDACTED]\nKey: [SECRET_REDACTED]");
+    }
+
+    [Theory]
+    [InlineData("These flaws were fixed in commit 2fd4e1c67a2d28fced849ee1bb76e7391b93eb12")]
+    [InlineData("The AWS SDK was bumped in 2fd4e1c67a2d28fced849ee1bb76e7391b93eb12")]
+    [InlineData("The Azure blob has Content-MD5 d41d8cd98f00b204e9800998ecf8427e")]
+    public async Task ShouldPass_WhenAHexDigestSitsNearACloudName(string text)
+    {
+        var result = await new SecretsDetectionRule().EvaluateAsync(CreateContext(text));
+
+        result.IsBlocked.Should().BeFalse();
+    }
+
+    // ── Passwords that start like a placeholder ──────────────────
+
+    [Theory]
+    [InlineData("Server=db.internal;User Id=sa;Password=$uperS3cret!9;")]
+    [InlineData("Server=db.internal;User Id=sa;Password=Enterprise2024!;")]
+    [InlineData("Server=db.internal;User Id=sa;Password=(Tr0ub4dor&3);")]
+    [InlineData("{\"password\": \"Yourkshire#1987\"}")]
+    [InlineData("{\"db_password\": \"[Gx7!pQ2#]\"}")]
+    [InlineData("{\"password\": \"%Winter2024%!\"}")]
+    [InlineData("postgres://admin:%40dm1nPa55@db.internal:5432/app")]
+    [InlineData("postgres://admin:$ecretPa55@db.internal:5432/app")]
+    [InlineData("postgres://admin:enterTheDragon77@db.internal:5432/app")]
+    public async Task ShouldBlock_WhenAPasswordOnlyStartsLikeAPlaceholder(string text)
+    {
+        var result = await new SecretsDetectionRule().EvaluateAsync(CreateContext(text));
+
+        result.IsBlocked.Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData("Server=db.internal;User Id=sa;Password=${DB_PASSWORD};")]
+    [InlineData("Server=db.internal;User Id=sa;Password=$DB_PASSWORD;")]
+    [InlineData("Server=db.internal;User Id=sa;Password=$dbPassword;")]
+    [InlineData("Server=db.internal;User Id=sa;Password=<your-password>;")]
+    [InlineData("Server=db.internal;User Id=sa;Password=%DB_PASSWORD%;")]
+    [InlineData("Server=db.internal;User Id=sa;Password=your-password-here;")]
+    [InlineData("Server=db.internal;User Id=sa;Password=ENTER_YOUR_PASSWORD;")]
+    [InlineData("{\"password\": \"{{ secrets.db_password }}\"}")]
+    [InlineData("{\"password\": \"[password]\"}")]
+    [InlineData("{\"password\": \"replace-with-real-password\"}")]
+    [InlineData("postgres://admin:$(DB_PASSWORD)@db.internal:5432/app")]
+    public async Task ShouldPass_WhenThePasswordIsAPlaceholder(string text)
+    {
+        var result = await new SecretsDetectionRule().EvaluateAsync(CreateContext(text));
+
+        result.IsBlocked.Should().BeFalse();
+    }
+
+    // ── Connection string shapes ─────────────────────────────────
+
+    [Theory]
+    [InlineData("Server=db.internal;User Id=sa;Password='Sup3rS3cret!';")]
+    [InlineData("Server=db.internal;User Id=sa;Password=\"Sup3r;S3cret!\";")]
+    [InlineData("User Id=sa;Password=Sup3rS3cret!;Server=db.internal;")]
+    [InlineData("Password=Sup3rS3cret!;Data Source=db.internal;Initial Catalog=app")]
+    [InlineData("Endpoint=sb://contoso.servicebus.windows.net/;SharedAccessKeyName=Root;SharedAccessKey=q7Zb1x9Kd3mPw5Rt8Yv2Ln6Hc4Jf0Ga1Sd3Ef5Gh7Jk=")]
+    public async Task ShouldBlock_WhenAConnectionStringIsWrittenAnotherWay(string text)
+    {
+        var result = await new SecretsDetectionRule().EvaluateAsync(CreateContext(text));
+
+        result.IsBlocked.Should().BeTrue();
+        result.Reason.Should().Contain("connection-string");
+    }
+
+    [Fact]
+    public async Task ShouldRedactOnlyThePassword_WhenItIsQuotedOrComesFirst()
+    {
+        var rule = new SecretsDetectionRule(new() { Action = SecretAction.Redact });
+
+        (await rule.EvaluateAsync(CreateContext("Server=db.internal;User Id=sa;Password=\"Sup3r;S3cret!\";Encrypt=true")))
+            .ModifiedText.Should().Be("Server=db.internal;User Id=sa;Password=\"[SECRET_REDACTED]\";Encrypt=true");
+
+        (await rule.EvaluateAsync(CreateContext("User Id=sa;Password=Sup3rS3cret!;Server=db.internal;")))
+            .ModifiedText.Should().Be("User Id=sa;Password=[SECRET_REDACTED];Server=db.internal;");
+    }
+
+    // ── API keys and bearer tokens: code and placeholders ────────
+
+    [Theory]
+    [InlineData("new OpenAI({ apiKey: process.env.OPENAI_API_KEY_VALUE })")]
+    [InlineData("api_key=settings.openai_api_key_name")]
+    [InlineData("const access_token = response.data.access_token_value;")]
+    [InlineData("auth_token = generate_authentication_token(user)")]
+    [InlineData("api_key: your-api-key-goes-here-1234")]
+    [InlineData("API_KEY=xxxxxxxxxxxxxxxxxxxxxxxx")]
+    [InlineData("Authorization: Bearer YOUR_ACCESS_TOKEN_HERE")]
+    [InlineData("Authorization: Bearer <your-access-token-goes-here>")]
+    public async Task ShouldPass_WhenAnApiKeyValueIsCodeOrAPlaceholder(string text)
+    {
+        var result = await new SecretsDetectionRule().EvaluateAsync(CreateContext(text));
+
+        result.IsBlocked.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ShouldRedactOnlyTheValue_WhenAnApiKeyOrBearerTokenIsFound()
+    {
+        var rule = new SecretsDetectionRule(new() { Action = SecretAction.Redact });
+
+        (await rule.EvaluateAsync(CreateContext("api_key=sk82Hd71kQpz9LmN4xT6bV0c")))
+            .ModifiedText.Should().Be("api_key=[SECRET_REDACTED]");
+
+        (await rule.EvaluateAsync(CreateContext("Authorization: Bearer sk82Hd71kQpz9LmN4xT6bV0c")))
+            .ModifiedText.Should().Be("Authorization: Bearer [SECRET_REDACTED]");
+    }
+
+    // ── A scan that could not finish ─────────────────────────────
+
+    // a pattern that backtracks catastrophically on this input, standing in for any scan that
+    // exceeds its time budget
+    private static SecretsDetectionOptions WithASlowPattern(ErrorBehavior onError, SecretAction action = SecretAction.Block) => new()
+    {
+        Action = action,
+        OnError = onError,
+        CustomPatterns = new Dictionary<string, string> { ["slow"] = "(a+)+$" }
+    };
+
+    private static readonly string SlowInput = new string('a', 60) + "!";
+
+    [Fact]
+    public async Task ShouldReportAnError_WhenAPatternTimesOutAndNothingElseMatched()
+    {
+        var result = await new SecretsDetectionRule(WithASlowPattern(ErrorBehavior.FailOpen)).EvaluateAsync(CreateContext(SlowInput));
+
+        result.IsError.Should().BeTrue("a scan that did not finish is not a clean one");
+        result.IsBlocked.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ShouldBlock_WhenAPatternTimesOutAndOnErrorIsFailClosed()
+    {
+        var result = await new SecretsDetectionRule(WithASlowPattern(ErrorBehavior.FailClosed)).EvaluateAsync(CreateContext(SlowInput));
+
+        result.IsError.Should().BeTrue();
+        result.IsBlocked.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ShouldStillBlock_WhenAPatternTimesOutButAnotherFindsASecret()
+    {
+        var result = await new SecretsDetectionRule(WithASlowPattern(ErrorBehavior.FailOpen))
+            .EvaluateAsync(CreateContext("AKIAIOSFODNN7EXAMPLE " + SlowInput));
+
+        result.IsBlocked.Should().BeTrue();
+        result.Reason.Should().Contain("aws-access-key");
+    }
+
+    [Fact]
+    public async Task ShouldFlagTheRedaction_WhenAPatternTimedOutAlongsideIt()
+    {
+        var result = await new SecretsDetectionRule(WithASlowPattern(ErrorBehavior.FailOpen, SecretAction.Redact))
+            .EvaluateAsync(CreateContext("AKIAIOSFODNN7EXAMPLE " + SlowInput));
+
+        result.IsModified.Should().BeTrue();
+        result.ModifiedText.Should().StartWith("[SECRET_REDACTED] ");
+        result.IsError.Should().BeTrue("the text may still hold what the unfinished pattern looks for");
+    }
+
+    [Fact]
+    public async Task ShouldScanALineOfHostKeysInLinearTime()
+    {
+        var text = string.Concat(Enumerable.Repeat("Host=", 40_000)) + "\nServer=db.internal;User Id=sa;Password=Tr0ub4dor;";
+
+        var result = await new SecretsDetectionRule().EvaluateAsync(CreateContext(text));
+
+        result.IsError.Should().BeFalse();
+        result.IsBlocked.Should().BeTrue();
+    }
 }
 
 // scans a large unterminated key block on purpose, so it runs in the non-parallel large-input

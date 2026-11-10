@@ -800,6 +800,97 @@ public class ConfigurationBindingTests
         act.Should().Throw<InvalidOperationException>().WithMessage("TokenLimit: MaxTokens must be at least 1, but was 0.");
     }
 
+    // a value that can't be read must fail the first resolve, not silently drop the rule from the policy
+
+    [Theory]
+    [InlineData("TokenLimit", "MaxTokens", "4k")]
+    [InlineData("RemotePii", "FailOpen", "no")]
+    [InlineData("PromptInjection", "Sensitivity", "Paranoid")]
+    public void ShouldThrow_WhenARuleSettingCannotBeRead(string type, string setting, string value)
+    {
+        var provider = BuildProvider(new()
+        {
+            ["DefaultPolicy:Rules:0:Type"] = "PromptInjection",
+            ["DefaultPolicy:Rules:1:Type"] = type,
+            [$"DefaultPolicy:Rules:1:{setting}"] = value,
+        });
+
+        var act = () => provider.GetRequiredService<IAgentGuardFactory>();
+
+        act.Should().Throw<InvalidOperationException>().WithMessage($"*{setting}*");
+    }
+
+    [Fact]
+    public void ShouldThrow_WhenARuleSettingInANamedPolicyCannotBeRead()
+    {
+        var provider = BuildProvider(new()
+        {
+            ["Policies:strict:Rules:0:Type"] = "TokenLimit",
+            ["Policies:strict:Rules:0:MaxTokens"] = "lots",
+        });
+
+        var act = () => provider.GetRequiredService<IAgentGuardFactory>();
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*strict*");
+    }
+
+    // the documented call is AddAgentGuard(configuration.GetSection("AgentGuard")): the policies then sit
+    // below a parent section, and a valid configuration has to load from there
+    [Fact]
+    public void ShouldLoadPolicies_WhenConfigurationIsANestedSection()
+    {
+        var root = BuildConfig(new Dictionary<string, string?>
+        {
+            ["AgentGuard:DefaultPolicy:Rules:0:Type"] = "PromptInjection",
+            ["AgentGuard:DefaultPolicy:Rules:1:Type"] = "Secrets",
+            ["AgentGuard:DefaultPolicy:Rules:2:Type"] = "TokenLimit",
+            ["AgentGuard:DefaultPolicy:Rules:2:MaxTokens"] = "4000",
+            ["AgentGuard:Policies:strict:Rules:0:Type"] = "PromptInjection",
+        });
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddAgentGuard(root.GetSection("AgentGuard"));
+        var factory = services.BuildServiceProvider().GetRequiredService<IAgentGuardFactory>();
+
+        factory.GetDefaultPolicy().Rules.Should().HaveCount(3);
+        factory.GetPolicy("strict").Rules.Should().HaveCount(1);
+    }
+
+    [Fact]
+    public void ShouldThrow_WhenARuleValueCannotBeRead_InANestedSection()
+    {
+        var root = BuildConfig(new Dictionary<string, string?>
+        {
+            ["AgentGuard:DefaultPolicy:Rules:0:Type"] = "PromptInjection",
+            ["AgentGuard:DefaultPolicy:Rules:1:Type"] = "TokenLimit",
+            ["AgentGuard:DefaultPolicy:Rules:1:MaxTokens"] = "4k",
+        });
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddAgentGuard(root.GetSection("AgentGuard"));
+        var provider = services.BuildServiceProvider();
+
+        var act = () => provider.GetRequiredService<IAgentGuardFactory>();
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*default policy*TokenLimit*MaxTokens*");
+    }
+
+    [Fact]
+    public void ShouldThrow_WhenARuleSettingIsMisspelled()
+    {
+        var provider = BuildProvider(new()
+        {
+            ["DefaultPolicy:Rules:0:Type"] = "TokenLimit",
+            ["DefaultPolicy:Rules:0:MaxTokenz"] = "100",
+        });
+
+        var act = () => provider.GetRequiredService<IAgentGuardFactory>();
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*MaxTokenz*");
+    }
+
     [Theory]
     [InlineData("PromptInjection", "Sensitivity", "7")]
     [InlineData("TokenLimit", "Phase", "4")]

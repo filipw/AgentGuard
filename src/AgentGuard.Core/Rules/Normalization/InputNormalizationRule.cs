@@ -64,8 +64,8 @@ public sealed class InputNormalizationOptions
     /// </summary>
     /// <remarks>
     /// Unicode tag characters (U+E0000-U+E007F) spell ASCII that a model can read but a person
-    /// cannot see ("ASCII smuggling"). Besides being stripped, what they spell is appended as a
-    /// decoded view, like the other decoders, so downstream rules can inspect it.
+    /// cannot see ("ASCII smuggling"). Besides being stripped, what they spell is handed on as a
+    /// decoded view, like the other decoders' output, so downstream rules can inspect it.
     /// </remarks>
     public bool StripInvisibleUnicode { get; init; } = true;
 
@@ -80,15 +80,35 @@ public sealed class InputNormalizationOptions
 /// <summary>
 /// Pre-processes input text by decoding common evasion encodings so that downstream
 /// rules (both regex and LLM) see plaintext. Runs at order 5, before all other rules.
-///
-/// If encoded content is detected, the decoded version is appended to the original text
-/// (separated by a newline) so downstream rules can match against both forms.
-/// This avoids false positives from aggressive decoding while still catching evasions.
-///
-/// Informed by the Arcanum Prompt Injection Taxonomy evasion categories.
 /// </summary>
+/// <remarks>
+/// <para>
+/// Unicode normalization and invisible-character stripping rewrite the text itself. What the decoders
+/// find (base64, hex, reversed text, leetspeak, Unicode tags, compatibility forms) is never written into
+/// the text - the model receives the message as the user wrote it. The decoded views are handed to the
+/// pipeline under <see cref="DecodedViewsKey"/>, and <see cref="Guardrails.GuardrailPipeline"/> runs
+/// every later rule over them as well, for detection only: a block found in a decoded view blocks the
+/// message, a rewrite of one is discarded.
+/// </para>
+/// <para>
+/// Informed by the Arcanum Prompt Injection Taxonomy evasion categories.
+/// </para>
+/// </remarks>
 public sealed partial class InputNormalizationRule : IGuardrailRule
 {
+    /// <summary>
+    /// The <see cref="GuardrailContext.Properties"/> key under which the rule hands its decoded views
+    /// (an <see cref="IReadOnlyList{T}"/> of <see cref="string"/>) to the pipeline.
+    /// </summary>
+    public const string DecodedViewsKey = "AgentGuard.DecodedViews";
+
+    /// <summary>
+    /// The <see cref="GuardrailContext.Properties"/> key present (with the value <c>true</c>) when a rule
+    /// is evaluating the decoded views rather than the text the model receives. Rules that measure the
+    /// text itself rather than look for content in it, such as token limits, skip such an evaluation.
+    /// </summary>
+    public const string DecodedViewKey = "AgentGuard.IsDecodedView";
+
     private readonly InputNormalizationOptions _options;
 
     /// <summary>Initializes a new instance of the <see cref="InputNormalizationRule"/> class.</summary>
@@ -160,18 +180,16 @@ public sealed partial class InputNormalizationRule : IGuardrailRule
         if (_options.DecodeLeetspeak)
             AddView(DecodeLeetspeak(text));
 
+        // the decoded views are for the rules, not the model: they go to the pipeline beside the text,
+        // never into it, so a payload no rule recognizes is not delivered to the model already decoded
+        if (decodedSegments.Count > 0)
+            context.Properties[DecodedViewsKey] = (IReadOnlyList<string>)decodedSegments;
+
         var normalizationChanged = !string.Equals(text, context.Text, StringComparison.Ordinal);
 
-        if (decodedSegments.Count == 0 && !normalizationChanged)
-            return ValueTask.FromResult(GuardrailResult.Passed());
-
-        // Append decoded content so downstream rules can evaluate both original and decoded forms
-        var combined = decodedSegments.Count == 0
-            ? text
-            : text + "\n[DECODED]\n" + string.Join("\n", decodedSegments);
-
-        return ValueTask.FromResult(
-            GuardrailResult.Modified(combined, "Input contained encoded content that was decoded for analysis."));
+        return ValueTask.FromResult(normalizationChanged
+            ? GuardrailResult.Modified(text, "Input contained hidden or disguised characters that were normalized.")
+            : GuardrailResult.Passed());
     }
 
     /// <summary>

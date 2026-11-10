@@ -27,4 +27,14 @@ public sealed class GuardedExecutorOptions
     /// so a ledger registered with <c>AddAgentGuard</c> only records here if it is supplied.
     /// </summary>
     public IGuardrailLedger? Ledger { get; set; }
+
+    /// <summary>
+    /// What happens when a rule rewrites a message - a redaction, for example - that the executor can't
+    /// rebuild from the rewritten text (a type <see cref="ITextExtractor.TryRebuild"/> doesn't handle, or
+    /// a chat message collection of a type the executor can't recreate). False, the default: the message
+    /// is blocked with a <see cref="GuardrailViolationException"/>, since passing it on unchanged would
+    /// deliver exactly what the rule meant to remove. True: the original goes on unchanged and a warning
+    /// is logged.
+    /// </summary>
+    public bool AllowUnappliedModifications { get; set; }
 }

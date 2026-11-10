@@ -185,6 +185,13 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
     // culture-invariant, so case-insensitive patterns match the same under every process culture
     private const RegexOptions Options = RegexOptions.Compiled | RegexOptions.CultureInvariant;
 
+    // what makes a line that starts with a role marker a forged turn rather than a label
+    private const string RoleMarkerDirective =
+        @"(?:you\s+(?:are|must|will|shall|should|can|may|have)\b|your\s+(?:new|real|only|task|role|instructions|rules)\b|ignore\b|disregard\b|forget\b|override\b|bypass\b|enable\b|disable\b|activate\b|"
+        + @"new\s+(?:instructions?|rules?|persona|task|context|system|prompt|directives?)\b|from\s+now\s+on\b|always\b|never\b|do\s+not\b|don't\b|must\b|act\s+as\b|pretend\b|"
+        + @"reveal\b|repeat\b|print\b|output\b|send\b|forward\b|obey\b|comply\b|follow\b|execute\b|run\b|here\s+is\b|here's\b|"
+        + @"I\s+(?:will|am|shall)\s+now\b|I'll\s+now\b)";
+
     // === Core patterns: always checked ===
 
     private static readonly (string Category, string Description, Regex Pattern)[] CorePatterns =
@@ -192,16 +199,24 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
         // Role/system markers - attempts to hijack the conversation role. The line start is a
         // lookbehind checked once the marker is found, with an indent that cannot cross a newline,
         // which keeps the scan linear.
+        //
+        // The marker has to carry a directive. On its own it also starts a YAML key ("system:
+        // ubuntu-22.04"), a spec sheet line ("Developer: Acme Inc.") and every line of a transcript; the
+        // bare form is checked for high-risk tools only.
         ("RoleHijacking", "System role marker injection",
-            new(@"(?i)(?<=(?:^|\n)[^\S\n]*)(?:system|assistant|developer)\s*:", Options, RegexTimeout)),
+            new(@"(?i)(?<=(?:^|\n)[^\S\n]*)(?:system|assistant|developer)[ \t]*:[ \t]*" + RoleMarkerDirective, Options, RegexTimeout)),
 
         // Bracket-style role markers
         ("RoleHijacking", "Bracket role marker injection",
             new(@"(?i)\[(?:system|assistant|user|admin)\]:", Options, RegexTimeout)),
 
-        // Instruction override - classic indirect injection
+        // Instruction override - classic indirect injection, however it is worded ("ignore all of the
+        // previous instructions", "disregard any prior rules", "ignore the above and ..."), with the
+        // wordings the input rule recognizes
         ("InstructionOverride", "Instruction override attempt",
-            new(@"(?i)(?:ignore|forget|disregard|override|bypass)\s+(?:all\s+)?(?:previous|prior|above|earlier|your|the)\s+(?:instructions|rules|prompts|guidelines|context|directives|constraints|system\s+prompt)",
+            new(@"(?i)(?:(?:ignore|forget|disregard|override|bypass)\s+(?:all\s+)?(?:previous|prior|above|earlier|your|the)\s+(?:instructions|rules|prompts|guidelines|context|directives|constraints|system\s+prompt)"
+                + "|" + InjectionPhrases.OverrideOfEarlierDirectives + "|" + InjectionPhrases.OverrideOfOwnDirectives
+                + "|" + InjectionPhrases.OverrideOfTheAbove + "|" + InjectionPhrases.OverrideOfWhatWasTold + ")",
                 Options, RegexTimeout)),
 
         // New instruction injection - attempt to set new instructions
@@ -217,29 +232,33 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
         // XML-style role tags. The optional slash owns the whitespace after it, which keeps the scan
         // linear.
         ("TokenInjection", "XML role tag injection",
-            new(@"<\s*(?:/\s*)?(?:system|assistant|user|instruction|tool_response)\s*>",
+            new(@"<\s*(?:/\s*)?(?:system|assistant|tool_response)\s*>",
                 Options | RegexOptions.IgnoreCase, RegexTimeout)),
 
-        // JSON-style injection - fake JSON role/instruction fields
+        // JSON-style injection - a chat message object with a privileged role, a field that is a system
+        // prompt, or a "system" / "instruction" / "prompt" field whose value gives an order. "role":
+        // "manager", "system": "metric" and "prompt": "a cat on a sofa" are ordinary API data.
         ("TokenInjection", "JSON-style role injection",
-            new(@"(?i)""(?:system|role|instruction|prompt)""\s*:\s*""",
+            new(@"(?i)""role""\s*:\s*""(?:system|developer)""|""(?:system[_-]?prompt|system[_-]?message|system[_-]?instructions?)""\s*:\s*""|""(?:system|instructions?|prompt)""\s*:\s*""\s*" + RoleMarkerDirective,
                 Options, RegexTimeout)),
 
         // Markdown/HTML hidden content - invisible to user but read by LLM. The comment body stops
-        // at the next "<!--", so each comment start scans only up to the next one, which keeps the
-        // scan linear.
+        // at the next "<!--" or at its own "-->" (it may hold a ">" otherwise, as in "a -> b"), so each
+        // comment start scans only up to the next one, which keeps the scan linear.
         ("HiddenContent", "HTML comment with instructions",
-            new(@"<!--\s*(?:system|instruction|ignore|override|inject|secret|hidden)\b(?:(?!<!--)[^>])*-->",
-                Options | RegexOptions.IgnoreCase, RegexTimeout)),
+            new(@"<!--\s*(?:system|instruction|ignore|override|inject|secret|hidden)\b(?:(?!<!--|-->).)*-->",
+                Options | RegexOptions.IgnoreCase | RegexOptions.Singleline, RegexTimeout)),
 
         // Invisible Unicode - zero-width characters carrying payload
         ("HiddenContent", "Zero-width character sequence",
             new(@"[\u200B\u200C\u200D\u2060\uFEFF]{3,}",
                 Options, RegexTimeout)),
 
-        // Text direction override characters - can reverse visible text to hide payloads
+        // Text direction override characters - can reverse visible text to hide payloads. Only the
+        // overrides (LRO, RLO): embeddings and isolates are what right-to-left text and formatted names
+        // and numbers are ordinarily written with.
         ("HiddenContent", "Text direction override characters",
-            new(@"[\u202A-\u202E\u2066-\u2069]",
+            new(@"[\u202D\u202E]",
                 Options, RegexTimeout)),
 
         // Unicode tag characters (U+E0000-U+E007F) - invisible ASCII a model still reads ("ASCII
@@ -251,15 +270,20 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
             new(@"(?<!\uD83C\uDFF4(?:\uDB40[\uDC20-\uDC7E]){0,8})(?:\uDB40[\uDC00-\uDC7F])+",
                 Options, RegexTimeout)),
 
-        // Data exfiltration - URLs that may exfiltrate context. A URL's scan stops where the next
-        // URL starts, which keeps the scan linear.
+        // Data exfiltration - a URL built to carry context out: an image, which a client fetches without
+        // anyone clicking, with a parameter that can carry data; a link with a parameter named for what
+        // it carries ("?data=", "?context="); or one whose parameter is a blank for the model to fill in
+        // ("?q={conversation}"). "?token=abc", "?key=..." and "&prompt=consent" are in ordinary links. A URL's scan stops where the next URL starts,
+        // which keeps the scan linear.
         ("DataExfiltration", "Data exfiltration URL pattern",
-            new(@"(?i)https?://(?:(?!https?://)\S)*?[?&](?:data|token|key|secret|password|context|prompt|instruction|system)=",
+            new(@"(?i)!\[[^\]\[]{0,200}\]\(\s*https?://(?:(?!https?://)[^\s)])*[?&](?:data|token|key|secret|password|context|prompt|instruction|system|q|c|d|text|content|history)="
+                + @"|https?://(?:(?!https?://)\S)*[?&](?:(?:data|secret|password|context|instruction|system|history|conversation)="
+                + @"|(?:token|key|prompt|q|text|content)=(?:\{|<|\[|\$\{?|%7B))",
                 Options, RegexTimeout)),
 
         // Prompt leaking instructions
         ("PromptLeaking", "Prompt leak instruction",
-            new(@"(?i)(?:repeat|output|print|echo|show|reveal|display|return)\s+(?:the\s+)?(?:system\s+prompt|instructions|your\s+(?:rules|prompt|instructions|system\s+message))",
+            new(@"(?i)(?:repeat|output|print|echo|show|reveal|display|return)\s+(?:me\s+)?(?:the\s+)?(?:system\s+prompt|(?:above|previous|prior|initial|original|hidden|system)\s+instructions|your\s+(?:\w+\s+){0,2}(?:rules|prompt|instructions|system\s+message))\b(?!\s+(?:for|on|about|regarding)\b)",
                 Options, RegexTimeout)),
 
         // Print everything above / output initialization
@@ -267,19 +291,19 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
             new(@"(?i)(?:print|output|show|repeat|display)\s+(?:everything|all|the\s+text)\s+(?:above\s+this\s+(?:line|point|message)|before\s+this|so\s+far)",
                 Options, RegexTimeout)),
 
-        // Security bypass - attempts to disable safety systems
+        // Security bypass - attempts to disable the assistant's safety systems, not a product's
+        // ("disable the security defaults in the admin center")
         ("SecurityBypass", "Security bypass attempt",
-            new(@"(?i)(?:bypass|disable|turn\s+off|deactivate|remove)\s+(?:the\s+)?(?:safety|security|content\s+filter|guardrail|restriction|moderation|censorship)",
-                Options, RegexTimeout)),
+            new("(?i)" + InjectionPhrases.SafeguardBypass, Options, RegexTimeout)),
 
         // Uncensored/unrestricted mode requests
         ("SecurityBypass", "Uncensored mode request",
-            new(@"(?i)(?:enable|enter|switch\s+to|activate)\s+(?:uncensored|unrestricted|unfiltered|jailbreak|developer|god|sudo)\s+mode",
+            new(@"(?i)(?:enable|enter|switch\s+to|activate)\s+(?:uncensored|unrestricted|unfiltered|jailbreak)\s+mode",
                 Options, RegexTimeout)),
 
-        // Command execution - attempts to run commands/code
-        ("CommandExecution", "Command execution directive",
-            new(@"(?i)(?:execute|run|eval)\s+(?:the\s+following\s+)?(?:command|code|script|query|function)\s*[:\(]",
+        // DAN-style jailbreak - the persona by name, wherever the content came from
+        ("PersonaHijacking", "DAN jailbreak attempt",
+            new(@"(?-i:\bDAN)\s+(?i:mode)\b|(?i:\byou\s+are\s+(?:now\s+)?)(?-i:DAN)\b",
                 Options, RegexTimeout)),
 
         // Separator injection - long separator lines followed by injection-like keywords. A
@@ -294,19 +318,43 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
 
     private static readonly (string Category, string Description, Regex Pattern)[] HighRiskPatterns =
     [
+        // A bare role marker at the start of a line. In a message someone else wrote it is a forged turn
+        // more often than a label; in a document or an API result it is a YAML key or a transcript.
+        ("RoleHijacking", "System role marker injection",
+            new(@"(?i)(?<=(?:^|\n)[^\S\n]*)(?:system|assistant|developer)\s*:", Options, RegexTimeout)),
+
+        // XML tags that are ordinary elements in data but a forged turn in a message
+        ("TokenInjection", "XML role tag injection",
+            new(@"<\s*(?:/\s*)?(?:user|instructions?)\s*>", Options | RegexOptions.IgnoreCase, RegexTimeout)),
+
+        // Command execution - telling the agent to run something. Documentation says the same thing
+        // ("to install, run the following command:"), which is why it is not checked everywhere.
+        ("CommandExecution", "Command execution directive",
+            new(@"(?i)(?:execute|run|eval)\s+(?:the\s+following\s+)?(?:command|code|script|query|function)\s*[:\(]",
+                Options, RegexTimeout)),
+
+        // Modes that are a product feature in a manual and a jailbreak in a message
+        ("SecurityBypass", "Uncensored mode request",
+            new(@"(?i)(?:enable|enter|switch\s+to|activate)\s+(?:developer|god|sudo)\s+mode", Options, RegexTimeout)),
+
         // Encoded payloads in tool results - suspicious in email/messaging content
         ("EncodedPayload", "Base64-encoded instruction block",
             new(@"(?i)(?:base64|decode|atob)\s*[:(]\s*[A-Za-z0-9+/=]{20,}",
                 Options, RegexTimeout)),
 
-        // Action directives - telling the agent to do something
+        // Action directives - telling the agent to send out everything or something secret ("forward
+        // all emails to ...", "send the conversation history to ..."). An ordinary request between
+        // people ("please send an email to HR with your dates") is not one.
         ("ActionDirective", "Tool action directive",
-            new(@"(?i)(?:please\s+)?(?:send|forward|reply|compose|draft|create|delete|update|modify|execute|run|call)\s+(?:an?\s+)?(?:email|message|response|reply|request|command|action)\s+(?:to|for|with|that|containing)\b",
+            new(@"(?i)\b(?:send|forward|e-?mail|share|post|upload|transmit|leak|exfiltrate)\s+(?:(?:me|us|them)\s+)?(?:"
+                + @"(?:all|every|each)\s+(?:of\s+)?(?:(?:the|my|your|their|his|her|our|these|those)\s+)?(?:\w+\s+){0,2}(?:e-?mails?|messages?|contacts?|files?|documents?|conversations?|records?|data)"
+                + @"|(?:(?:the|this|your|my|our|all)\s+)?(?:\w+\s+){0,2}(?:conversation\s+history|chat\s+history|chat\s+log|system\s+prompt|passwords?|credentials|api\s+keys?|access\s+tokens?|secrets?|private\s+keys?|inbox)"
+                + @"|(?:an?\s+)?(?:e-?mail|message|reply|copy)\s+to\s+\S+\s+(?:with|containing|including|that\s+(?:contains|includes))\s+(?:\w+\s+){0,3}(?:keys?|credentials|passwords?|tokens?|secrets?|conversation|chat\s+history|system\s+prompt))\b",
                 Options, RegexTimeout)),
 
         // Social engineering - fake urgency or authority
         ("SocialEngineering", "Fake authority or urgency",
-            new(@"(?i)(?:urgent|immediately|critical|mandatory|required|authorized|admin|supervisor|manager|ceo|cto)\s*[:-]\s*(?:you\s+must|please\s+(?:immediately|urgently)|action\s+required|do\s+not\s+ignore)",
+            new(@"(?i)(?:urgent|immediately|critical|mandatory|required|authorized|admin|supervisor|manager|ceo|cto)\s*[:-]\s*(?:you\s+must|please\s+(?:immediately|urgently)|do\s+not\s+ignore)",
                 Options, RegexTimeout)),
 
         // Delimiter manipulation - pretending to end tool output and start a new context
@@ -321,12 +369,12 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
 
         // Privileged role assumption - claiming admin/root/superuser authority
         ("PersonaHijacking", "Privileged role assumption",
-            new(@"(?i)(?:you\s+are\s+(?:now\s+)?(?:an?\s+)?|act\s+as\s+(?:an?\s+)?|pretend\s+(?:to\s+be\s+)?(?:an?\s+)?|switch\s+to\s+)(?:admin(?:istrator)?|root|superuser|sudo|operator|moderator)",
+            new(@"(?i)(?:you\s+are\s+(?:now\s+)?(?:an?\s+)?|act\s+as\s+(?:an?\s+)?|pretend\s+(?:to\s+be\s+)?(?:an?\s+)?|switch\s+to\s+)(?:admin(?:istrator)?|root|superuser|sudo|operator|moderator)\b(?!\s+(?:of|for|on|in|at)\b)",
                 Options, RegexTimeout)),
 
-        // DAN-style jailbreak - common jailbreak personas
+        // "developer mode enabled" as a jailbreak announcement; in a manual it describes a setting
         ("PersonaHijacking", "DAN jailbreak attempt",
-            new(@"(?i)(?:DAN\s+mode|developer\s+mode)\s+(?:enabled|activated|on)",
+            new(@"(?i)developer\s+mode\s+(?:enabled|activated|on)\b",
                 Options, RegexTimeout)),
 
         // Leetspeak obfuscation of injection keywords
@@ -362,14 +410,15 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
             new(@"(?:\\x[0-9a-fA-F]{2}){8,}",
                 Options, RegexTimeout)),
 
-        // Unicode escape sequences hiding payloads
+        // Unicode escape sequences hiding payloads: a run that spells ASCII. Escaping text outside ASCII
+        // is what JSON encoders do by default, so a run of escaped Cyrillic or CJK is just text.
         ("EncodedPayload", "Unicode escape sequence block",
-            new(@"(?:\\u[0-9a-fA-F]{4}){6,}",
+            new(@"(?:\\u00[2-7][0-9a-fA-F]){6,}",
                 Options, RegexTimeout)),
 
-        // HTML entities hiding payloads
+        // HTML entities hiding payloads: likewise, a run of entities for printable ASCII
         ("EncodedPayload", "HTML entity encoded content",
-            new(@"(?:&#(?:x[0-9a-fA-F]{2,4}|\d{2,5});){6,}",
+            new(@"(?:&#(?:x0{0,2}[2-7][0-9a-fA-F]|0{0,2}(?:3[2-9]|[4-9]\d|1[01]\d|12[0-6]));){6,}",
                 Options, RegexTimeout)),
 
         // ROT13 encoded instructions (common obfuscation)
@@ -377,9 +426,11 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
             new(@"(?i)(?:rot13|caesar)\s*[:(]\s*[a-zA-Z]{10,}",
                 Options, RegexTimeout)),
 
-        // Fullwidth character obfuscation (U+FF00-U+FFEF used to bypass keyword detection)
+        // Fullwidth character obfuscation: a word spelled in fullwidth Latin letters to slip past
+        // keyword detection. Fullwidth digits and punctuation and halfwidth katakana are ordinary in
+        // Japanese and Chinese text.
         ("Obfuscation", "Fullwidth character obfuscation",
-            new(@"[\uFF00-\uFFEF]{4,}",
+            new(@"[\uFF21-\uFF3A\uFF41-\uFF5A]{6,}",
                 Options, RegexTimeout)),
     ];
 
@@ -882,6 +933,9 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
     private static bool IsHiddenCharacter(Rune rune) => rune.Value switch
     {
         0x200B or 0x200C or 0x200D or 0x2060 or 0xFEFF or 0x00AD or 0x200E or 0x200F => true,
+        // combining grapheme joiner, Mongolian vowel separator, invisible operators: nothing to see, and
+        // a word split by one is no longer the word a pattern looks for
+        0x034F or 0x180E or (>= 0x2061 and <= 0x2064) => true,
         >= 0x202A and <= 0x202E => true,
         >= 0x2066 and <= 0x2069 => true,
         _ => InvisibleCharacters.IsUnicodeTag(rune)

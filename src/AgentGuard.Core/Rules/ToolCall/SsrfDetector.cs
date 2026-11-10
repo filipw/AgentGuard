@@ -26,8 +26,12 @@ internal static class SsrfDetector
     internal const string CloudMetadata = "Cloud metadata SSRF";
     internal const string InternalHostname = "DNS rebinding via special TLDs";
 
-    // longer than any real host plus userinfo; a longer run is not treated as an authority
+    // longer than any real host plus userinfo; a longer run after a scheme without "//" is not
+    // treated as an authority
     private const int MaxAuthorityLength = 2048;
+
+    // how far an authority after "scheme://" is followed: System.Uri's own limit on a URI's length
+    private const int MaxSlashedAuthorityLength = 65519;
 
     private static readonly TimeSpan Timeout = TimeSpan.FromMilliseconds(200);
 
@@ -54,8 +58,15 @@ internal static class SsrfDetector
         @"(?<![\d.])(?:169\.254\.169\.254|169\.254\.170\.2|100\.100\.100\.200|192\.0\.0\.192)(?!\d)|\bmetadata\.google\.internal\b|(?<![0-9A-Fa-f:])fd00:ec2::254(?![0-9A-Fa-f:])",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, Timeout);
 
+    // where a host ends. Userinfo may hold most of these (a URL parser reads "http://x;@127.0.0.1/" as
+    // the host 127.0.0.1), so they only end the host once the userinfo has been taken off.
     private static readonly SearchValues<char> AuthorityTerminators =
         SearchValues.Create("/\\?#\"'`<>,;)}{|^ \t\r\n\f\v ");
+
+    // where an authority, userinfo included, ends: the URL delimiters, and the whitespace and quotes
+    // that end a URL embedded in text
+    private static readonly SearchValues<char> UrlTerminators =
+        SearchValues.Create("/\\?#\"`<> \t\r\n\f\v ");
 
     private static readonly string[] InternalSuffixes = [".internal", ".local", ".corp", ".lan", ".intranet", ".home.arpa"];
 
@@ -67,6 +78,15 @@ internal static class SsrfDetector
     /// </summary>
     internal static string? Find(string text)
     {
+        // an argument that is one URL as a whole is read the way the tool's HTTP client will read it:
+        // Uri accepts characters the scans below end a URL at (a space inside the userinfo, for one)
+        if (text.Length <= MaxSlashedAuthorityLength
+            && Uri.TryCreate(text.Trim(), UriKind.Absolute, out var whole)
+            && ClassifyUriHost(whole) is { } wholeDescription)
+        {
+            return wholeDescription;
+        }
+
         foreach (var match in SchemePattern.MatchesUntilTimeout(text))
         {
             var scheme = match.Groups["scheme"].Value;
@@ -78,13 +98,16 @@ internal static class SsrfDetector
             if (scheme.Equals("file", StringComparison.OrdinalIgnoreCase) ? slashes != 2 : slashes < 2 && !IsSpecialScheme(scheme))
                 continue;
 
-            if (CheckAuthority(text, match.Index + match.Length) is { } description)
+            if (CheckAuthority(text, match.Index + match.Length, slashed: slashes >= 2) is { } description)
                 return description;
+
+            if (slashes >= 2 && CheckWithUri(text, match.Index, match.Index + match.Length) is { } uriDescription)
+                return uriDescription;
         }
 
         foreach (var match in ProtocolRelativePattern.MatchesUntilTimeout(text))
         {
-            if (CheckAuthority(text, match.Index + match.Length) is { } description)
+            if (CheckAuthority(text, match.Index + match.Length, slashed: true) is { } description)
                 return description;
         }
 
@@ -121,24 +144,36 @@ internal static class SsrfDetector
         || scheme.Equals("ftp", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Classifies the host of the authority that starts at <paramref name="start"/>.</summary>
-    private static string? CheckAuthority(string text, int start)
+    /// <param name="text">The text.</param>
+    /// <param name="start">Where the authority starts.</param>
+    /// <param name="slashed">
+    /// Whether the authority follows "//". Only then is it followed past <see cref="MaxAuthorityLength"/>:
+    /// a "//" ends any authority before it, so no two such scans overlap and the scan stays linear.
+    /// </param>
+    private static string? CheckAuthority(string text, int start, bool slashed)
     {
         // the search is bounded, so a run of scheme-like prefixes with no terminator in sight costs
         // at most MaxAuthorityLength each rather than the rest of the text
-        var window = Math.Min(text.Length - start, MaxAuthorityLength + 1);
-        var length = text.AsSpan(start, window).IndexOfAny(AuthorityTerminators);
+        var limit = slashed ? MaxSlashedAuthorityLength : MaxAuthorityLength;
+        var window = Math.Min(text.Length - start, limit + 1);
+        var length = text.AsSpan(start, window).IndexOfAny(UrlTerminators);
         if (length < 0)
             length = window;
 
-        if (length == 0 || length > MaxAuthorityLength)
+        if (length == 0 || length > limit)
             return null;
 
         var authority = text.AsSpan(start, length);
 
-        // the host follows the last '@'; everything before it is userinfo
+        // the host follows the last '@'; everything before it is userinfo, whatever it holds
         var at = authority.LastIndexOf('@');
         if (at >= 0)
             authority = authority[(at + 1)..];
+
+        // what is left ends at the first character a host can't contain
+        var hostEnd = authority.IndexOfAny(AuthorityTerminators);
+        if (hostEnd >= 0)
+            authority = authority[..hostEnd];
 
         ReadOnlySpan<char> host;
         if (authority.Length > 0 && authority[0] == '[')
@@ -156,6 +191,41 @@ internal static class SsrfDetector
         }
 
         return ClassifyHost(NormalizeHost(host.ToString()), fromUrl: true);
+    }
+
+    /// <summary>
+    /// Classifies the host <see cref="Uri"/> reads from the URL that starts at <paramref name="start"/>,
+    /// as a check on the hand parser: what an HTTP client will connect to is what <see cref="Uri"/> says.
+    /// </summary>
+    private static string? CheckWithUri(string text, int start, int authorityStart)
+    {
+        var window = Math.Min(text.Length - authorityStart, MaxSlashedAuthorityLength + 1);
+        var length = text.AsSpan(authorityStart, window).IndexOfAny(UrlTerminators);
+        if (length < 0)
+            length = window;
+
+        if (length == 0 || length > MaxSlashedAuthorityLength)
+            return null;
+
+        return Uri.TryCreate(text.Substring(start, authorityStart - start + length), UriKind.Absolute, out var uri)
+            ? ClassifyUriHost(uri)
+            : null;
+    }
+
+    private static string? ClassifyUriHost(Uri uri)
+    {
+        string host;
+        try
+        {
+            host = uri.HostNameType == UriHostNameType.IPv6 ? "[" + uri.DnsSafeHost.Trim('[', ']') + "]" : uri.IdnHost;
+        }
+        catch (InvalidOperationException)
+        {
+            // not a URL with a host (a relative or opaque one)
+            return null;
+        }
+
+        return host.Length == 0 ? null : ClassifyHost(NormalizeHost(host), fromUrl: true);
     }
 
     /// <summary>

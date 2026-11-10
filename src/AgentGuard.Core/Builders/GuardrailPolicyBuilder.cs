@@ -68,7 +68,10 @@ public sealed class GuardrailPolicyBuilder
         return this;
     }
 
-    /// <summary>Adds a custom output check.</summary>
+    /// <summary>
+    /// Adds a custom output check. It judges answer text: a response that is only tool calls, which
+    /// has none, is not put to it.
+    /// </summary>
     /// <param name="predicate">Returns true when the text is acceptable.</param>
     /// <param name="rejectionMessage">Shown when the predicate returns false.</param>
     /// <returns>The builder for chaining.</returns>
@@ -455,7 +458,13 @@ internal sealed class PredicateRule(string name, GuardrailPhase phase, Func<stri
     public GuardrailPhase Phase => phase;
 
     public ValueTask<GuardrailResult> EvaluateAsync(GuardrailContext context, CancellationToken cancellationToken = default)
-        => ValueTask.FromResult(predicate(context.Text) ? GuardrailResult.Passed() : GuardrailResult.Blocked(rejectionMessage));
+    {
+        // a response made of tool calls alone has no answer for the predicate to judge
+        if (context.Properties.ContainsKey(ChatMessageGuard.ToolContentOnlyKey))
+            return ValueTask.FromResult(GuardrailResult.Passed());
+
+        return ValueTask.FromResult(predicate(context.Text) ? GuardrailResult.Passed() : GuardrailResult.Blocked(rejectionMessage));
+    }
 }
 
 internal sealed class DelegateRule(string name, GuardrailPhase phase,

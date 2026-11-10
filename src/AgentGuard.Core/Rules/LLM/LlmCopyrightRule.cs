@@ -114,9 +114,12 @@ public sealed class LlmCopyrightRule : LlmGuardrailRule
 
         if (_options.Action == CopyrightAction.Warn)
         {
+            // let through, but surfaced: logged at Warning and listed in the pipeline result's Warnings
             return new GuardrailResult
             {
                 IsBlocked = false,
+                IsWarning = true,
+                Reason = $"Response may reproduce copyrighted material (warn only) from: {source} ({type}).",
                 Metadata = metadata
             };
         }

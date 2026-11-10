@@ -171,9 +171,9 @@ public class GuardrailChatClientTests
     // ── evaluates only last user message for input ────────────────────────────
 
     [Fact]
-    public async Task ShouldEvaluateNewestUserMessageFirst_AndEarlierUserMessagesToo_ForInputPhase()
+    public async Task ShouldEvaluateNewestUserMessageFirst_AndEveryOtherMessageToo_ForInputPhase()
     {
-        // the caller owns the history, so earlier user turns reach the model again on every call
+        // the caller owns the history, so earlier turns - whatever their role - reach the model again on every call
         var evaluated = new List<string>();
         var policy = new GuardrailPolicyBuilder()
             .AddRule("text-capture", GuardrailPhase.Input, (ctx, _) =>
@@ -195,7 +195,7 @@ public class GuardrailChatClientTests
 
         await client.GetResponseAsync(history);
 
-        evaluated.Should().Equal("New clean message", "Old message with DANGER");
+        evaluated.Should().Equal("New clean message", "Old message with DANGER", "Old response");
     }
 
     // ── UseAgentGuard extension ───────────────────────────────────────────────

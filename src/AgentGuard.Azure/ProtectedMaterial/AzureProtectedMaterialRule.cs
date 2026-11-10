@@ -144,9 +144,12 @@ public sealed class AzureProtectedMaterialRule : IGuardrailRule
 
         if (_options.Action == ProtectedMaterialAction.Warn)
         {
+            // let through, but surfaced: logged at Warning and listed in the pipeline result's Warnings
             return new GuardrailResult
             {
                 IsBlocked = false,
+                IsWarning = true,
+                Reason = $"Azure Protected Material detection found protected {materialType.ToString().ToLowerInvariant()} in the response (warn only).",
                 Metadata = metadata
             };
         }

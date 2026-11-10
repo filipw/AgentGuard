@@ -56,6 +56,21 @@ public class AzureProtectedMaterialTests
     }
 
     [Fact]
+    public async Task ShouldSurfaceAWarning_WhenActionIsWarn()
+    {
+        var rule = new AzureProtectedMaterialRule(
+            CreateClient(new FakeProtectedMaterialHandler()),
+            new AzureProtectedMaterialOptions { Action = ProtectedMaterialAction.Warn });
+
+        var result = await rule.EvaluateAsync(Context(Words(200) + " " + FakeProtectedMaterialHandler.Lyrics));
+
+        result.IsBlocked.Should().BeFalse();
+        result.IsWarning.Should().BeTrue("a warn-only finding has to surface in the pipeline's warnings and log");
+        result.Reason.Should().Contain("warn only");
+        result.Metadata!["materialType"].Should().Be("text");
+    }
+
+    [Fact]
     public async Task ShouldDetectProtectedText_WhenItComesAfterTheLimit()
     {
         // text over 10K characters is analyzed in windows

@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Ledger;
+using AgentGuard.Core.Rules.Normalization;
 using AgentGuard.Core.Telemetry;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -12,6 +13,11 @@ namespace AgentGuard.Core.Guardrails;
 /// whichever rules ran before them, a block short-circuits the rest, and each decision is optionally
 /// recorded to a <see cref="IGuardrailLedger"/>.
 /// </summary>
+/// <remarks>
+/// When a rule hands back decoded views of the text (see <see cref="InputNormalizationRule.DecodedViewsKey"/>),
+/// every later rule is also run over them, for detection only: a block found in a decoded view blocks
+/// the text, a rewrite of one is discarded. The views never become part of the text.
+/// </remarks>
 public sealed partial class GuardrailPipeline
 {
     private readonly IGuardrailPolicy _policy;
@@ -80,6 +86,26 @@ public sealed partial class GuardrailPipeline
         var results = new List<GuardrailResult>();
         var currentText = context.Text;
 
+        // what a normalization rule decoded from the text: later rules inspect it, the model never gets it
+        List<string>? decodedViews = null;
+
+        GuardrailPipelineResult Blocked(GuardrailResult taggedResult)
+        {
+            LogRuleBlocked(_logger, taggedResult.RuleName, taggedResult.Reason);
+
+            RecordPipelineCompletion(pipelineActivity, stopwatch, context.Phase, AgentGuardTelemetry.Outcomes.Blocked);
+            AgentGuardTelemetry.RecordBlock(pipelineActivity, taggedResult);
+            EmitDecision(context, currentText, results, AgentGuardTelemetry.Outcomes.Blocked, taggedResult, wasModified: false);
+
+            return new GuardrailPipelineResult
+            {
+                IsBlocked = true,
+                BlockingResult = taggedResult,
+                AllResults = results,
+                FinalText = currentText
+            };
+        }
+
         var phaseRules = _policy.Rules
             .Where(r => r.Phase.HasFlag(context.Phase))
             .OrderBy(r => r.Order);
@@ -100,21 +126,39 @@ public sealed partial class GuardrailPipeline
                 LogErrorOrWarning(rule.Name, result);
 
                 if (result.IsBlocked)
-                {
-                    LogRuleBlocked(_logger, rule.Name, result.Reason);
+                    return Blocked(taggedResult);
 
-                    var pipelineResult = new GuardrailPipelineResult
+                // the decoded views get the same rule, for detection only
+                if (decodedViews is not null)
+                {
+                    var viewContext = context with
                     {
-                        IsBlocked = true,
-                        BlockingResult = taggedResult,
-                        AllResults = results,
-                        FinalText = currentText
+                        Text = string.Join("\n", decodedViews),
+                        Properties = new Dictionary<string, object>(context.Properties)
+                        {
+                            [InputNormalizationRule.DecodedViewKey] = true
+                        }
                     };
 
-                    RecordPipelineCompletion(pipelineActivity, stopwatch, context.Phase, AgentGuardTelemetry.Outcomes.Blocked);
-                    AgentGuardTelemetry.RecordBlock(pipelineActivity, taggedResult);
-                    EmitDecision(context, currentText, results, AgentGuardTelemetry.Outcomes.Blocked, taggedResult, wasModified: false);
-                    return pipelineResult;
+                    var viewResult = await EvaluateRuleWithTelemetry(rule, viewContext, cancellationToken);
+                    if (viewResult.IsBlocked)
+                    {
+                        var taggedViewResult = viewResult with
+                        {
+                            RuleName = rule.Name,
+                            Reason = $"{viewResult.Reason} (found in decoded content)"
+                        };
+                        results.Add(taggedViewResult);
+                        return Blocked(taggedViewResult);
+                    }
+                }
+
+                // a rule that decoded the text hands its views over beside it; they are taken out of
+                // the property bag so they don't travel on with the context
+                if (ruleContext.Properties.Remove(InputNormalizationRule.DecodedViewsKey, out var viewsObj) &&
+                    viewsObj is IReadOnlyList<string> { Count: > 0 } views)
+                {
+                    (decodedViews ??= []).AddRange(views);
                 }
 
                 if (result.IsModified && result.ModifiedText is not null)

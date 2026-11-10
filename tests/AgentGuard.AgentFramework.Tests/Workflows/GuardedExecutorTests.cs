@@ -238,14 +238,35 @@ public class GuardedExecutorTests
     }
 
     [Fact]
-    public async Task VoidExecutor_ShouldPassOriginalAndLogWarning_WhenRewrittenTypeCannotBeRebuilt()
+    public async Task VoidExecutor_ShouldBlockAndLogWarning_WhenRewrittenTypeCannotBeRebuilt()
     {
+        // a rewrite that can't be applied must not let the original - the very text a rule meant to
+        // change - through
         Ticket? received = null;
         var logger = new ListLogger();
         var inner = new TestVoidExecutor<Ticket>("inner", (msg, _) => { received = msg; return ValueTask.CompletedTask; });
         var guarded = inner.WithGuardrails(
             PolicyWith(ModifyingRule("rewritten")),
             new GuardedExecutorOptions { Logger = logger });
+
+        var act = () => guarded.HandleAsync(new Ticket("original", Priority: 1), Mock.Of<IWorkflowContext>()).AsTask();
+
+        (await act.Should().ThrowAsync<GuardrailViolationException>())
+            .Which.ViolationResult.Reason.Should().Contain(nameof(Ticket)).And.Contain("can't be applied");
+        received.Should().BeNull();
+        logger.Entries.Should().ContainSingle(e => e.Level == LogLevel.Warning)
+            .Which.Message.Should().Contain("'inner'").And.Contain(nameof(Ticket)).And.Contain("blocked");
+    }
+
+    [Fact]
+    public async Task VoidExecutor_ShouldPassOriginalAndLogWarning_WhenRewrittenTypeCannotBeRebuiltAndUnappliedModificationsAreAllowed()
+    {
+        Ticket? received = null;
+        var logger = new ListLogger();
+        var inner = new TestVoidExecutor<Ticket>("inner", (msg, _) => { received = msg; return ValueTask.CompletedTask; });
+        var guarded = inner.WithGuardrails(
+            PolicyWith(ModifyingRule("rewritten")),
+            new GuardedExecutorOptions { Logger = logger, AllowUnappliedModifications = true });
 
         var original = new Ticket("original", Priority: 1);
         await guarded.HandleAsync(original, Mock.Of<IWorkflowContext>());
@@ -256,7 +277,7 @@ public class GuardedExecutorTests
     }
 
     [Fact]
-    public async Task VoidExecutor_ShouldPassOriginalAndLogWarning_WhenRebuiltMessageIsNotTheDeclaredType()
+    public async Task VoidExecutor_ShouldBlock_WhenRebuiltMessageIsNotTheDeclaredType()
     {
         Ticket? received = null;
         var logger = new ListLogger();
@@ -270,11 +291,61 @@ public class GuardedExecutorTests
             PolicyWith(ModifyingRule("rewritten")),
             new GuardedExecutorOptions { TextExtractor = extractor.Object, Logger = logger });
 
+        var act = () => guarded.HandleAsync(new Ticket("original", Priority: 1), Mock.Of<IWorkflowContext>()).AsTask();
+
+        await act.Should().ThrowAsync<GuardrailViolationException>();
+        received.Should().BeNull();
+        logger.Entries.Should().ContainSingle(e => e.Level == LogLevel.Warning);
+    }
+
+    [Fact]
+    public async Task VoidExecutor_ShouldPassOriginal_WhenRebuiltMessageIsNotTheDeclaredTypeAndUnappliedModificationsAreAllowed()
+    {
+        Ticket? received = null;
+        var extractor = new Mock<ITextExtractor>();
+        extractor.Setup(e => e.ExtractText(It.IsAny<object?>())).Returns("text");
+        object? wrongType = "not a ticket";
+        extractor.Setup(e => e.TryRebuild(It.IsAny<object>(), It.IsAny<string>(), out wrongType)).Returns(true);
+
+        var inner = new TestVoidExecutor<Ticket>("inner", (msg, _) => { received = msg; return ValueTask.CompletedTask; });
+        var guarded = inner.WithGuardrails(
+            PolicyWith(ModifyingRule("rewritten")),
+            new GuardedExecutorOptions { TextExtractor = extractor.Object, AllowUnappliedModifications = true });
+
         var original = new Ticket("original", Priority: 1);
         await guarded.HandleAsync(original, Mock.Of<IWorkflowContext>());
 
         received.Should().BeSameAs(original);
-        logger.Entries.Should().ContainSingle(e => e.Level == LogLevel.Warning);
+    }
+
+    [Fact]
+    public async Task VoidExecutor_ShouldDeliverRedactedRecord_WhenItHasASettableTextProperty()
+    {
+        TextTicket? received = null;
+        var inner = new TestVoidExecutor<TextTicket>("inner", (msg, _) => { received = msg; return ValueTask.CompletedTask; });
+        var guarded = inner.WithGuardrails(b => b.RedactPii());
+
+        var original = new TextTicket("contact me at bob@contoso.com", Priority: 1);
+        await guarded.HandleAsync(original, Mock.Of<IWorkflowContext>());
+
+        received.Should().NotBeNull();
+        received!.Text.Should().NotContain("bob@contoso.com").And.Contain("<EMAIL_ADDRESS>");
+        received.Priority.Should().Be(1);
+        original.Text.Should().Be("contact me at bob@contoso.com");
+    }
+
+    [Fact]
+    public async Task VoidExecutor_ShouldDeliverRedactedStruct_WhenItHasASettableTextProperty()
+    {
+        TextTicketValue? received = null;
+        var inner = new TestVoidExecutor<TextTicketValue>("inner", (msg, _) => { received = msg; return ValueTask.CompletedTask; });
+        var guarded = inner.WithGuardrails(b => b.RedactPii());
+
+        await guarded.HandleAsync(new TextTicketValue { Text = "contact me at bob@contoso.com", Priority = 2 }, Mock.Of<IWorkflowContext>());
+
+        received.Should().NotBeNull();
+        received!.Value.Text.Should().NotContain("bob@contoso.com");
+        received.Value.Priority.Should().Be(2);
     }
 
     [Fact]
@@ -397,6 +468,15 @@ public class GuardedExecutorTests
     }
 
     private sealed record Ticket(string Body, int Priority);
+
+    private sealed record TextTicket(string Text, int Priority);
+
+    private struct TextTicketValue
+    {
+        public string Text { get; set; }
+
+        public int Priority { get; set; }
+    }
 
     private sealed class TicketTextExtractor : ITextExtractor
     {

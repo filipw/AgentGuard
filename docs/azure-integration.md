@@ -202,7 +202,7 @@ var policy = new GuardrailPolicyBuilder("safe-agent")
     .BlockProtectedMaterialWithAzure(pmClient, new AzureProtectedMaterialOptions
     {
         AnalyzeCode = true,    // also check code (default: false, text only)
-        Action = ProtectedMaterialAction.Block  // or Warn
+        Action = ProtectedMaterialAction.Block  // or Warn: passes, logged at Warning level and listed in the pipeline result's Warnings
     })
     .Build();
 ```

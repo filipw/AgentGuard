@@ -1,5 +1,4 @@
 using AgentGuard.Core.Abstractions;
-using AgentGuard.Core.Guardrails;
 using AgentGuard.Core.Ledger;
 using AgentGuard.Core.Rules;
 using AgentGuard.Core.Rules.ToolCall;
@@ -7,16 +6,23 @@ using AgentGuard.Core.Rules.ToolResult;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 
-namespace AgentGuard.AgentFramework;
+namespace AgentGuard.Core.Guardrails;
 
 /// <summary>
 /// A policy's tool rules as the sub-pipelines that check tool calls and tool results: the tool-call
 /// rules, the text rules (PII, secrets) that rewrite a result, and the tool-result rule that inspects
-/// what they produced. Shared by the tool middleware and the Agent-Hooks interceptor, so both check
-/// tools the same way.
+/// what they produced. Shared by the tool middleware, the Agent-Hooks interceptor and the tool results
+/// a request carries (see <see cref="ChatMessageGuard.GuardInputAsync"/>), so all of them check tools the
+/// same way.
 /// </summary>
 internal sealed class ToolRulePipelines
 {
+    /// <summary>
+    /// The output-phase rule orders that run on each tool result by default: PiiRule (20),
+    /// SecretsDetectionRule (22), LlmPiiDetectionRule (25) and ToolResultGuardrailRule (47).
+    /// </summary>
+    public static IReadOnlySet<int> DefaultResultRuleOrders { get; } = new HashSet<int> { 20, 22, 25, 47 };
+
     private ToolRulePipelines(GuardrailPipeline? toolCalls, GuardrailPipeline? resultText, GuardrailPipeline? toolResults)
     {
         ToolCalls = toolCalls;
@@ -37,7 +43,7 @@ internal sealed class ToolRulePipelines
     public bool ChecksResults => ResultText is not null || ToolResults is not null;
 
     /// <summary>Whether <paramref name="policy"/> has anything to check on tool calls or results.</summary>
-    public static bool Applies(IGuardrailPolicy policy, ICollection<int> includeRuleOrders)
+    public static bool Applies(IGuardrailPolicy policy, IEnumerable<int> includeRuleOrders)
     {
         var (calls, text, results) = Partition(policy, includeRuleOrders);
         return calls.Count > 0 || text.Count > 0 || results.Count > 0;
@@ -50,7 +56,7 @@ internal sealed class ToolRulePipelines
     /// <param name="ledger">Optional decision ledger.</param>
     public static ToolRulePipelines Create(
         IGuardrailPolicy policy,
-        ICollection<int> includeRuleOrders,
+        IEnumerable<int> includeRuleOrders,
         ILogger<GuardrailPipeline> logger,
         IGuardrailLedger? ledger)
     {
@@ -151,7 +157,7 @@ internal sealed class ToolRulePipelines
     }
 
     private static (List<IGuardrailRule> Calls, List<IGuardrailRule> Text, List<IGuardrailRule> Results) Partition(
-        IGuardrailPolicy policy, ICollection<int> includeRuleOrders)
+        IGuardrailPolicy policy, IEnumerable<int> includeRuleOrders)
     {
         // gated rules (.When/.Unless) are matched by what they wrap but still evaluated through the
         // gate, so their predicate keeps applying
@@ -160,9 +166,10 @@ internal sealed class ToolRulePipelines
         // results are inspected only when the policy has a tool-result rule; the text rules (PII,
         // secrets, LLM PII) then rewrite each result before that rule sees it
         var inspectResults = policy.Rules.Any(r => r.Unwrap() is ToolResultGuardrailRule);
+        var orders = includeRuleOrders as IReadOnlySet<int> ?? includeRuleOrders.ToHashSet();
         var included = inspectResults
             ? policy.Rules
-                .Where(r => r.Phase.HasFlag(GuardrailPhase.Output) && includeRuleOrders.Contains(r.Order))
+                .Where(r => r.Phase.HasFlag(GuardrailPhase.Output) && orders.Contains(r.Order))
                 .ToList()
             : [];
 

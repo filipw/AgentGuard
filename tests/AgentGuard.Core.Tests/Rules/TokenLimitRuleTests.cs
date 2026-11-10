@@ -3,6 +3,7 @@ using AgentGuard.Core.Rules.TokenLimits;
 using FluentAssertions;
 using Microsoft.ML.Tokenizers;
 using Xunit;
+using System.Diagnostics;
 
 namespace AgentGuard.Core.Tests.Rules;
 
@@ -326,5 +327,50 @@ public class TokenLimitRuleTests
         warned.IsBlocked.Should().BeFalse();
         warned.Metadata!["token_count"].Should().Be(estimate);
         (await pass.EvaluateAsync(Ctx(Korean))).IsBlocked.Should().BeFalse();
+    }
+
+    // counting is linear in the length of the text, and counting in segments gives the same count
+
+    [Fact]
+    public async Task ShouldCountALongUnbrokenRunQuickly()
+    {
+        var rule = new TokenLimitRule(new TokenLimitOptions { MaxTokens = 100_000, OverflowStrategy = TokenOverflowStrategy.Reject });
+        var text = new string('a', 160_000);
+
+        var stopwatch = Stopwatch.StartNew();
+        var result = await rule.EvaluateAsync(new GuardrailContext { Text = text, Phase = GuardrailPhase.Input });
+        stopwatch.Stop();
+
+        stopwatch.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(5));
+        result.IsBlocked.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ShouldRejectTextOverTheCharacterCap_WithoutTokenizingIt()
+    {
+        var rule = new TokenLimitRule(new TokenLimitOptions { MaxTokens = 1000, OverflowStrategy = TokenOverflowStrategy.Reject });
+        var text = new string('a', 2_000_000);
+
+        var stopwatch = Stopwatch.StartNew();
+        var result = await rule.EvaluateAsync(new GuardrailContext { Text = text, Phase = GuardrailPhase.Input });
+        stopwatch.Stop();
+
+        stopwatch.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(2));
+        result.IsBlocked.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ShouldCountProseInSegments_ToTheSameTotalAsTheWholeText()
+    {
+        var prose = string.Join(" ", Enumerable.Range(0, 3000).Select(i =>
+            $"Sentence {i} talks about guardrails, tokenizers and the 42 ways to count words.\nNew line {i}!"));
+        var expected = TiktokenTokenizer.CreateForEncoding("cl100k_base").CountTokens(prose);
+
+        // a limit one token short of the real count must be exceeded, and the exact count must not be
+        var over = new TokenLimitRule(new TokenLimitOptions { MaxTokens = expected - 1, OverflowStrategy = TokenOverflowStrategy.Reject });
+        var exact = new TokenLimitRule(new TokenLimitOptions { MaxTokens = expected, OverflowStrategy = TokenOverflowStrategy.Reject });
+
+        (await over.EvaluateAsync(new GuardrailContext { Text = prose, Phase = GuardrailPhase.Input })).IsBlocked.Should().BeTrue();
+        (await exact.EvaluateAsync(new GuardrailContext { Text = prose, Phase = GuardrailPhase.Input })).IsBlocked.Should().BeFalse();
     }
 }

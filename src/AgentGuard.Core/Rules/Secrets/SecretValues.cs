@@ -27,6 +27,18 @@ internal static class SecretValues
     private static readonly string[] PlaceholderPrefixes =
         ["your", "example", "sample", "dummy", "placeholder", "insert", "replace", "enter"];
 
+    // the words a placeholder is written with after one of the prefixes: "your-api-key-goes-here",
+    // "ENTER_YOUR_PASSWORD", "replace_with_real_token"
+    private static readonly string[] PlaceholderVocabulary =
+    [
+        "your", "example", "sample", "dummy", "placeholder", "insert", "replace", "enter", "change",
+        "password", "passwd", "passphrase", "pass", "pwd", "secret", "token", "api", "key", "access",
+        "client", "auth", "bearer", "credential", "credentials", "connection", "string", "value",
+        "here", "goes", "with", "real", "actual", "own", "the", "this", "that", "for", "and", "name",
+        "user", "username", "account", "database", "id", "it", "me", "my", "a", "an", "to", "of", "in",
+        "db", "test", "demo", "fake", "todo", "xxx",
+    ];
+
     private static readonly SearchValues<char> HexDigits = SearchValues.Create("0123456789abcdefABCDEF");
 
     /// <summary>
@@ -37,7 +49,7 @@ internal static class SecretValues
     /// </summary>
     internal static bool IsPlaceholder(ReadOnlySpan<char> value)
     {
-        if (value.IsEmpty || value[0] is '$' or '{' or '<' or '%' or '[' or '(')
+        if (value.IsEmpty || IsTemplateReference(value))
             return true;
 
         var masked = true;
@@ -72,9 +84,113 @@ internal static class SecretValues
         if (total == length && PlaceholderLookup.Contains(normalized))
             return true;
 
+        // a placeholder phrase: one of the prefixes, then nothing but placeholder words and digits.
+        // "your-api-key-here" and "ENTER_PASSWORD" are; "Enterprise2024!" and "Yourkshire#1987" only
+        // start like one.
         foreach (var prefix in PlaceholderPrefixes)
         {
             if (normalized.StartsWith(prefix, StringComparison.Ordinal))
+                return IsPlaceholderWords(normalized[prefix.Length..]);
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="value"/> stands for a value filled in elsewhere: a variable or template
+    /// reference (<c>${DB_PASSWORD}</c>, <c>$DB_PASSWORD</c>, <c>{{ secrets.key }}</c>,
+    /// <c>%PASSWORD%</c>, <c>%(password)s</c>) or a bracketed description (<c>&lt;your-password&gt;</c>,
+    /// <c>[password]</c>).
+    /// </summary>
+    /// <remarks>
+    /// The whole value has to have that shape. A password that merely starts with one of the
+    /// characters - <c>$uperS3cret!9</c>, <c>(Tr0ub4dor&amp;3)</c>, <c>%40dm1n</c> - is a password.
+    /// </remarks>
+    internal static bool IsTemplateReference(ReadOnlySpan<char> value)
+    {
+        if (value.Length < 2)
+            return false;
+
+        var first = value[0];
+        var last = value[^1];
+
+        switch (first)
+        {
+            case '$':
+                // ${NAME}, $(NAME) or a shell-style variable name
+                if (value[1] is '{' or '(')
+                    return last is '}' or ')';
+                return IsVariableName(value[1..]);
+
+            case '%':
+                // %NAME%, or a printf-style %(name)s / %s
+                if (last == '%')
+                    return IsDescription(value[1..^1]);
+                return value[1] == '(' ? value.IndexOf(')') == value.Length - 2 : value.Length == 2 && char.IsAsciiLetter(value[1]);
+
+            case '{':
+                return last == '}';
+
+            case '<':
+                return last == '>' && IsDescription(value[1..^1]);
+
+            case '[':
+                return last == ']' && IsDescription(value[1..^1]);
+
+            case '(':
+                return last == ')' && IsDescription(value[1..^1]);
+
+            default:
+                return false;
+        }
+    }
+
+    // a variable name as scripts write them: one case throughout, or camelCase without digits. Mixed
+    // case together with digits ("$ecretPa55") is what a password looks like.
+    private static bool IsVariableName(ReadOnlySpan<char> name)
+    {
+        if (name.IsEmpty || !(char.IsAsciiLetter(name[0]) || name[0] == '_'))
+            return false;
+
+        bool upper = false, lower = false, digit = false;
+        foreach (var c in name)
+        {
+            if (char.IsAsciiLetterUpper(c)) upper = true;
+            else if (char.IsAsciiLetterLower(c)) lower = true;
+            else if (char.IsAsciiDigit(c)) digit = true;
+            else if (c != '_') return false;
+        }
+
+        return !(upper && lower && digit);
+    }
+
+    // what stands between the brackets of a described placeholder: words, not punctuation
+    private static bool IsDescription(ReadOnlySpan<char> inner)
+    {
+        if (inner.IsEmpty)
+            return false;
+
+        foreach (var c in inner)
+        {
+            if (!(char.IsAsciiLetterOrDigit(c) || c is '_' or '-' or ' ' or '.' or ':'))
+                return false;
+        }
+
+        return true;
+    }
+
+    // whether lower-case letters and digits can be read as placeholder words in a row, digits allowed anywhere
+    private static bool IsPlaceholderWords(ReadOnlySpan<char> text)
+    {
+        while (!text.IsEmpty && char.IsAsciiDigit(text[0]))
+            text = text[1..];
+
+        if (text.IsEmpty)
+            return true;
+
+        foreach (var word in PlaceholderVocabulary)
+        {
+            if (text.StartsWith(word, StringComparison.Ordinal) && IsPlaceholderWords(text[word.Length..]))
                 return true;
         }
 

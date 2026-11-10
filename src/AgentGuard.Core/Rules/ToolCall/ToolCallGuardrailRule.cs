@@ -144,9 +144,10 @@ public sealed class ToolCallGuardrailRule : IGuardrailRule
     private const RegexOptions PatternOptions =
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant;
 
-    // commands flagged right after a chaining operator, whatever follows them
+    // commands flagged right after a chaining operator, whatever follows them. The ones that are also
+    // ordinary words or column names ("name; id; email", "dogs; cat people") are in WordCommands instead.
     private const string ChainedCommands =
-        "cat|ls|id|whoami|uname|curl|wget|nc|ncat|netcat|bash|sh|zsh|ksh|cmd|powershell|pwsh|printenv|nslookup|"
+        "whoami|uname|curl|wget|nc|ncat|netcat|bash|zsh|ksh|powershell|pwsh|printenv|nslookup|"
         + "telnet|tftp|xxd|socat|mkfifo|nohup|sudo|chmod|chown|useradd|crontab|certutil|bitsadmin|wmic|rundll32|"
         + "regsvr32|mshta|cscript|wscript|ifconfig|ipconfig|systeminfo|tasklist|taskkill";
 
@@ -161,10 +162,23 @@ public sealed class ToolCallGuardrailRule : IGuardrailRule
         "rm|cp|mv|echo|find|head|tail|env|touch|source|eval|exec|sed|awk|grep|python3?|perl|ruby|php|node|ssh|scp|"
         + "base64|dd|cat|ls|id|sh|nc|cmd|bash|zsh|curl|chmod|chown|sudo|powershell|pwsh";
 
-    // what follows a command rather than a word: an option, a path, a variable, a quoted argument or a
-    // URL - or nothing, when the command ends the line
+    // commands that mean something with no argument at all, so one alone on a line is a command
+    private const string BareCommands = "id|ls|env|sh|bash|zsh|cmd|powershell|pwsh";
+
+    // everything a "$(...)" or a backtick pair has to start with to be a command substitution rather than
+    // jQuery, a Makefile variable or inline code in prose
+    private const string SubstitutedCommands =
+        ChainedCommands + "|" + WordCommands + "|ping|sleep|nmap|tar|kill|ps|netstat|hostname|date|pwd|df|mount|docker|kubectl|git|apt|yum|pip3?|npm";
+
+    // what follows a command rather than a word: an option, a path, a variable, a quoted argument or a URL
     private const string CommandArgument =
-        @"(?=[ \t]+(?:-{1,2}[a-z]|[/\\~$]|\.{1,2}/|['""`]|[a-z]:\\|https?://)|[ \t]*(?:[;&|<>\r\n]|$))";
+        @"(?=[ \t]+(?:-{1,2}[a-z]|[/\\~$]|\.{1,2}/|['""`]|[a-z]:\\|https?://))";
+
+    // nothing follows: the command ends the line
+    private const string EndsTheLine = @"(?=[ \t]*(?:[\r\n]|$))";
+
+    // a command may be written with its path: "; /bin/rm -rf"
+    private const string OptionalPath = @"(?:(?:/[\w.-]+)*/)?";
 
     /// <summary>Initializes a new instance of the <see cref="ToolCallGuardrailRule"/> class.</summary>
     /// <param name="options">Categories and allowlists. Defaults when null.</param>
@@ -293,7 +307,7 @@ public sealed class ToolCallGuardrailRule : IGuardrailRule
         {
             const ToolCallInjectionCategory sql = ToolCallInjectionCategory.SqlInjection;
             AddPattern(checks, sql, "SQL UNION injection", @"\bUNION\s+(?:ALL\s+)?SELECT\b");
-            AddPattern(checks, sql, "SQL DROP injection", @"\bDROP\s+(?:TABLE|DATABASE|INDEX)\b");
+            AddPattern(checks, sql, "SQL DROP injection", @"\bDROP\s+(?:TABLE|DATABASE|INDEX|VIEW|SCHEMA)\b");
             // quoted: ' OR 'x'='x, ' OR 1=1, ' OR TRUE. The operand is bounded, which keeps the scan linear.
             AddPattern(checks, sql, "SQL tautology injection",
                 @"'\s*OR\s+['""]?[^'""\r\n]{1,64}'?\s*=\s*['""]?|'\s*OR\s+TRUE\b");
@@ -308,18 +322,36 @@ public sealed class ToolCallGuardrailRule : IGuardrailRule
             // admin'/*. A comment marker on its own is left alone - "C#", or "-- " opening an email
             // signature, is not SQL.
             AddPattern(checks, sql, "SQL comment injection", @"['""][ \t]*(?:--|#|/\*)[ \t\r\-]*$", RegexOptions.Multiline);
-            AddPattern(checks, sql, "SQL INSERT/UPDATE injection", @"\b(?:INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM)\b");
+            // a table name follows INTO and FROM; in a sentence it is "my", "the" or the like
+            // ("delete from my calendar the 3pm meeting")
+            AddPattern(checks, sql, "SQL INSERT/UPDATE injection",
+                @"\b(?:INSERT\s+INTO|DELETE\s+FROM)\s+(?!(?:my|the|your|our|this|that|these|those|his|her|their|its|a|an|all|each|every)\b)[\w.\[\]""`]|\bUPDATE\s+\w+\s+SET\b");
             // EXEC or EXECUTE only with what can only be a call - the bare verb is ordinary English
             AddPattern(checks, sql, "SQL EXEC injection",
                 @"\bEXEC(?:UTE)?\s*\(|\bEXEC(?:UTE)?\s+(?:@|(?:sp|xp)_\w|master\.|msdb\.)|\b(?:xp_cmdshell|sp_executesql|sp_oacreate|sp_configure)\b");
-            AddPattern(checks, sql, "SQL batch terminator", @";\s*(?:SELECT|DROP|INSERT|UPDATE|DELETE|EXEC|UNION|ALTER|CREATE)\b");
+            // a second statement after a ';'. The keyword has to open a statement, not a clause of a
+            // sentence ("I fixed the bug; update the ticket", "milk is out; select the organic one").
+            AddPattern(checks, sql, "SQL batch terminator",
+                @";\s*(?:SELECT\b(?=[^;\r\n]{0,200}\bFROM\b|\s+(?:\*|@@|\d|'|NULL\b|CASE\b|pg_sleep|sleep\s*\(|version\s*\(|current_user|user\s*\(|load_file))"
+                + @"|DROP\s+(?:TABLE|DATABASE|INDEX|VIEW|SCHEMA|USER|ROLE|FUNCTION|PROCEDURE|TRIGGER)\b"
+                + @"|INSERT\s+INTO\b|UPDATE\s+[\w.\[\]""`]+\s+SET\b|DELETE\s+FROM\b|TRUNCATE\s+TABLE\b"
+                + @"|EXEC(?:UTE)?\s*(?:\(|@|'|(?:sp|xp)_|\w+\.)"
+                + @"|UNION\s+(?:ALL\s+)?SELECT\b"
+                + @"|ALTER\s+(?:TABLE|DATABASE|USER|ROLE|LOGIN|SYSTEM)\b"
+                + @"|CREATE\s+(?:OR\s+REPLACE\s+)?(?:TABLE|DATABASE|USER|ROLE|LOGIN|FUNCTION|PROCEDURE|TRIGGER|VIEW|INDEX)\b"
+                + @"|GRANT\s+\w+|SHUTDOWN\b|WAITFOR\s+DELAY\b)");
         }
 
         if (c.HasFlag(ToolCallInjectionCategory.CodeInjection))
         {
             const ToolCallInjectionCategory code = ToolCallInjectionCategory.CodeInjection;
-            AddPattern(checks, code, "Python code injection", @"\b(?:eval|exec|compile|__import__|os\.system|subprocess\.(?:call|run|Popen)|importlib)\s*\(");
-            AddPattern(checks, code, "JavaScript code injection", @"\b(?:eval|Function|setTimeout|setInterval)\s*\(");
+            // "compile" is also an ordinary verb ("please compile (and send) the report"): a call has
+            // no space before its parenthesis
+            AddPattern(checks, code, "Python code injection",
+                @"\b(?:eval|exec|__import__|os\.system|subprocess\.(?:call|run|Popen|check_output|check_call|getoutput)|importlib\.import_module)\s*\(|\bcompile\(");
+            // the Function constructor, not the word: "the export function (added last week)"
+            AddPattern(checks, code, "JavaScript code injection",
+                @"\b(?:eval|setTimeout|setInterval)\s*\(|\bnew\s+Function\s*\(|(?-i:\bFunction)\s*\(|\brequire\s*\(\s*['""]child_process['""]\s*\)|\bchild_process\.(?:exec|execSync|spawn|spawnSync|execFile)\s*\(");
             AddPattern(checks, code, "Shell code injection via Python", @"\bos\.(?:system|popen|exec[lv]?[pe]?)\s*\(");
             AddPattern(checks, code, "Pickle deserialization", @"\b(?:pickle\.loads|yaml\.(?:load|unsafe_load)|marshal\.loads)\s*\(");
             AddPattern(checks, code, ".NET code injection", @"\b(?:Process\.Start|Assembly\.Load|Activator\.CreateInstance|Type\.InvokeMember)\s*\(");
@@ -337,14 +369,24 @@ public sealed class ToolCallGuardrailRule : IGuardrailRule
         if (c.HasFlag(ToolCallInjectionCategory.CommandInjection))
         {
             const ToolCallInjectionCategory command = ToolCallInjectionCategory.CommandInjection;
-            AddPattern(checks, command, "Shell command chaining", @"[;&|]{1,2}\s*(?:" + ChainedCommands + @")\b");
-            AddPattern(checks, command, "Shell command chaining", @"(?:[;&|]{1,2}|[\r\n])[ \t]*(?:" + WordCommands + ")" + CommandArgument);
-            AddPattern(checks, command, "Shell command chaining", @"[\r\n][ \t]*(?:" + LineStartCommands + @")\b");
+            AddPattern(checks, command, "Shell command chaining", @"[;&|]{1,2}\s*" + OptionalPath + "(?:" + ChainedCommands + @")\b");
+            // a command that doubles as a word needs a command-shaped argument, or - after an operator - to
+            // end the line; mid-list ("name; id; email") or alone on a line ("Python") it is a word
+            AddPattern(checks, command, "Shell command chaining", @"(?:[;&|]{1,2}|[\r\n])[ \t]*" + OptionalPath + "(?:" + WordCommands + ")" + CommandArgument);
+            AddPattern(checks, command, "Shell command chaining", @"[;&|]{1,2}[ \t]*" + OptionalPath + "(?:" + WordCommands + ")" + EndsTheLine);
+            AddPattern(checks, command, "Shell command chaining", @"[\r\n][ \t]*" + OptionalPath + "(?:" + BareCommands + ")" + EndsTheLine);
+            AddPattern(checks, command, "Shell command chaining", @"[\r\n][ \t]*" + OptionalPath + "(?:" + LineStartCommands + @")\b");
             // time- and network-based probes take a number or an option: ;sleep 10, |ping -n 5
             AddPattern(checks, command, "Shell command chaining", @"[;&|]{1,2}[ \t]*(?:sleep|ping|timeout)[ \t]+(?:-{1,2}[a-z]|\d)");
-            // bounded, so an unclosed "$(" or backtick cannot drive a quadratic scan
-            AddPattern(checks, command, "Command substitution", @"\$\([^)]{1,256}\)|`[^`]{1,256}`");
-            AddPattern(checks, command, "Pipe to shell", @"\|\s*(?:bash|sh|zsh|ksh|cmd|powershell|pwsh)\b");
+            // "$(...)" or backticks around a command. What they hold has to start with one: "$(document)"
+            // is jQuery and "$(VERSION)" a Makefile variable. Backticks also mark inline code in prose
+            // ("use `git status` to check"), so there the command needs a command-shaped argument or to
+            // be one that is run bare. Bounded, so an unclosed "$(" or backtick cannot drive a quadratic scan.
+            AddPattern(checks, command, "Command substitution",
+                @"\$\(\s*" + OptionalPath + "(?:" + SubstitutedCommands + @")(?![\w-])[^)]{0,256}\)"
+                + @"|`\s*" + OptionalPath + "(?:" + SubstitutedCommands + @")(?![\w-])[ \t]+(?:-{1,2}[a-z]|[/\\~$]|\.{1,2}/|['""]|https?://)[^`]{0,256}`"
+                + @"|`\s*" + OptionalPath + "(?:" + ChainedCommands + "|" + BareCommands + @")\s*`");
+            AddPattern(checks, command, "Pipe to shell", @"\|\s*" + OptionalPath + @"(?:bash|sh|zsh|ksh|cmd|powershell|pwsh)\b");
             // the ncat option search stops at the next "ncat ", so repeating the command can't multiply the scan
             AddPattern(checks, command, "Reverse shell patterns", @"bash\s+-i\s+>&|/dev/tcp/|\bnc\s+-[elp]|mkfifo|\bncat\s(?:[^\r\nn]|n(?!cat\s)){0,128}?-e");
         }

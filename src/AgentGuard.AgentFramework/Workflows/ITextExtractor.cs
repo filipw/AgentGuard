@@ -28,11 +28,12 @@ public interface ITextExtractor
     /// <param name="text">The rewritten text: what <see cref="ExtractText"/> returned for <paramref name="message"/>, after the rules changed it.</param>
     /// <param name="rebuilt">
     /// The rebuilt message. It must be an instance of the type the executor declares for the message;
-    /// otherwise the original message goes on unchanged.
+    /// otherwise it counts as not rebuilt.
     /// </param>
     /// <returns>
     /// <see langword="true"/> when the message was rebuilt; <see langword="false"/> when this extractor can't
-    /// rebuild it, in which case the original message goes on unchanged and a warning is logged.
+    /// rebuild it, in which case the message is blocked (or, with
+    /// <see cref="GuardedExecutorOptions.AllowUnappliedModifications"/>, goes on unchanged with a warning).
     /// </returns>
     bool TryRebuild(object message, string text, [NotNullWhen(true)] out object? rebuilt)
     {

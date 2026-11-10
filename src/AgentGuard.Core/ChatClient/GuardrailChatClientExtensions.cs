@@ -14,8 +14,9 @@ public static class GuardrailChatClientExtensions
 {
     /// <summary>
     /// Wraps this <see cref="IChatClient"/> with AgentGuard guardrails configured via a fluent builder.
-    /// Input guardrails run on every user message of the request (earlier turns re-apply the verdict
-    /// they got the first time - see <see cref="ChatMessageGuard"/>); output guardrails run on each
+    /// Input guardrails run on every message of the request except the system prompt, and tool-result rules on
+    /// the tool results it carries (earlier messages re-apply the verdict they got the first time - see
+    /// <see cref="ChatMessageGuard.GuardInputAsync"/>); output guardrails run on each
     /// assistant message of the response and on its tool calls and results. Conversation history is
     /// automatically propagated from the messages passed to each call.
     /// </summary>
@@ -36,11 +37,17 @@ public static class GuardrailChatClientExtensions
     /// Optional decision ledger. The decorator builds its own pipeline, so a ledger registered via
     /// <c>AddAgentGuard(o =&gt; o.UseDecisionLedger(...))</c> only records here if it is passed in.
     /// </param>
+    /// <param name="trustedRoles">
+    /// Roles whose request messages the input rules skip (see <see cref="ChatMessageGuard.WithTrustedRoles"/>).
+    /// Null means <see cref="GuardrailChatClient.DefaultTrustedRoles"/> (the system role); pass an empty
+    /// list to check every role.
+    /// </param>
     public static IChatClient UseAgentGuard(
         this IChatClient client,
         Action<GuardrailPolicyBuilder> configure,
         ILogger<GuardrailPipeline>? logger = null,
-        IGuardrailLedger? ledger = null)
+        IGuardrailLedger? ledger = null,
+        IEnumerable<ChatRole>? trustedRoles = null)
     {
         ArgumentNullException.ThrowIfNull(client);
         ArgumentNullException.ThrowIfNull(configure);
@@ -48,7 +55,7 @@ public static class GuardrailChatClientExtensions
         var builder = new GuardrailPolicyBuilder();
         configure(builder);
         // the decorator built this policy, so disposing the client releases its rules
-        return new GuardrailChatClient(client, builder.Build(), logger, ledger, ownsPolicy: true);
+        return new GuardrailChatClient(client, builder.Build(), logger, ledger, ownsPolicy: true, trustedRoles);
     }
 
     /// <summary>
@@ -58,15 +65,17 @@ public static class GuardrailChatClientExtensions
     /// <param name="policy">The policy to enforce.</param>
     /// <param name="logger">Optional logger for the pipeline.</param>
     /// <param name="ledger">Optional decision ledger; see the builder overload.</param>
+    /// <param name="trustedRoles">Roles whose request messages the input rules skip; see the builder overload.</param>
     public static IChatClient UseAgentGuard(
         this IChatClient client,
         IGuardrailPolicy policy,
         ILogger<GuardrailPipeline>? logger = null,
-        IGuardrailLedger? ledger = null)
+        IGuardrailLedger? ledger = null,
+        IEnumerable<ChatRole>? trustedRoles = null)
     {
         ArgumentNullException.ThrowIfNull(client);
         ArgumentNullException.ThrowIfNull(policy);
 
-        return new GuardrailChatClient(client, policy, logger, ledger);
+        return new GuardrailChatClient(client, policy, logger, ledger, trustedRoles);
     }
 }

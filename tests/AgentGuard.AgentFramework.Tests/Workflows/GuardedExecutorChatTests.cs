@@ -241,12 +241,31 @@ public class GuardedExecutorChatTests
     }
 
     [Fact]
-    public async Task ShouldPassOriginalAndLogWarning_WhenDeclaredCollectionTypeCannotBeRebuilt()
+    public async Task ShouldBlockAndLogWarning_WhenDeclaredCollectionTypeCannotBeRebuilt()
     {
         Collection<ChatMessage>? received = null;
         var logger = new ListLogger();
         var inner = new VoidExecutor<Collection<ChatMessage>>("chat", message => received = message);
         var guarded = inner.WithGuardrails(PolicyWith(new ReplacingRule("secret", "[redacted]")), new GuardedExecutorOptions { Logger = logger });
+
+        var act = () => guarded.HandleAsync(
+            new Collection<ChatMessage> { new(ChatRole.User, "my secret expired") }, Mock.Of<IWorkflowContext>()).AsTask();
+
+        await act.Should().ThrowAsync<GuardrailViolationException>();
+        received.Should().BeNull();
+        logger.Entries.Should().ContainSingle(e => e.Level == LogLevel.Warning)
+            .Which.Message.Should().Contain("'chat'").And.Contain("blocked");
+    }
+
+    [Fact]
+    public async Task ShouldPassOriginalAndLogWarning_WhenDeclaredCollectionTypeCannotBeRebuiltAndUnappliedModificationsAreAllowed()
+    {
+        Collection<ChatMessage>? received = null;
+        var logger = new ListLogger();
+        var inner = new VoidExecutor<Collection<ChatMessage>>("chat", message => received = message);
+        var guarded = inner.WithGuardrails(
+            PolicyWith(new ReplacingRule("secret", "[redacted]")),
+            new GuardedExecutorOptions { Logger = logger, AllowUnappliedModifications = true });
 
         var original = new Collection<ChatMessage> { new(ChatRole.User, "my secret expired") };
         await guarded.HandleAsync(original, Mock.Of<IWorkflowContext>());

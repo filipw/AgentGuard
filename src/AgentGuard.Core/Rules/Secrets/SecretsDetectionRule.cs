@@ -101,6 +101,14 @@ public sealed class SecretsDetectionOptions
     /// Only applies when <see cref="SecretCategory.GenericHighEntropy"/> is enabled.
     /// </summary>
     public int MinHighEntropyLength { get; init; } = 20;
+
+    /// <summary>
+    /// What to do when a pattern cannot finish scanning within its time budget and nothing else was
+    /// found. Default: <see cref="ErrorBehavior.FailOpen"/>, matching the other detection rules. The
+    /// result has <see cref="GuardrailResult.IsError"/> set under every behavior, so an incomplete
+    /// scan is never reported as a clean one.
+    /// </summary>
+    public ErrorBehavior OnError { get; init; } = ErrorBehavior.FailOpen;
 }
 
 /// <summary>
@@ -123,6 +131,11 @@ public sealed class SecretsDetectionRule : IGuardrailRule
     // authority (a raw '@' inside the password is common enough), followed by a host
     private const string UriUserInfo =
         @"://(?<user>[^\s:/?#@""'<>`]*):(?<secret>[^\s/?#""'<>`]+)@(?=[^\s/?#@""'<>`])";
+
+    // the password value of a key=value connection string: quoted (which is how a value holding a
+    // ';' has to be written) or bare up to the next ';'
+    private const string ConnectionValue =
+        @"(?:""(?<secret>[^""\r\n]{1,512})""|'(?<secret>[^'\r\n]{1,512})'|(?<secret>[^;\r\n""']*[^;\s""']))";
 
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(200);
 
@@ -172,17 +185,32 @@ public sealed class SecretsDetectionRule : IGuardrailRule
         var replacement = _options.Action == SecretAction.Redact ? _options.Replacement : null;
         var detected = new List<string>();
         var modified = text;
+        var timedOut = 0;
 
         foreach (var pattern in _patterns)
         {
-            if (pattern.RequiredContext is not null && !pattern.RequiredContext.IsMatchOrFalse(modified))
-                continue;
+            // the context is looked for in the text as it came in: an earlier pattern may already have
+            // redacted the very thing that gives it away (the AKIA id next to an AWS secret key)
+            if (pattern.RequiredContext is not null)
+            {
+                switch (TryIsMatch(pattern.RequiredContext, text))
+                {
+                    case false:
+                        continue;
+                    case null:
+                        timedOut++;
+                        continue;
+                }
+            }
 
-            if (Scan(pattern, modified, replacement, out var rewritten))
+            if (Scan(pattern, modified, replacement, out var rewritten, out var incomplete))
             {
                 detected.Add(pattern.Label);
                 modified = rewritten;
             }
+
+            if (incomplete)
+                timedOut++;
         }
 
         if (_highEntropy is not null && _highEntropy.Scan(modified, replacement, out var withoutTokens))
@@ -192,10 +220,30 @@ public sealed class SecretsDetectionRule : IGuardrailRule
         }
 
         if (detected.Count == 0)
-            return ValueTask.FromResult(GuardrailResult.Passed());
+        {
+            // a scan that could not finish is not a clean one
+            return ValueTask.FromResult(timedOut == 0
+                ? GuardrailResult.Passed()
+                : GuardrailResult.Error(Name, _options.OnError,
+                    $"{timedOut} pattern(s) exceeded the {RegexTimeout.TotalMilliseconds:F0} ms match timeout and no other pattern matched"));
+        }
 
         if (_options.Action == SecretAction.Redact)
-            return ValueTask.FromResult(GuardrailResult.Modified(modified, $"Secrets detected and redacted: {string.Join(", ", detected)}"));
+        {
+            var redacted = GuardrailResult.Modified(modified, $"Secrets detected and redacted: {string.Join(", ", detected)}");
+            return ValueTask.FromResult(timedOut == 0
+                ? redacted
+                : redacted with
+                {
+                    IsError = true,
+                    IsWarning = true,
+                    Metadata = new Dictionary<string, object>
+                    {
+                        ["error"] = true,
+                        ["errorDetail"] = $"{timedOut} pattern(s) exceeded the {RegexTimeout.TotalMilliseconds:F0} ms match timeout; the text may hold secrets that were not redacted"
+                    }
+                });
+        }
 
         return ValueTask.FromResult(new GuardrailResult
         {
@@ -219,9 +267,10 @@ public sealed class SecretsDetectionRule : IGuardrailRule
     /// A pattern that exceeds its match timeout is skipped from that point on; the other patterns
     /// still run, and whatever it already found still counts and stays replaced.
     /// </remarks>
-    private static bool Scan(SecretPattern pattern, string text, string? replacement, out string rewritten)
+    private static bool Scan(SecretPattern pattern, string text, string? replacement, out string rewritten, out bool incomplete)
     {
         rewritten = text;
+        incomplete = false;
         StringBuilder? builder = null;
         var copied = 0;
         var found = false;
@@ -246,13 +295,26 @@ public sealed class SecretsDetectionRule : IGuardrailRule
         }
         catch (RegexMatchTimeoutException)
         {
-            // the scan could not finish inside its budget; keep what it found
+            // the scan could not finish inside its budget; keep what it found, and say so
+            incomplete = true;
         }
 
         if (builder is not null)
             rewritten = builder.Append(text, copied, text.Length - copied).ToString();
 
         return found;
+    }
+
+    private static bool? TryIsMatch(Regex pattern, string text)
+    {
+        try
+        {
+            return pattern.IsMatch(text);
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            return null;
+        }
     }
 
     private List<SecretPattern> BuildPatterns()
@@ -268,9 +330,13 @@ public sealed class SecretsDetectionRule : IGuardrailRule
             p.Add(new("aws-access-key", Compile(@"(?<![A-Za-z0-9/+])AKIA[0-9A-Z]{16}(?![A-Za-z0-9/+=])")));
             // A bare 40-character base64 run is far too common to flag on its own, so it is gated
             // on AWS context appearing anywhere in the text, before or after the value.
+            // "aws" has to start a word ("flaws" and "draws" contain it), the key's own label is
+            // written with spaces as often as with underscores, and an access key id is context too.
+            // Forty hex digits are a SHA-1 - a commit id - not a base64 secret.
             p.Add(new("aws-secret-key",
                 Compile(@"(?<![A-Za-z0-9/+])[A-Za-z0-9/+]{40}(?![A-Za-z0-9/+=])"),
-                Compile(@"aws|secret[_\-]?access|secret[_\-]?key", RegexOptions.IgnoreCase)));
+                Compile(@"(?<![A-Za-z])aws|secret[\s_\-]?access|secret[\s_\-]?key|(?<![A-Za-z0-9/+])AKIA[0-9A-Z]{16}", RegexOptions.IgnoreCase),
+                Accept: m => !SecretValues.IsHex(m.ValueSpan)));
         }
 
         // GitHub tokens: classic (ghp_, gho_, ghu_, ghs_, ghr_) and fine-grained personal access
@@ -291,7 +357,8 @@ public sealed class SecretsDetectionRule : IGuardrailRule
             // Cognitive Services / APIM subscription keys are 32 lowercase hex characters.
             p.Add(new("azure-subscription-key",
                 Compile(@"(?<![A-Za-z0-9])[a-f0-9]{32}(?![A-Za-z0-9])"),
-                Compile(@"ocp-apim-subscription-key|azure|cognitiveservices|subscription[_\-]?key", RegexOptions.IgnoreCase)));
+                // a key has to be named: "azure" next to 32 hex digits is as often a Content-MD5
+                Compile(@"ocp-apim-subscription-key|cognitiveservices|subscription[\s_\-]?key|azure[A-Za-z0-9_\s\-]{0,30}key|api[\s_\-]?key", RegexOptions.IgnoreCase)));
         }
 
         // JWT tokens (eyJ...). A token only starts where no base64url character precedes it, so a
@@ -324,8 +391,14 @@ public sealed class SecretsDetectionRule : IGuardrailRule
                 Accept: m => IsSecretValue(m.Groups[SecretGroup].ValueSpan, minLength: 6)));
 
             // Generic API key patterns (api_key=..., apikey:..., x-api-key:...)
-            p.Add(new("api-key", Compile(@"(?i)(?:api[_-]?key|api[_-]?secret|access[_-]?token|auth[_-]?token|bearer)\s*[:=]\s*[""']?([A-Za-z0-9_\-./+=]{20,})[""']?")));
-            p.Add(new("bearer-token", Compile(@"(?i)Bearer\s+[A-Za-z0-9_\-./+=]{20,}")));
+            // Only the value is replaced. A value that reads as code or as a placeholder is not a key:
+            // "apiKey: process.env.OPENAI_API_KEY", "api_key=your-api-key-goes-here".
+            p.Add(new("api-key",
+                Compile(@"(?i)(?:api[_-]?key|api[_-]?secret|access[_-]?token|auth[_-]?token|bearer)\s*[:=]\s*[""']?(?<secret>[A-Za-z0-9_\-./+=]{20,})[""']?"),
+                Accept: m => IsToken(m.Groups[SecretGroup].ValueSpan)));
+            p.Add(new("bearer-token",
+                Compile(@"(?i)Bearer\s+(?<secret>[A-Za-z0-9_\-./+=]{20,})"),
+                Accept: m => IsToken(m.Groups[SecretGroup].ValueSpan)));
             // Slack tokens
             p.Add(new("slack-token", Compile(@"xox[bprs]-[A-Za-z0-9\-]{10,}")));
         }
@@ -339,11 +412,26 @@ public sealed class SecretsDetectionRule : IGuardrailRule
             // password value is replaced.
             p.Add(new("connection-string",
                 Compile(
-                    @"(?<![A-Za-z0-9])(?:Server|Data[^\S\r\n]+Source|Host|Hostname)[^\S\r\n]*=[^;\r\n]*;(?:\r?\n)?"
-                    + @"(?:(?![^\S\r\n]*(?:Server|Data[^\S\r\n]+Source|Host|Hostname)[^\S\r\n]*=)[^;\r\n]*;(?:\r?\n)?){0,20}?[^\S\r\n]*(?:Password|Pwd)[^\S\r\n]*=[^\S\r\n]*"
-                    + @"(?<secret>[^;\r\n""']*[^;\s""'])",
+                    // a segment is at most 512 characters: without the bound, a line of host keys and
+                    // no ';' is rescanned to its end from every one of them
+                    @"(?<![A-Za-z0-9])(?:Server|Data[^\S\r\n]+Source|Host|Hostname)[^\S\r\n]*=[^;\r\n]{0,512};(?:\r?\n)?"
+                    + @"(?:(?![^\S\r\n]*(?:Server|Data[^\S\r\n]+Source|Host|Hostname)[^\S\r\n]*=)[^;\r\n]{0,512};(?:\r?\n)?){0,20}?[^\S\r\n]*(?:Password|Pwd)[^\S\r\n]*=[^\S\r\n]*"
+                    + ConnectionValue,
                     RegexOptions.IgnoreCase),
                 Accept: m => IsSecretValue(m.Groups[SecretGroup].ValueSpan, minLength: 1)));
+
+            // the same with the password ahead of the host key ("Password=...;Server=...")
+            p.Add(new("connection-string",
+                Compile(
+                    @"(?<![A-Za-z0-9])(?:Password|Pwd)[^\S\r\n]*=[^\S\r\n]*" + ConnectionValue
+                    + @"[""']?[^\S\r\n]*;[^\r\n]{0,512}?(?<![A-Za-z0-9])(?:Server|Data[^\S\r\n]+Source|Host|Hostname)[^\S\r\n]*=",
+                    RegexOptions.IgnoreCase),
+                Accept: m => IsSecretValue(m.Groups[SecretGroup].ValueSpan, minLength: 1)));
+
+            // Azure Service Bus, Event Hubs and Storage connection strings carry the key itself
+            p.Add(new("connection-string",
+                Compile(@"(?<![A-Za-z0-9])(?:SharedAccessKey|AccountKey)[^\S\r\n]*=[^\S\r\n]*(?<secret>[A-Za-z0-9+/]{20,}={0,2})", RegexOptions.IgnoreCase),
+                Accept: m => IsSecretValue(m.Groups[SecretGroup].ValueSpan, minLength: 20)));
 
             // URIs with a password in their user info: mongodb:// and redis:// under their own
             // labels, then any other scheme (postgres, mysql, amqp, ftp, sqlserver, https, ...).
@@ -380,6 +468,14 @@ public sealed class SecretsDetectionRule : IGuardrailRule
         && !SecretValues.IsPlaceholder(value)
         && !SecretValues.LooksLikePath(value)
         && !value.Contains("://", StringComparison.Ordinal);
+
+    /// <summary>
+    /// Whether a value assigned to an API key or sent as a bearer token is a token rather than a
+    /// placeholder or a piece of code: a variable, a property path, a function name.
+    /// </summary>
+    private static bool IsToken(ReadOnlySpan<char> value) =>
+        !SecretValues.IsPlaceholder(value)
+        && !(SecretValues.IsWordLike(value) && !value.ContainsAnyInRange('0', '9'));
 
     /// <summary>
     /// The Shannon entropy of <paramref name="s"/>, in bits per character.

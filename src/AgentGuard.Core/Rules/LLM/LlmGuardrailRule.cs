@@ -131,7 +131,10 @@ public abstract partial class LlmGuardrailRule : IGuardrailRule, IStreamingGuard
     /// </list>
     /// <para>
     /// Matching on the verdict line rather than searching the whole response is what stops
-    /// "No injection found." from reading as a positive verdict.
+    /// "No injection found." from reading as a positive verdict. A positive verdict is also taken from
+    /// a later line when the first line is not a verdict ("Here is my classification:" above it), and
+    /// from the opening line when a closing reasoning tag further on would otherwise swallow it; a
+    /// negative verdict is only ever read from the verdict line itself.
     /// </para>
     /// </remarks>
     protected static string ExtractVerdictLine(string responseText)
@@ -187,7 +190,83 @@ public abstract partial class LlmGuardrailRule : IGuardrailRule, IStreamingGuard
         string responseText, string positiveToken, string negativeToken, out string verdictLine)
     {
         verdictLine = ExtractVerdictLine(responseText);
-        return ClassifyVerdictLine(verdictLine, positiveToken, negativeToken);
+        var verdict = ClassifyVerdictLine(verdictLine, positiveToken, negativeToken);
+        if (verdict == LlmVerdict.Positive)
+            return verdict;
+
+        // A finding the judge did reach must not be lost to how it was wrapped. Both fallbacks below
+        // only ever turn a response into a positive verdict: text the judge quotes from what it is
+        // judging can then cause a block, never a pass.
+        if (TryFindPositiveVerdict(responseText, positiveToken, negativeToken, out var positiveLine))
+        {
+            verdictLine = positiveLine;
+            return LlmVerdict.Positive;
+        }
+
+        return verdict;
+    }
+
+    // Looks for a positive verdict the first-line reading missed:
+    // - the response opens with one, and a closing reasoning tag further on (quoted from the judged
+    //   text, say) made everything before the tag look like reasoning;
+    // - the verdict follows a preamble ("Here is my classification:") on a later line.
+    private static bool TryFindPositiveVerdict(string responseText, string positiveToken, string negativeToken, out string verdictLine)
+    {
+        verdictLine = "";
+        if (string.IsNullOrWhiteSpace(responseText))
+            return false;
+
+        // complete reasoning blocks are reasoning wherever they sit
+        var lines = ReasoningBlock().Replace(responseText, "").Split('\n');
+
+        // a closing tag without its opening tag: the lines above it may be reasoning the provider left in
+        var lastClose = -1;
+        for (var i = 0; i < lines.Length; i++)
+        {
+            if (ReasoningCloseTag().IsMatch(lines[i]))
+                lastClose = i;
+        }
+
+        var first = true;
+        for (var i = 0; i < lines.Length; i++)
+        {
+            var line = lines[i].Trim();
+            if (line.Length == 0 || IsFenceLine(line))
+                continue;
+
+            // an unfinished reasoning block: nothing from here on is a verdict
+            if (ReasoningOpenTag().IsMatch(line))
+                return false;
+
+            string? candidate;
+            if (first)
+            {
+                // the opening line was read already unless a closing tag hid it; it counts up to the tag
+                var close = ReasoningCloseTag().Match(line);
+                candidate = lastClose < 0 ? null : close.Success ? line[..close.Index] : line;
+                first = false;
+            }
+            else
+            {
+                // reasoning above a closing tag is not a verdict, however a line of it starts
+                candidate = i > lastClose ? line : null;
+            }
+
+            if (candidate is null)
+                continue;
+
+            var cleaned = CleanVerdictLine(candidate, out var bareHeading);
+            if (bareHeading)
+                continue;
+
+            if (ClassifyVerdictLine(cleaned, positiveToken, negativeToken) == LlmVerdict.Positive)
+            {
+                verdictLine = cleaned + FieldsBelow(lines, i + 1);
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>Classifies a line already reduced by <see cref="ExtractVerdictLine"/>.</summary>
@@ -612,10 +691,17 @@ public abstract partial class LlmGuardrailRule : IGuardrailRule, IStreamingGuard
     [GeneratedRegex(@"<(?:think|thinking|reasoning)\b[^>]*>", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex ReasoningOpenTag();
 
-    [GeneratedRegex(@"^(?:final\s+)?(?:verdict|answer|classification|result)\s*(?:[:=]|[-\u2013\u2014](?=\s)|$)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"^(?:final\s+)?(?:verdict|answer|classification|result|label|decision|output|category|assessment|judge?ment|determination)\s*(?:[:=]|[-\u2013\u2014](?=\s)|$)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex VerdictPrefix();
 
-    [GeneratedRegex(@"^[\s:=,.;\-\u2013\u2014]*(?:not|no|none|nothing|false|absent|free|n/a)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    // A finding negated right after its token: the negation is all there is ("PII: none",
+    // "INJECTION: false") or it leads up to "found" and the like ("INJECTION - not found", "PII: no PII
+    // detected"). A reason that merely starts with such a word is still a finding: "VIOLATION: no
+    // disclaimer was included", "OFF_TOPIC - not related to billing".
+    [GeneratedRegex(
+        @"^[\s:=,.;\-\u2013\u2014]*(?:(?:not|no|none|nothing|false|absent|free|n/a)\b\s*[.!]?\s*(?:$|\|)"
+        + @"|(?:not|no|none|nothing)\b(?:\s+[\w'-]+){0,3}?\s+(?:found|detected|present|identified|observed|apparent|applicable)\b)",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex NegatedFinding();
 
     [GeneratedRegex(@"^\s*[:=]\s*(?:false|no)\s*[.!]?\s*$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]

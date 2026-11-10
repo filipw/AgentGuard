@@ -145,10 +145,18 @@ public static class ServiceCollectionExtensions
     /// Registers AgentGuard with policies loaded from <see cref="IConfiguration"/> (e.g. appsettings.json).
     /// LLM-based rules and ContentSafety rules resolve their dependencies (IChatClient, IContentSafetyClassifier) from DI.
     /// </summary>
+    /// <remarks>
+    /// The configuration is read when the policies are built, the first time <see cref="IAgentGuardFactory"/>
+    /// or the registered <see cref="GuardrailPipeline"/> is resolved. A value that can't be read or a key
+    /// that is not a known setting then throws an <see cref="InvalidOperationException"/>: a rule is never
+    /// left out of a policy because one of its settings was mistyped.
+    /// </remarks>
     public static IServiceCollection AddAgentGuard(this IServiceCollection services, IConfiguration configuration)
     {
-        var config = configuration.Get<AgentGuardConfiguration>() ?? new AgentGuardConfiguration();
-        services.AddSingleton<IAgentGuardFactory>(sp => new AgentGuardFactory(config, sp));
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        services.AddSingleton<IAgentGuardFactory>(sp =>
+            new AgentGuardFactory(AgentGuardConfigurationReader.Read(configuration), sp));
         services.AddSingleton(sp =>
             new GuardrailPipeline(
                 sp.GetRequiredService<IAgentGuardFactory>().GetDefaultPolicy(),

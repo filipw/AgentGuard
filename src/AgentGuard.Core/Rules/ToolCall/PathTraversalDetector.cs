@@ -8,11 +8,14 @@ namespace AgentGuard.Core.Rules.ToolCall;
 /// as written and in each percent-decoded form of it.
 /// </summary>
 /// <remarks>
-/// Separators are normalized before matching - backslashes become slashes and runs of slashes
-/// collapse to one, as file APIs treat them - so <c>..\</c>, <c>..//</c> and mixed forms read the
-/// same as <c>../</c>. A single plain <c>../</c> is an ordinary relative path, so it takes two in a
-/// row; a traversal that only appears once the argument is decoded is flagged on its own, since a
-/// legitimate path has no reason to encode one.
+/// Paths are normalized before matching as file APIs read them - backslashes become slashes, runs of
+/// slashes collapse to one and <c>.</c> segments are dropped - so <c>..\</c>, <c>..//</c>,
+/// <c>.././..</c> and mixed forms read the same as <c>../..</c>. A single plain <c>../</c> is an
+/// ordinary relative path, so it takes two in a row (which is also what any path that climbs more
+/// than one level above where it starts must contain); a traversal that only appears once the argument
+/// is decoded is flagged on its own, since a legitimate path has no reason to encode one. Sensitive
+/// paths are matched after <c>name/..</c> pairs are resolved as well, so <c>/etc/x/../passwd</c> reads
+/// as <c>/etc/passwd</c>.
 /// </remarks>
 internal static class PathTraversalDetector
 {
@@ -69,16 +72,19 @@ internal static class PathTraversalDetector
 
     /// <summary>An absolute path to a well-known sensitive file, as written or decoded.</summary>
     internal static bool HasSensitivePath(ArgumentText argument) =>
-        argument.AnyForm(text => SensitivePath.IsMatchOrFalse(NormalizeSeparators(text)));
+        argument.AnyForm(text => SensitivePath.IsMatchOrFalse(ResolveParentSegments(NormalizeSeparators(text))));
 
     /// <summary>A NUL character or a written-out NUL escape, as written or decoded.</summary>
     internal static bool HasNulByte(ArgumentText argument) =>
         argument.AnyForm(text => text.Contains('\0') || NulEscape.IsMatchOrFalse(text));
 
-    /// <summary>Replaces backslashes with slashes and collapses runs of slashes into one.</summary>
+    /// <summary>
+    /// Replaces backslashes with slashes, collapses runs of slashes into one and drops <c>.</c>
+    /// segments.
+    /// </summary>
     internal static string NormalizeSeparators(string text)
     {
-        if (text.IndexOf('\\') < 0 && !text.Contains("//", StringComparison.Ordinal))
+        if (text.IndexOf('\\') < 0 && !text.Contains("//", StringComparison.Ordinal) && !HasCurrentDirectorySegment(text))
             return text;
 
         var builder = new StringBuilder(text.Length);
@@ -88,11 +94,65 @@ internal static class PathTraversalDetector
             if (normalized == '/' && builder.Length > 0 && builder[^1] == '/')
                 continue;
 
+            // a "." segment is dropped together with the slash that ends it: "a/./b" reads "a/b"
+            if (normalized == '/' && EndsWithCurrentDirectorySegment(builder))
+            {
+                builder.Length--;
+                continue;
+            }
+
             builder.Append(normalized);
         }
 
+        // a trailing "." segment: "a/." reads "a/"
+        if (EndsWithCurrentDirectorySegment(builder))
+            builder.Length--;
+
         return builder.ToString();
     }
+
+    /// <summary>
+    /// Resolves each <c>name/..</c> pair the way a file API does, in a text already passed through
+    /// <see cref="NormalizeSeparators"/>. A <c>..</c> with nothing left to climb out of stays.
+    /// </summary>
+    internal static string ResolveParentSegments(string text)
+    {
+        if (!text.Contains("..", StringComparison.Ordinal))
+            return text;
+
+        var segments = text.Split('/');
+        var kept = new List<string>(segments.Length);
+        foreach (var segment in segments)
+        {
+            // the empty segment before a leading slash is the root and is never climbed out of
+            if (segment == ".." && kept.Count > 0 && kept[^1] is not (".." or ""))
+            {
+                kept.RemoveAt(kept.Count - 1);
+                continue;
+            }
+
+            kept.Add(segment);
+        }
+
+        return string.Join('/', kept);
+    }
+
+    // "." alone between separators (or the start or end of the text)
+    private static bool HasCurrentDirectorySegment(string text)
+    {
+        for (var i = text.IndexOf('.'); i >= 0; i = text.IndexOf('.', i + 1))
+        {
+            var startsSegment = i == 0 || text[i - 1] is '/' or '\\';
+            var endsSegment = i + 1 == text.Length || text[i + 1] is '/' or '\\';
+            if (startsSegment && endsSegment)
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool EndsWithCurrentDirectorySegment(StringBuilder builder) =>
+        builder.Length > 0 && builder[^1] == '.' && (builder.Length == 1 || builder[^2] == '/');
 
     private static int CountParentSegments(string text) => ParentSegment.MatchesUntilTimeout(text).Count;
 }

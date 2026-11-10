@@ -76,7 +76,7 @@ builder.Services.AddAgentGuard(builder.Configuration.GetSection("AgentGuard"));
 
 ### Available Rule Types
 
-Type names and enum values (`Sensitivity`, `Action`, ...) are matched case-insensitively. Enum settings take member names only (a comma-separated list of names for `Categories`), not numbers. An unknown type, an invalid or out-of-range value (such as a `Threshold` outside 0-1, `MaxTokens` below 1, or a `WindowOverlap` not smaller than `WindowSize`), or a missing required property throws an `InvalidOperationException` naming the rule type and setting when the policies are built - the first time `IAgentGuardFactory` or the registered `GuardrailPipeline` is resolved.
+Type names and enum values (`Sensitivity`, `Action`, ...) are matched case-insensitively. Enum settings take member names only (a comma-separated list of names for `Categories`), not numbers. An unknown type, a value that can't be read as its setting's type (such as `"MaxTokens": "4k"` or `"FailOpen": "no"`), a key that is not a known setting (a misspelling such as `MaxTokenz`), an invalid or out-of-range value (such as a `Threshold` outside 0-1, `MaxTokens` below 1, or a `WindowOverlap` not smaller than `WindowSize`), or a missing required property throws an `InvalidOperationException` naming the policy, the rule and the setting when the policies are built - the first time `IAgentGuardFactory` or the registered `GuardrailPipeline` is resolved. A rule is never silently left out of a policy.
 
 | Type | Properties | Notes |
 |------|-----------|-------|

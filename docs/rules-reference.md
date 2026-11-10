@@ -43,7 +43,7 @@ Decodes common evasion encodings before downstream rules see the text. Runs at o
 | StripInvisibleUnicode | `bool` | true | Strip zero-width and other invisible characters, including Unicode tag characters (U+E0000-U+E007F, "ASCII smuggling"); text spelled in tag characters is also surfaced as a decoded view |
 | MinBase64Length | `int` | 16 | Minimum base64 segment length to attempt decoding |
 
-`NormalizeUnicode` and `StripInvisibleUnicode` rewrite the text itself. The decoders append what they decode after a `[DECODED]` marker, so downstream rules can evaluate both the text and its decoded forms. Invalid UTF-16 (a lone surrogate) is replaced with U+FFFD rather than failing the rule.
+`NormalizeUnicode` and `StripInvisibleUnicode` rewrite the text itself. What the decoders decode is not added to the text - the model receives the text as written (after those two rewrites). Instead the decoded forms are handed to the pipeline as decoded views (`InputNormalizationRule.DecodedViewsKey`), and every later rule in the pipeline is also run on them: a block found in a decoded view blocks the text, with "(found in decoded content)" added to the reason, while a rewrite of a view is discarded. The token limit doesn't count decoded views. Running the later rules on the views means an LLM or remote rule may be called twice for a text that has them. Invalid UTF-16 (a lone surrogate) is replaced with U+FFFD rather than failing the rule.
 
 ## Retrieval Guardrails (RAG)
 
@@ -85,9 +85,11 @@ A pattern that exceeds `MatchTimeout` does not end the scan: the remaining patte
 
 | Tier | Detects |
 |------|---------|
-| Low (Core) | Direct instruction override, role/persona hijacking (including "developer mode"), security bypass requests, forged assistant turns and chat-role markers followed by a directive, end sequence injection (chat-template tokens, fake role tags, bracketed frames, separator lines), instructions in HTML comments, variable expansion |
-| Medium (+Medium) | + System prompt extraction, jailbreak keywords, rule addition/modification, anti-harm coercion, contradiction ("your real instructions are...") |
-| High (+High) | + Framing attacks (hypothetical/fictional contexts), inversion/double-negative extraction, link injection, bare chat-role markers (`System:`, `User:` at the start of a line) |
+| Low (Core) | Direct instruction override, however it is worded ("ignore all of the previous instructions", "disregard your rules", "forget everything you were told"); personas without rules ("you are now DAN", "pretend you are an AI without restrictions", "developer mode enabled"); attempts to switch off the assistant's safeguards; chat-role markers followed by a directive, and forged assistant turns that start the answer; end sequence injection (chat-template tokens, fake role tags, bracketed frames, separator lines and headings that name the system or its instructions); instructions in HTML comments; variable expansion |
+| Medium (+Medium) | + System prompt extraction, forged assistant turns (`Assistant:` at the start of a line), jailbreak keywords and personas described as having no rules, rule addition, standing orders to obey ("from now on you must comply"), anti-harm coercion, contradiction ("your real instructions are...") |
+| High (+High) | + Plain role play ("pretend you are ...", "you are now a ..."), framing attacks (hypothetical/fictional contexts), inversion/double-negative extraction, link injection, bare chat-role markers (`System:`, `User:`, `AI:` at the start of a line), system-role JSON objects (`"role": "system"`), any standing order ("from now on you should ..."), bare "no restrictions" phrasing |
+
+The Low and Medium tiers are written to leave ordinary requests alone. What a user says about their own messages ("ignore my previous instructions, I changed my mind"), about a thing ("ignore the above email"), or negated ("don't forget the previous instructions") is not an override; a filter or restriction that is not the assistant's ("disable the filter in Excel", "a plan with no restrictions") is not a bypass; "what are your rules for returns" is not prompt extraction; `### System Requirements`, a PEM header and `Model: ThinkPad` at the start of a line are not frames or forged turns. Role play is the one deliberate trade: "pretend you are an interviewer" and "pretend you are my late grandmother" read the same to a pattern, so plain role play is only matched at High, where pasted transcripts, API payloads and standing preferences match too.
 
 ## Prompt Injection Detection (ONNX - StackOne Defender)
 
@@ -258,12 +260,13 @@ When `IncludeClassification` is true, blocked results include `Metadata` with:
 
 **How judge replies are read (all LLM rules).** The judge's reply is parsed tolerantly. These are all understood:
 - markdown emphasis and code markers;
-- `Verdict:`, `Answer:`, `Classification:` and `Result:` prefixes, including one on a line of its own;
-- a reason on the same line or on the lines below;
+- `Verdict:`, `Answer:`, `Classification:`, `Result:`, `Label:`, `Decision:` and similar prefixes, including one on a line of its own;
+- a reason on the same line or on the lines below, including one that starts with a negation word ("VIOLATION: no disclaimer was included");
+- a positive verdict on a later line, below a preamble such as "Here is my classification:";
 - reasoning in `<think>`, `<thinking>` or `<reasoning>` blocks, even when the opening tag is missing;
 - a JSON object with a `verdict`, `classification`, `answer` or `result` field.
 
-A reply that negates or questions its own finding ("PII: none", "INJECTION?", "SAFE: false"), or that has no verdict at all, is unparseable and goes through the rule's `errorBehavior`, which fails open by default. The error detail quotes the judge's text only when content capture (`AGENTGUARD_CAPTURE_CONTENT`) is on.
+A reply that negates or questions its own finding ("PII: none", "INJECTION - not found", "INJECTION?", "SAFE: false"), or that has no verdict at all, is unparseable and goes through the rule's `errorBehavior`, which fails open by default. A negative verdict is only read from the verdict line itself, never from further down: text the judge quotes from what it is judging can therefore cause a block, but not a pass. For the same reason a positive verdict on the opening line stands even when a closing reasoning tag appears later in the reply. The error detail quotes the judge's text only when content capture (`AGENTGUARD_CAPTURE_CONTENT`) is on.
 
 The conversation history given to a judge includes tool calls (name and arguments) and tool results, fenced like message text and capped in size: 1,000 characters per call's arguments, 2,000 per result, and 12,000 in all, with the most recent kept first. Custom `LlmGuardrailRule` subclasses get the same parsing from `ExtractVerdictLine`/`ClassifyVerdict`.
 
@@ -488,10 +491,13 @@ Order 22, Both phases. Detects API keys, tokens, connection strings, private key
 | Replacement | `string` | `[SECRET_REDACTED]` | Replacement text when redacting, inserted literally. Where the secret is a value - a quoted field, the password of a connection string or URI, a token assigned to a secret-like key - only the value is replaced, so a URI keeps its user name and host |
 | CustomPatterns | `IDictionary<string, string>` | {} | Additional patterns: label -> regex (culture-invariant). A pattern with a group named `secret` has only that group replaced when redacting |
 | MinHighEntropyLength | `int` | 20 | Shortest token `GenericHighEntropy` considers (at least 8). A value assigned to a secret-like key name (key, secret, token, password, pwd, auth, credential, ...) is considered from 12 characters |
+| OnError | `ErrorBehavior` | FailOpen | Outcome when a pattern timed out and nothing else was found: FailOpen (pass, with `IsError` set), Warn (pass, surfaced as a warning), FailClosed (block) |
 
-A private key matches as a whole block - from the `-----BEGIN ... PRIVATE KEY-----` line (RSA, EC, DSA, OPENSSH, ENCRYPTED, PKCS#8, PGP's `PRIVATE KEY BLOCK` and `SECRET KEY BLOCK`, and the SSH2 `---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----` form) through the matching end line, or to the end of the text when that line is missing - so `Redact` removes the key body, not just its header. Placeholder values (`${VAR}`, `<password>`, `****`, `changeme`, `YOUR_API_KEY`) are not reported.
+A private key matches as a whole block - from the `-----BEGIN ... PRIVATE KEY-----` line (RSA, EC, DSA, OPENSSH, ENCRYPTED, PKCS#8, PGP's `PRIVATE KEY BLOCK` and `SECRET KEY BLOCK`, and the SSH2 `---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----` form) through the matching end line, or to the end of the text when that line is missing - so `Redact` removes the key body, not just its header. Placeholder values (`${VAR}`, `$VAR`, `<password>`, `%PASSWORD%`, `****`, `changeme`, `YOUR_API_KEY`, `your-api-key-here`) are not reported, and neither is a value that is code rather than a key (`apiKey: process.env.OPENAI_API_KEY`). A value has to be a placeholder as a whole: a password that only starts like one (`$uperS3cret!9`, `Enterprise2024!`, `(Tr0ub4dor&3)`) is a password. In a `key=value` connection string the password may be quoted and may come before or after the host key; `SharedAccessKey=` and `AccountKey=` values are reported as well.
 
-`GenericHighEntropy` flags a token when its entropy reaches 90% (85% next to a secret-like key name) of what a random string of the same length and character set - hex, single-case alphanumeric, base64 or printable ASCII - typically has. Hex strings and tokens inside URLs only count when they are assigned to a secret-like key name. Git SHAs, UUIDs, labelled and Subresource Integrity hashes, data URIs and base64 images, long words and camelCase/PascalCase identifiers, file paths, URLs without credentials and JWTs (left to the JWT pattern) are not flagged. A bare 40-character AWS secret key or 32-character hex Azure subscription key is only flagged when related context (`aws`, `secret_access_key`, `azure`, `ocp-apim-subscription-key`, ...) appears in the text. When blocked, result metadata includes `detectedCategories` (e.g. `aws-access-key`, `private-key`).
+A pattern that exceeds its 200 ms match timeout is skipped and the others still run. When nothing else was found, the result is an error decided by `OnError` (default `FailOpen`) with `IsError` set, not a clean pass; when `Redact` did replace something, the result also has `IsError` and `IsWarning` set, since the text may hold what the unfinished pattern looks for.
+
+`GenericHighEntropy` flags a token when its entropy reaches 90% (85% next to a secret-like key name) of what a random string of the same length and character set - hex, single-case alphanumeric, base64 or printable ASCII - typically has. Hex strings and tokens inside URLs only count when they are assigned to a secret-like key name. Git SHAs, UUIDs, labelled and Subresource Integrity hashes, data URIs and base64 images, long words and camelCase/PascalCase identifiers, file paths, URLs without credentials and JWTs (left to the JWT pattern) are not flagged. A bare 40-character AWS secret key is only flagged when related context appears in the text (`aws` as a word, `secret access key` however it is separated, or an `AKIA...` access key id) and it is not forty hex digits, which is a commit id. A 32-character hex Azure subscription key is only flagged when a key is named (`ocp-apim-subscription-key`, `subscription key`, `AZURE_..._KEY`, `api key`, ...). When blocked, result metadata includes `detectedCategories` (e.g. `aws-access-key`, `private-key`).
 
 ## PII Detection (LLM)
 
@@ -526,6 +532,8 @@ Order 40, Input or Output phase.
 Strategies: `Reject`, `Truncate`, `Warn`
 
 Counts tokens with `Microsoft.ML.Tokenizers`, using the cl100k_base encoding by default. `TokenLimitOptions.TokenizerModel` takes an encoding name (cl100k_base, o200k_base, o200k_harmony, p50k_base, p50k_edit, r50k_base) or an OpenAI model name such as `gpt-4o`, matched case-insensitively; an unknown name, or a `MaxTokens` below 1, throws when the rule is constructed. The cl100k_base and o200k_base vocabularies ship with the package. For an encoding whose vocabulary isn't installed (p50k and r50k), the rule estimates the count per script: about 4 ASCII characters per token, one token per CJK, Kana, Hangul, fullwidth or emoji character, and 2 characters per token for other text. `Truncate` cuts at a token boundary and never exceeds the budget.
+
+Text is tokenized in bounded segments, so the check stays linear in the length of the text even for one long unbroken run. Text longer than `MaxTokens` × `TokenLimitOptions.MaxCharactersPerToken` (default 16) characters - and at least 16,384 characters - is over the limit without being tokenized: `Reject` blocks it, `Truncate` cuts it to that length first, `Warn` reports its character count.
 
 ## Content Safety
 
@@ -595,10 +603,11 @@ Order 45, Output phase. Inspects the arguments of the tool calls a model makes f
 
 Each argument is checked as written and in up to three percent-decoded layers (UTF-8 escapes, overlong forms and `%uXXXX` included):
 
-- **SSRF** - hosts are parsed rather than pattern-matched. The parser handles userinfo, ports and brackets, any scheme, backslash forms and `//host`. Hosts are percent-decoded and fullwidth-folded, and a trailing dot is dropped. Decimal, hex, octal and short IPv4 forms (`2130706433`, `0x7f000001`, `0177.0.0.1`, `127.1`) resolve to their address, and an IPv4 address embedded in IPv6 (mapped, compatible or NAT64) is judged as that IPv4 address. Loopback, private, link-local, `0.0.0.0/8` and `100.64.0.0/10` addresses are internal. So are the cloud metadata endpoints, `localhost`, and the `.internal`, `.local`, `.corp`, `.lan`, `.intranet` and `.home.arpa` suffixes. No DNS lookups are made.
-- **Path traversal** - backslashes are normalized, repeated slashes collapsed, and `..;` segments count as parent segments. A traversal that only appears after decoding (`..%2f`, `%2e%2e%5c`, `%252e%252e%252f`) is reported as encoded traversal.
-- **Command injection** - command chaining with `&&`, `||`, `;`, `|` or `&`, and raw or encoded line breaks. A command name that is also an English word (`rm`, `cat`, `find`, ...) only counts when an option, path, `$`, quote or URL follows it, or when it ends the line.
-- **SQL injection** - quoted and unquoted tautologies (`' OR 'a'='a`, `1 OR 1=1`, `1 or true`). `EXEC` needs a call shape (`EXEC(`, `EXEC sp_`, `EXEC xp_`, `EXEC @`), and a trailing `--` comment counts only right after a quote. Prose such as "execute the plan", a search for "C#", or an email signature is not flagged.
+- **SSRF** - hosts are parsed rather than pattern-matched. The parser handles userinfo (everything up to the last `@`, sub-delimiters such as `;`, `,` and `!` included, however long), ports and brackets, any scheme, backslash forms and `//host`; a URL with a `scheme://` authority is also checked with the host `System.Uri` resolves. Hosts are percent-decoded and fullwidth-folded, and a trailing dot is dropped. Decimal, hex, octal and short IPv4 forms (`2130706433`, `0x7f000001`, `0177.0.0.1`, `127.1`) resolve to their address, and an IPv4 address embedded in IPv6 (mapped, compatible or NAT64) is judged as that IPv4 address. Loopback, private, link-local, `0.0.0.0/8` and `100.64.0.0/10` addresses are internal. So are the cloud metadata endpoints, `localhost`, and the `.internal`, `.local`, `.corp`, `.lan`, `.intranet` and `.home.arpa` suffixes. No DNS lookups are made.
+- **Path traversal** - backslashes are normalized, repeated slashes collapsed, `.` segments dropped (`/etc/./passwd` is `/etc/passwd`), and `..;` segments count as parent segments. Sensitive paths are matched after `name/..` pairs are resolved. A traversal that only appears after decoding (`..%2f`, `%2e%2e%5c`, `%252e%252e%252f`) is reported as encoded traversal.
+- **Command injection** - command chaining with `&&`, `||`, `;`, `|` or `&`, and raw or encoded line breaks; the command may be written with its path (`; /bin/rm -rf`). A command name that is also an English word or a column name (`rm`, `cat`, `find`, `id`, `python`, ...) only counts when an option, path, `$`, quote or URL follows it, or when it ends the line after an operator; alone on a line only `id`, `ls`, `env` and the shells do. `$(...)` and backticks count when what they hold starts with a command, so `$(document)`, `$(VERSION)` and "use `git status` to check" are left alone.
+- **Code injection** - calls, not words: `compile(` without a space, the `Function` constructor rather than the word "function", `subprocess.check_output(`, `importlib.import_module(`, `require('child_process')`.
+- **SQL injection** - quoted and unquoted tautologies (`' OR 'a'='a`, `1 OR 1=1`, `1 or true`). `EXEC` needs a call shape (`EXEC(`, `EXEC sp_`, `EXEC xp_`, `EXEC @`), and a trailing `--` comment counts only right after a quote. After a `;` the keyword has to open a statement (`; UPDATE users SET`, `; SELECT ... FROM`, `; DROP TABLE`), and `INSERT INTO` / `DELETE FROM` have to be followed by a name rather than "my" or "the". Prose such as "execute the plan", "I fixed the bug; update the ticket", "delete from my calendar the 3pm meeting", a search for "C#", or an email signature is not flagged.
 
 When blocked, result metadata includes `violationCount`, `toolName`, `argumentName`, `category` and `violations`.
 
@@ -626,7 +635,7 @@ Order 47, Output phase. Detects indirect prompt injection in incoming tool call 
 | Action | `ToolResultAction` | Block | `Block` to reject, `Sanitize` to remove each injection from the start of its line to the end of its paragraph |
 | ToolRiskProfiles | `IDictionary<string, ToolRiskLevel>` | {} | Per-tool risk overrides (Low/Medium/High) |
 | SkippedTools | `ISet<string>` | {} | Tool names to skip entirely |
-| StripUnicodeControl | `bool` | true | Strip control, zero-width and Unicode tag characters from the results handed back. The patterns run on both the raw and the stripped text, so hidden characters are detected either way |
+| StripUnicodeControl | `bool` | true | Strip control, zero-width, invisible-operator and Unicode tag characters from the results handed back. The patterns run on both the raw and the stripped text, so hidden characters are detected either way |
 | DetectEncodedPayloads | `bool` | true | Decode encoded runs - base64/base64url (24+ characters, fixed-width wrapped blocks rejoined), hex (contiguous or `\x` escapes) and percent-encoding - that decode to text, and run the same patterns on the decoded text. Findings carry `Encoding` (`base64`, `hex` or `percent`) and a description suffix such as "(base64-encoded)"; with `Sanitize`, the encoded run is replaced. JWTs are not decoded. At most 1,024 runs and 256K encoded characters are decoded per result |
 | SanitizationReplacement | `string` | `[FILTERED]` | Replacement text when sanitizing, inserted literally |
 | CustomPatterns | `IReadOnlyList<(string, string, Regex)>` | [] | Additional (category, description, pattern) tuples |
@@ -635,9 +644,13 @@ Order 47, Output phase. Detects indirect prompt injection in incoming tool call 
 
 | Tier | Risk Level | Patterns Checked |
 |------|-----------|-----------------|
-| Core | All tools | Role hijacking, instruction override, ChatML/XML/JSON role token injection, HTML comment injection, zero-width chars, text direction overrides, Unicode tag characters, data exfiltration URLs, prompt leak instructions, security bypass and uncensored-mode requests, command execution directives, separator injection |
-| Medium | Medium + High | Markdown hidden text and image payloads, `[INST]`/`[SYS]` blocks, hex, Unicode-escape and HTML-entity encoded content, ROT13 instructions, fullwidth-character obfuscation |
-| High | High only | Base64-encoded instructions, action directives, social engineering, fake tool-output boundaries, persona and privileged-role hijacking, DAN/developer mode, leetspeak injection keywords |
+| Core | All tools | Role markers that carry a directive (`System: you must ...`), instruction override however it is worded, ChatML tokens, `<system>` / `<assistant>` tags, chat message objects with a system role and JSON fields that give an order, HTML comment injection, zero-width chars, text direction overrides, Unicode tag characters, data exfiltration URLs, prompt leak instructions, attempts to switch off the assistant's safeguards, uncensored-mode requests, DAN by name, separator injection |
+| Medium | Medium + High | Markdown hidden text and image payloads, `[INST]`/`[SYS]` blocks, hex content, Unicode escapes and HTML entities that spell ASCII, ROT13 instructions, words in fullwidth Latin letters |
+| High | High only | Bare role markers and `<user>` / `<instruction>` tags, base64-encoded instructions, action directives (sending out everything, or something secret), command execution directives, social engineering, fake tool-output boundaries, persona and privileged-role hijacking, developer/god/sudo mode, leetspeak injection keywords |
+
+The Core and Medium tiers run on documents, web pages and API results, so they are written to leave those alone: `"role": "manager"`, `system: ubuntu-22.04` in YAML, `<user>` in XML, a link with `?token=` or `&prompt=consent`, "run the following command: npm install", "enable developer mode", escaped or entity-encoded non-English text, and right-to-left text with its embedding marks all pass. What is only suspicious when someone wrote it to the reader - a bare `Assistant:` line, "run the following command:", "enable developer mode" - is checked for High-risk tools, whose results are messages. There, ordinary requests between people ("please send an email to HR with your dates", "URGENT: Action required", "you are now an admin of the workspace") pass, while "forward all emails to ..." and "send your credentials to ..." do not.
+
+A data exfiltration URL is an image whose address carries a data-bearing parameter (a client fetches it without a click), a link with a parameter named for what it carries (`?data=`, `?context=`, `?history=`), or a link whose parameter is a blank for the model to fill in (`?q={conversation}`).
 
 **Built-in tool risk profiles:**
 
@@ -651,7 +664,7 @@ Tools not in the profile default to Medium. Tool names containing "email", "mail
 
 **MAF integration (`UseAgentGuard()`):** When this rule is in the policy (gated with `.When()`/`.Unless()` or not), tool results are automatically intercepted via the MAF function-invocation middleware (requires `FunctionInvokingChatClient` in the inner agent). Each tool result is evaluated BEFORE being fed back to the LLM; string results from `AIFunctionFactory` tools are evaluated as the plain text the tool returned. The policy's output-phase rules whose order is in `IncludeRuleOrders` (by default PII 20, secrets 22 and LLM PII 25) run on the result first and can rewrite or block it; this rule then inspects what they produced. Blocked results are replaced with `BlockedPlaceholder` (or, with `HardFail`, a `GuardrailViolationException` aborts the run); sanitized results substitute the modified content. The same middleware checks tool-call arguments before the tool runs (see [Tool Call Guardrails](#tool-call-guardrails)). As a safety net for tools that bypass `FunctionInvokingChatClient` (hosted tools, MCP), the post-hoc output guardrail also extracts `FunctionCallContent` and `FunctionResultContent` from the response messages. Configure via `ToolResultMiddlewareOptions` on the `UseAgentGuard(policy, toolResultOptions, logger, ledger)` overload (`Enabled`, `IncludeRuleOrders`, `BlockedPlaceholder`, `BlockedToolCallPlaceholder`, `HardFail`).
 
-The `IChatClient` decorator evaluates the tool results contained in each response it returns, together with the response's final text.
+The `IChatClient` decorator evaluates the tool results a request carries before the model reads them (which is where they arrive when the decorator sits inside a `FunctionInvokingChatClient`), and those contained in each response it returns, together with the response's final text.
 
 **Manual usage:** Place tool results in `GuardrailContext.Properties["ToolResults"]` as `IReadOnlyList<ToolResultEntry>`. When the rule sanitizes an injection, or strips hidden characters from a result it lets through, the cleaned results are written to `Properties["SanitizedToolResults"]` - use them in place of the originals. Violations are stored in `Properties["ToolResultViolations"]`.
 
@@ -661,7 +674,9 @@ The `IChatClient` decorator evaluates the tool results contained in each respons
 
 `.ValidateOutput(predicate, message)` / `.ValidateInput(predicate, message)`
 
-Order 100. Simple predicate-based assertions.
+Order 100. Simple predicate-based assertions. `ValidateOutput` judges answer text, so a response that is only tool calls - which has none - is not put to it.
+
+Custom output rules do run for such a response, so that a rule of yours can inspect its tool calls: `GuardrailContext.Text` is then empty and `GuardrailContext.Properties` holds `ChatMessageGuard.ToolContentOnlyKey`. A rule that judges the answer should pass when that key is present.
 
 ## Output Policy Enforcement (LLM)
 
@@ -672,12 +687,12 @@ Checks whether the agent's response violates a custom policy constraint. Useful 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | PolicyDescription | `string` | *(required)* | Natural language description of the policy to enforce |
-| Action | `OutputPolicyAction` | Block | `Block` to reject, `Warn` to pass with metadata |
+| Action | `OutputPolicyAction` | Block | `Block` to reject, `Warn` to pass and surface the finding as a warning |
 | SystemPrompt | `string?` | *(built-in)* | Custom system prompt (use `{policy}` placeholder) |
 
 - **Order**: 55, **Phase**: Output
 - Response format: `COMPLIANT` or `VIOLATION|reason:<reason>`
-- When `Action = Warn`, the result passes but includes `Metadata["violation_reason"]` and `Metadata["policy"]`
+- When `Action = Warn`, the result passes with `IsWarning` set and a reason, so it is logged at Warning level and listed in `GuardrailPipelineResult.Warnings`; it includes `Metadata["violation_reason"]` and `Metadata["policy"]`
 
 ---
 
@@ -689,13 +704,13 @@ Detects hallucinated facts and claims not supported by the conversation context.
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| Action | `GroundednessAction` | Block | `Block` to reject, `Warn` to pass with metadata |
+| Action | `GroundednessAction` | Block | `Block` to reject, `Warn` to pass and surface the finding as a warning |
 | SystemPrompt | `string?` | *(built-in)* | Custom system prompt (use `{context}` placeholder) |
 
 - **Order**: 65, **Phase**: Output
 - Response format: `GROUNDED` or `UNGROUNDED|claim:<ungrounded claim>`
 - Common knowledge facts are considered grounded even without conversation context
-- When `Action = Warn`, the result passes but includes `Metadata["ungrounded_claim"]`
+- When `Action = Warn`, the result passes with `IsWarning` set and a reason (logged at Warning level, listed in `GuardrailPipelineResult.Warnings`) and includes `Metadata["ungrounded_claim"]`
 
 ---
 
@@ -707,14 +722,14 @@ Detects verbatim or near-verbatim reproduction of copyrighted material (song lyr
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| Action | `CopyrightAction` | Block | `Block` to reject, `Warn` to pass with metadata |
+| Action | `CopyrightAction` | Block | `Block` to reject, `Warn` to pass and surface the finding as a warning |
 | SystemPrompt | `string?` | *(built-in)* | Custom system prompt override |
 
 - **Order**: 75, **Phase**: Output
 - Response format: `CLEAN` or `COPYRIGHT|source:<source>|type:<lyrics|book|article|code|poem|speech|other>`
 - Short quotes (<15 words) for commentary are acceptable and not flagged
 - Public domain works and common phrases are not flagged
-- When `Action = Warn`, the result passes but includes `Metadata["copyright_source"]` and `Metadata["copyright_type"]`
+- When `Action = Warn`, the result passes with `IsWarning` set and a reason (logged at Warning level, listed in `GuardrailPipelineResult.Warnings`) and includes `Metadata["copyright_source"]` and `Metadata["copyright_type"]`
 
 ---
 
@@ -751,10 +766,10 @@ var guarded = executor.WithGuardrails(b => b.RedactPii(),
 
 Chat payloads are guarded message by message, the way the agent middleware guards them, without the text extractor:
 - `ChatMessage` - its text is checked and rewritten in place, keeping attachments, other contents, role, author, id, timestamp and additional properties.
-- Message collections on the way in (`List<ChatMessage>`, `ChatMessage[]`, or an interface `List<ChatMessage>` implements) and `AgentResponse` - every user message is guarded as in a request: an earlier blocked one is replaced with the removed-message placeholder, and a block of the newest one blocks.
+- Message collections on the way in (`List<ChatMessage>`, `ChatMessage[]`, or an interface `List<ChatMessage>` implements) and `AgentResponse` - every message is guarded as in a request, whatever its role: a blocked one is replaced with the removed-message placeholder, and a block of the newest user message blocks.
 - Message collections and `AgentResponse` on the way out - every assistant message is guarded as in a response, including its reasoning and tool calls.
 - In both directions the newest message with text is also checked whatever its role, since an executor's input is often another agent's response and its output a prompt for the next one.
-- The result is rebuilt as the declared type; an `AgentResponse` keeps its ids, usage, finish reason, continuation token and additional properties. A collection type that can't be rebuilt (e.g. `Collection<ChatMessage>`) goes on unchanged, with a warning logged.
+- The result is rebuilt as the declared type; an `AgentResponse` keeps its ids, usage, finish reason, continuation token and additional properties. A collection type that can't be rebuilt (e.g. `Collection<ChatMessage>`) is blocked when a rule rewrote it, with a warning logged (see `AllowUnappliedModifications` below).
 
 ### `ITextExtractor`
 
@@ -762,7 +777,7 @@ Bridges every other workflow message type to a string for guardrail evaluation, 
 - `string` → the string itself
 - `ChatMessage` → `.Text`
 - `AgentResponse` and `IEnumerable<ChatMessage>` → the text of every message, one per line
-- Objects with a public `Text` property → reflection
+- Objects with a public `Text` property → reflection; when the property is settable or `init`, `TryRebuild` rebuilds the message as a copy (a record's `with` copy, or a struct copy) with the rewritten `Text`
 - Fallback → `ToString()`
 
 A guarded executor asks the extractor only for types other than the chat payloads above; the chat branches serve custom extractors that delegate to it.
@@ -782,7 +797,7 @@ Thrown when a guardrail blocks within a workflow executor. MAF surfaces this as 
 When a guardrail modifies text (e.g. PII redaction), the modification is applied to the message:
 - `string` → replaced directly
 - Chat payloads → rewritten as described above, keeping everything but the changed text
-- Other types → rebuilt by the extractor's `TryRebuild` when it supports the type; otherwise passed through unchanged, with a warning logged (the modification could not be applied)
+- Other types → rebuilt by the extractor's `TryRebuild` when it supports the type; otherwise the message is blocked (`GuardrailViolationException`) with a warning logged, so a redaction that can't be applied never lets the original through. Set `GuardedExecutorOptions.AllowUnappliedModifications = true` to pass the original on unchanged instead, with the warning
 
 ---
 

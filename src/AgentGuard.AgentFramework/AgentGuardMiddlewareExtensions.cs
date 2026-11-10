@@ -105,7 +105,7 @@ public static class AgentGuardMiddlewareExtensions
     /// conversation (<see cref="ChatClientAgentSession.ConversationId"/>). With other chat history
     /// providers, or a conversation the service stores, the saved history keeps the unguarded response;
     /// when it must never hold unguarded output, guard the agent's <see cref="IChatClient"/> instead
-    /// (<see cref="GuardrailChatClientExtensions.UseAgentGuard(IChatClient, IGuardrailPolicy, ILogger{GuardrailPipeline}?, IGuardrailLedger?)"/>):
+    /// (<see cref="GuardrailChatClientExtensions.UseAgentGuard(IChatClient, IGuardrailPolicy, ILogger{GuardrailPipeline}?, IGuardrailLedger?, IEnumerable{ChatRole}?)"/>):
     /// the <see cref="GuardrailChatClient"/> decorator runs before the agent saves the response, except
     /// for progressive streaming, which delivers text before it is checked.
     /// </para>

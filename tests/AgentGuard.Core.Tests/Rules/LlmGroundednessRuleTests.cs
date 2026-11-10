@@ -56,6 +56,8 @@ public class LlmGroundednessRuleTests
         var result = await rule.EvaluateAsync(Ctx("Statistics show 95% improvement."));
 
         result.IsBlocked.Should().BeFalse();
+        result.IsWarning.Should().BeTrue("a warn-only finding has to surface in the pipeline's warnings and log");
+        result.Reason.Should().Contain("warn only");
         result.Metadata.Should().NotBeNull();
         result.Metadata!["ungrounded_claim"].Should().Be("invented a statistic");
     }
