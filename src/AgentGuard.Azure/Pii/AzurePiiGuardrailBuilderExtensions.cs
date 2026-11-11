@@ -1,3 +1,5 @@
+using System.Reflection;
+using AgentGuard.Core.Abstractions;
 using AgentGuard.Core.Builders;
 using AgentGuard.Pii;
 using Azure.Core;
@@ -37,20 +39,41 @@ public static class AzurePiiGuardrailBuilderExtensions
     /// at most 5,000 characters, one call at a time, each subject to <see cref="AzurePiiOptions.Timeout"/>
     /// and <see cref="AzurePiiOptions.FailOpen"/>; the spans are mapped back onto the full text.
     /// </para>
+    /// <para>
+    /// A failed Azure call (unreachable resource, failure status, timeout, a per-document error) is
+    /// never a clean result, and neither is a long text of which only some windows could be analyzed.
+    /// With <see cref="AzurePiiOptions.FailOpen"/> on (the default) the text continues with what was
+    /// found - by the local recognizers and in the windows that were analyzed - redacted, and the
+    /// rule's result has <see cref="GuardrailResult.IsError"/> set, so the pipeline logs and records
+    /// that the detection was incomplete. With it off the rule blocks the text with an error result.
+    /// </para>
+    /// <para>
+    /// <see cref="AzurePiiOptions.SupportedEntities"/> takes the engine's entity types
+    /// (<c>PERSON</c>, <c>EMAIL_ADDRESS</c>) and, ignoring case, the Azure category names the category
+    /// map translates to them (<c>Person</c>, <c>Email</c>). An Azure category the map does not cover
+    /// is accepted under its own name once <see cref="AzurePiiOptions.PiiCategories"/> requests it.
+    /// </para>
     /// </summary>
     /// <param name="builder">The policy builder.</param>
     /// <param name="azureOptions">Azure PII detector configuration (endpoint, auth, supported entities, domain, timeout, fail-open).</param>
     /// <param name="piiOptions">Optional PII detection/anonymization configuration (entities, countries, operators).</param>
     /// <returns>The builder for chaining.</returns>
     /// <exception cref="ArgumentOutOfRangeException">Thrown when <see cref="AzurePiiOptions.ConfidenceThreshold"/> is NaN or outside 0.0-1.0.</exception>
+    /// <exception cref="ArgumentException">
+    /// <see cref="AzurePiiOptions.SupportedEntities"/> is empty or names something the Azure detector
+    /// cannot return under the category map in use. The message lists the accepted names.
+    /// </exception>
     public static GuardrailPolicyBuilder RedactPiiWithAzure(
         this GuardrailPolicyBuilder builder,
         AzurePiiOptions azureOptions,
         PiiOptions? piiOptions = null)
     {
+        ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(azureOptions);
-        ValidateConfidenceThreshold(azureOptions);
-        return builder.RedactPiiWithAzure(new AzurePiiClient(azureOptions), azureOptions, piiOptions);
+
+        // the options are checked before a client, and the HttpClient it owns, exists to be leaked
+        var prepared = Prepare(azureOptions);
+        return AddRule(builder, new AzurePiiClient(prepared), prepared, piiOptions);
     }
 
     /// <summary>
@@ -64,6 +87,7 @@ public static class AzurePiiGuardrailBuilderExtensions
     /// <param name="piiOptions">Optional PII detection/anonymization configuration.</param>
     /// <returns>The builder for chaining.</returns>
     /// <exception cref="ArgumentOutOfRangeException">Thrown when <see cref="AzurePiiOptions.ConfidenceThreshold"/> is NaN or outside 0.0-1.0.</exception>
+    /// <exception cref="ArgumentException"><see cref="AzurePiiOptions.SupportedEntities"/> is empty or holds a name the Azure detector cannot return.</exception>
     public static GuardrailPolicyBuilder RedactPiiWithAzure(
         this GuardrailPolicyBuilder builder,
         AzurePiiClient client,
@@ -73,8 +97,13 @@ public static class AzurePiiGuardrailBuilderExtensions
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(client);
         ArgumentNullException.ThrowIfNull(azureOptions);
-        ValidateConfidenceThreshold(azureOptions);
 
+        return AddRule(builder, client, Prepare(azureOptions), piiOptions);
+    }
+
+    private static GuardrailPolicyBuilder AddRule(
+        GuardrailPolicyBuilder builder, AzurePiiClient client, AzurePiiOptions azureOptions, PiiOptions? piiOptions)
+    {
         // resolve the analysis language the same way PiiRule will (piiOptions?.Language ?? "en") and pin
         // the recognizer to it, so the registry never filters the Azure recognizer out on a mismatch.
         var language = piiOptions?.Language ?? "en";
@@ -97,7 +126,14 @@ public static class AzurePiiGuardrailBuilderExtensions
             new LemmaContextAwareEnhancer(contextMatchingMode: piiOptions?.ContextMatchingMode ?? ContextMatchingMode.Substring),
             defaultScoreThreshold: 0);
 
-        builder.AddRule(new PiiRule(piiOptions, analyzer: engine, ownedResources: owned));
+        // the recognizer reports an Azure failure it swallows (see Prepare) and throws one it does
+        // not; either way the rule turns it into an error result of the matching kind
+        var ruleOptions = new PiiRuleOptions
+        {
+            OnError = azureOptions.FailOpen ? ErrorBehavior.FailOpen : ErrorBehavior.FailClosed,
+        };
+
+        builder.AddRule(new PiiRule(piiOptions, analyzer: engine, ownedResources: owned, ruleOptions: ruleOptions));
         return builder;
     }
 
@@ -158,6 +194,59 @@ public static class AzurePiiGuardrailBuilderExtensions
         return builder.RedactPiiWithAzure(
             new AzurePiiOptions { Endpoint = endpoint, SubscriptionKey = subscriptionKey, SupportedEntities = entities },
             piiOptions);
+    }
+
+    /// <summary>
+    /// The options the recognizer runs with: the caller's, with the supported entity names checked
+    /// and put in the engine's spelling, and with a failure the recognizer swallows reported to the
+    /// rule before the caller's own <see cref="AzurePiiOptions.OnError"/> sees it.
+    /// </summary>
+    private static AzurePiiOptions Prepare(AzurePiiOptions azureOptions)
+    {
+        ValidateConfidenceThreshold(azureOptions);
+
+        if (azureOptions.SupportedEntities is not { Count: > 0 })
+        {
+            throw new ArgumentException(
+                "SupportedEntities must name at least one entity type for Azure to detect.", nameof(azureOptions));
+        }
+
+        // what the recognizer can hand back: the entity types the category map translates to, and
+        // a requested category the map leaves alone, which comes back under its own name
+        var categoryMap = azureOptions.CategoryMap ?? AzurePiiCategoryMap.Default;
+        var unmappedCategories = (azureOptions.PiiCategories ?? [])
+            .Where(category => !categoryMap.Keys.Contains(category, StringComparer.OrdinalIgnoreCase));
+
+        var entities = PiiEntityNames.Resolve(
+            azureOptions.SupportedEntities,
+            categoryMap.Values.Concat(unmappedCategories),
+            categoryMap,
+            nameof(azureOptions));
+
+        var callback = azureOptions.OnError;
+        Action<Exception> onError = exception =>
+        {
+            PiiRule.ReportRecognizerFailure("Azure AI Language PII detection", exception);
+            callback?.Invoke(exception);
+        };
+
+        // copied property by property rather than through an initializer, so a setting a newer
+        // version of the options type adds is carried over instead of reset to its default
+        var prepared = Activator.CreateInstance<AzurePiiOptions>();
+        foreach (var property in typeof(AzurePiiOptions).GetProperties(BindingFlags.Public | BindingFlags.Instance))
+        {
+            if (property is not { CanRead: true, SetMethod.IsPublic: true })
+                continue;
+
+            property.SetValue(prepared, property.Name switch
+            {
+                nameof(AzurePiiOptions.SupportedEntities) => entities,
+                nameof(AzurePiiOptions.OnError) => onError,
+                _ => property.GetValue(azureOptions),
+            });
+        }
+
+        return prepared;
     }
 
     // a threshold above 1.0 would drop every entity the service returns, and a NaN one would filter

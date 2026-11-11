@@ -110,9 +110,12 @@ public sealed class LlmGroundednessRule : LlmGuardrailRule
 
         if (_options.Action == GroundednessAction.Warn)
         {
+            // let through, but surfaced: logged at Warning and listed in the pipeline result's Warnings
             return new GuardrailResult
             {
                 IsBlocked = false,
+                IsWarning = true,
+                Reason = $"Response contains ungrounded claim (warn only): {claim}",
                 Metadata = new Dictionary<string, object>
                 {
                     ["ungrounded_claim"] = claim

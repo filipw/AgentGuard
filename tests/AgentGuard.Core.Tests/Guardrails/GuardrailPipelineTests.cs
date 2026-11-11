@@ -91,4 +91,24 @@ public class GuardrailPipelineTests
         public int Order { get; } = 100;
         public ValueTask<GuardrailResult> EvaluateAsync(GuardrailContext context, CancellationToken ct = default) => eval(context);
     }
+
+    // a rule set to warn lets the text through, and the pipeline has to say so
+    [Fact]
+    public async Task ShouldListAWarnOnlyFinding_InWarnings()
+    {
+        var policy = new GuardrailPolicy("test",
+        [
+            new AgentGuard.Core.Rules.TokenLimits.TokenLimitRule(new()
+            {
+                MaxTokens = 2,
+                OverflowStrategy = AgentGuard.Core.Rules.TokenLimits.TokenOverflowStrategy.Warn
+            })
+        ]);
+        var pipeline = new GuardrailPipeline(policy, NullLogger<GuardrailPipeline>.Instance);
+
+        var result = await pipeline.RunAsync(new GuardrailContext { Text = "one two three four five six", Phase = GuardrailPhase.Input });
+
+        result.IsBlocked.Should().BeFalse();
+        result.Warnings.Should().ContainSingle().Which.Reason.Should().Contain("Token limit exceeded");
+    }
 }

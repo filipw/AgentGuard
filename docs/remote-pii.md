@@ -146,7 +146,7 @@ record DetectRequest(string Text, string Language, string[] Entities);
 
 The `language` in each request is the calling rule's `PiiOptions.Language` (default `en`). A rejected
 request counts as a remote failure, so with `FailOpen = true` (the default) that request falls back
-to local-only redaction.
+to local-only redaction and the rule's result is marked as an error.
 
 `samples/RemotePii` in this repo demonstrates the same idea in-process (no separate container) so you
 can see the pattern end to end without standing up a real sidecar; it falls back to a naive regex
@@ -160,14 +160,19 @@ new RemotePiiOptions
     Endpoint = endpoint,
     SupportedEntities = [PiiEntities.Person, PiiEntities.Address],
     Timeout = TimeSpan.FromSeconds(3),   // default 10 s; enforced independently of the caller's own cancellation
-    FailOpen = true,                     // default: swallow remote failures, keep local-only redaction
+    FailOpen = true,                     // default: a remote failure doesn't block; local redaction is kept and the result is an error
     AuthHeaderName = "Authorization",
     AuthHeaderValue = $"Bearer {token}",
 }
 ```
 
 Set `FailOpen = false` if losing name/address detection for a request is worse than blocking it - in
-that mode a remote failure propagates out of `PiiRule.EvaluateAsync` instead of being swallowed.
+that mode a remote failure makes `PiiRule` return a blocking error result.
+
+`SupportedEntities` is checked when the rule is built: names are matched ignoring case against the
+`PiiEntities` constants and the keys and values of `CategoryMap`, and an unknown name throws
+`ArgumentException`. A detector that returns entity types of its own needs a `CategoryMap` entry for
+each, which can only be set in code - the `RemotePii` configuration type has no setting for it.
 
 ## Azure AI Language detector
 
@@ -243,17 +248,26 @@ Category mapping (Azure category -> canonical entity type) is built in and overr
   longer text is analyzed in windows of up to 5,000 characters (500 overlap, split at whitespace where
   possible), one call at a time, and the spans are mapped back onto the full text with duplicates from
   the overlaps removed. Each window is its own call with its own timeout and fail-open handling, so an
-  unresponsive endpoint can cost up to one timeout per window.
+  unresponsive endpoint can cost up to one timeout per window. A failed window makes the rule's result
+  an error; the names found in the other windows are still redacted.
 
 ## Fail-open behavior (both detectors)
 
 Both `RemotePiiRecognizer` and `AzurePiiRecognizer` fail open by default (`FailOpen = true`): a remote
 exception, non-success response, or timeout is caught, optionally reported via `OnError`, and yields no
-results for that request - **not** a thrown exception. For Azure, an error the service reports for the
+results for that request - **not** a thrown exception. The failure is not lost, though: with
+`RedactPiiWithRemote()` / `RedactPiiWithAzure()` the rule's result has `IsError` set (with the
+failure in `errorDetail`), so it is logged, counted and recorded in the ledger instead of passing for
+fully checked text. For Azure, an error the service reports for the
 document inside an otherwise successful response counts as a failure too. Local recognizers
 (regex/checksum, and GLiNER if configured) still run and still redact what they can. Cancellation of
 the caller's own token always propagates regardless of `FailOpen`, so it isn't mistaken for a remote
-failure. Set `FailOpen = false` if partial detection is unacceptable for your use case.
+failure. Set `FailOpen = false` if partial detection is unacceptable for your use case: a remote failure
+then blocks the text with an error result.
+
+One gap remains upstream: the detector clients in `TasmanianDevil.Remote` and `TasmanianDevil.Azure`
+read a successful response that lacks its entity list as "no entities found", so a malformed 200 is
+not reported as a failure.
 
 ## Hosting / configuration binding
 

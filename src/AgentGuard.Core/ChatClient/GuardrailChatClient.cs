@@ -10,7 +10,9 @@ namespace AgentGuard.Core.ChatClient;
 
 /// <summary>
 /// An <see cref="IChatClient"/> decorator that runs AgentGuard guardrails transparently on every call.
-/// Input guardrails run on every user message in the request (see <see cref="ChatMessageGuard"/>)
+/// Input guardrails run on every message in the request except those of a trusted role (by default the
+/// system role, see <see cref="DefaultTrustedRoles"/>), and tool-result guardrails on every tool result
+/// it carries (see <see cref="ChatMessageGuard.GuardInputAsync"/>),
 /// before the inner client is invoked; output guardrails run on each assistant message of the
 /// response, on its reasoning and on its tool calls and tool results. Conversation history is
 /// automatically propagated to all rules from the messages passed to <see cref="GetResponseAsync"/> and
@@ -20,8 +22,10 @@ namespace AgentGuard.Core.ChatClient;
 /// <para>
 /// Place the decorator inside a <c>FunctionInvokingChatClient</c> (add it after
 /// <c>UseFunctionInvocation()</c> on a <see cref="ChatClientBuilder"/>) to have tool-call guardrails
-/// vet every model turn before its tool calls run; outside it, they can only flag calls that have
-/// already been executed.
+/// vet every model turn before its tool calls run, and tool-result guardrails check each result as
+/// part of the next request, before the model reads it. Outside it, tool calls can only be flagged
+/// after they have run and tool results after the model has read them; sanitized results are still
+/// substituted in the returned response.
 /// </para>
 /// <para>
 /// A streamed response is buffered and guarded exactly like a non-streamed one, then replayed: as it
@@ -48,12 +52,17 @@ public sealed class GuardrailChatClient : DelegatingChatClient
     /// Optional decision ledger. Supply it to record one hash-chained entry per evaluation; the
     /// decorator builds its own pipeline, so a ledger registered in DI does not reach it otherwise.
     /// </param>
+    /// <param name="trustedRoles">
+    /// Roles whose request messages the input rules skip (see <see cref="ChatMessageGuard.WithTrustedRoles"/>).
+    /// Null means <see cref="DefaultTrustedRoles"/> (the system role); pass an empty list to check every role.
+    /// </param>
     public GuardrailChatClient(
         IChatClient innerClient,
         IGuardrailPolicy policy,
         ILogger<GuardrailPipeline>? logger = null,
-        IGuardrailLedger? ledger = null)
-        : this(innerClient, policy, logger, ledger, ownsPolicy: false)
+        IGuardrailLedger? ledger = null,
+        IEnumerable<ChatRole>? trustedRoles = null)
+        : this(innerClient, policy, logger, ledger, ownsPolicy: false, trustedRoles)
     {
     }
 
@@ -62,13 +71,28 @@ public sealed class GuardrailChatClient : DelegatingChatClient
         IGuardrailPolicy policy,
         ILogger<GuardrailPipeline>? logger,
         IGuardrailLedger? ledger,
-        bool ownsPolicy)
+        bool ownsPolicy,
+        IEnumerable<ChatRole>? trustedRoles = null)
         : base(innerClient)
     {
         _policy = policy ?? throw new ArgumentNullException(nameof(policy));
         _ownsPolicy = ownsPolicy;
-        _guard = new ChatMessageGuard(policy, logger, ledger);
+
+        _guard = new ChatMessageGuard(policy, logger, ledger).WithTrustedRoles(trustedRoles ?? DefaultTrustedRoles);
     }
+
+    /// <summary>
+    /// The roles the decorator trusts when the caller names none: <see cref="ChatRole.System"/>.
+    /// </summary>
+    /// <remarks>
+    /// With an <see cref="IChatClient"/> the system prompt usually travels in the message list, and it
+    /// is the application's own text. Judged as user input it is easily taken for an injection (it is
+    /// a set of instructions) and replaced, leaving the model without it. A caller who can write system
+    /// messages needs no injection to steer the model, so input rules are the wrong defence there: an
+    /// application that accepts transcripts from clients has to drop the system messages they send, or
+    /// pass an empty <c>trustedRoles</c> to have every role checked.
+    /// </remarks>
+    public static IReadOnlyList<ChatRole> DefaultTrustedRoles { get; } = [ChatRole.System];
 
     /// <summary>
     /// Well-known key used in <see cref="ChatResponseUpdate.AdditionalProperties"/> to carry

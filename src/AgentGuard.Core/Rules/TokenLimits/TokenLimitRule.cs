@@ -1,5 +1,6 @@
 using System.Text;
 using AgentGuard.Core.Abstractions;
+using AgentGuard.Core.Rules.Normalization;
 using Microsoft.ML.Tokenizers;
 
 namespace AgentGuard.Core.Rules.TokenLimits;
@@ -46,11 +47,39 @@ public sealed class TokenLimitOptions
     /// token for everything else.
     /// </remarks>
     public string TokenizerModel { get; init; } = "cl100k_base";
+
+    /// <summary>
+    /// A text longer than <see cref="MaxTokens"/> times this many characters (and longer than 16,384
+    /// characters, which are always counted) is treated as over the limit without being tokenized.
+    /// Must be greater than zero. Default: 16.
+    /// </summary>
+    /// <remarks>
+    /// Tokenizing costs time that grows faster than the text on long runs without a word boundary, so
+    /// the cap keeps one oversized message from tying up a thread. Ordinary text averages three to five
+    /// characters per token; the default leaves room for whitespace-heavy text such as indented code.
+    /// With <see cref="TokenOverflowStrategy.Truncate"/> the text is first cut to the cap and then
+    /// truncated on a token boundary as usual.
+    /// </remarks>
+    public int MaxCharactersPerToken { get; init; } = 16;
 }
 
 /// <summary>Enforces a token budget on input or output. Order 40.</summary>
+/// <remarks>
+/// Text longer than <see cref="TokenLimitOptions.MaxTokens"/> × <see cref="TokenLimitOptions.MaxCharactersPerToken"/>
+/// characters is over the limit without being tokenized, and text below that is tokenized in bounded
+/// segments, so the cost of the check stays linear in the length of the text. The decoded views a
+/// normalization rule hands to later rules (see <see cref="InputNormalizationRule.DecodedViewsKey"/>) are
+/// not counted: the limit applies to the text the model receives.
+/// </remarks>
 public sealed class TokenLimitRule : IGuardrailRule
 {
+    // tokenizing a run without a pre-tokenizer boundary is quadratic in its length, so text is
+    // tokenized in segments of about this many characters
+    private const int SegmentLength = 1024;
+
+    // text up to this long is always tokenized, however small the budget: counting it is cheap
+    private const int MinimumCharacterCap = 16 * 1024;
+
     // the encoding names Microsoft.ML.Tokenizers loads with CreateForEncoding; anything else is a model name
     private static readonly string[] EncodingNames =
         ["cl100k_base", "o200k_base", "o200k_harmony", "p50k_base", "p50k_edit", "r50k_base"];
@@ -71,6 +100,9 @@ public sealed class TokenLimitRule : IGuardrailRule
         if (_options.MaxTokens <= 0)
             throw new ArgumentOutOfRangeException(nameof(options), _options.MaxTokens, "MaxTokens must be greater than zero.");
 
+        if (_options.MaxCharactersPerToken <= 0)
+            throw new ArgumentOutOfRangeException(nameof(options), _options.MaxCharactersPerToken, "MaxCharactersPerToken must be greater than zero.");
+
         _tokenizer = LoadTokenizer(_options.TokenizerModel, nameof(options));
     }
 
@@ -89,18 +121,44 @@ public sealed class TokenLimitRule : IGuardrailRule
     {
         if (string.IsNullOrWhiteSpace(context.Text)) return ValueTask.FromResult(GuardrailResult.Passed());
 
+        // the decoded views are not what the model receives, so they don't count against its budget
+        if (context.Properties.ContainsKey(InputNormalizationRule.DecodedViewKey))
+            return ValueTask.FromResult(GuardrailResult.Passed());
+
+        var text = context.Text;
         var max = _options.MaxTokens;
-        var count = CountTokens(context.Text);
+
+        // too long to be within the budget at any plausible density: not worth tokenizing
+        var characterCap = Math.Max((long)max * _options.MaxCharactersPerToken, MinimumCharacterCap);
+        if (text.Length > characterCap)
+            return ValueTask.FromResult(OverCharacterCap(text, (int)Math.Min(characterCap, int.MaxValue), cancellationToken));
+
+        var count = CountTokens(text, cancellationToken);
         if (count <= max) return ValueTask.FromResult(GuardrailResult.Passed());
 
         return ValueTask.FromResult(_options.OverflowStrategy switch
         {
             TokenOverflowStrategy.Reject => GuardrailResult.Blocked($"Text exceeds token limit ({count} > {max}).", GuardrailSeverity.Medium),
-            TokenOverflowStrategy.Truncate => Truncated(context.Text, count),
-            TokenOverflowStrategy.Warn => new() { IsBlocked = false, Reason = $"Token limit exceeded ({count} > {max}).",
+            TokenOverflowStrategy.Truncate => Truncated(text, $"Text truncated from {count} to {{0}} tokens.", cancellationToken),
+            TokenOverflowStrategy.Warn => new() { IsBlocked = false, IsWarning = true, Reason = $"Token limit exceeded ({count} > {max}).",
                 Metadata = new Dictionary<string, object> { ["token_count"] = count, ["max_tokens"] = max } },
             _ => GuardrailResult.Passed()
         });
+    }
+
+    private GuardrailResult OverCharacterCap(string text, int characterCap, CancellationToken cancellationToken)
+    {
+        var max = _options.MaxTokens;
+        return _options.OverflowStrategy switch
+        {
+            TokenOverflowStrategy.Reject => GuardrailResult.Blocked(
+                $"Text exceeds token limit ({text.Length} characters is more than {max} tokens can hold).", GuardrailSeverity.Medium),
+            TokenOverflowStrategy.Truncate => Truncated(
+                text[..SafeCut(text, characterCap)], $"Text truncated from {text.Length} characters to {{0}} tokens.", cancellationToken),
+            TokenOverflowStrategy.Warn => new() { IsBlocked = false, IsWarning = true, Reason = $"Token limit exceeded ({text.Length} characters is more than {max} tokens can hold).",
+                Metadata = new Dictionary<string, object> { ["character_count"] = text.Length, ["max_tokens"] = max } },
+            _ => GuardrailResult.Passed()
+        };
     }
 
     /// <summary>
@@ -137,29 +195,67 @@ public sealed class TokenLimitRule : IGuardrailRule
         new($"TokenizerModel '{name}' is not a tiktoken encoding ({string.Join(", ", EncodingNames)}) or a model name the tokenizer knows.",
             paramName, inner);
 
-    private int CountTokens(string text) => _tokenizer?.CountTokens(text) ?? EstimateTokens(text);
+    private int CountTokens(string text, CancellationToken cancellationToken)
+    {
+        if (_tokenizer is null)
+            return EstimateTokens(text);
 
-    private GuardrailResult Truncated(string text, int count)
+        var count = 0;
+        foreach (var (start, length) in Segments(text))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            count += _tokenizer.CountTokens(text.AsSpan(start, length));
+        }
+
+        return count;
+    }
+
+    private GuardrailResult Truncated(string text, string reasonFormat, CancellationToken cancellationToken)
     {
         var (truncated, kept) = _tokenizer is null
             ? TruncateByEstimate(text, _options.MaxTokens)
-            : TruncateWithTokenizer(_tokenizer, text, _options.MaxTokens);
+            : TruncateWithTokenizer(_tokenizer, text, _options.MaxTokens, cancellationToken);
 
-        return GuardrailResult.Modified(truncated, $"Text truncated from {count} to {kept} tokens.");
+        return GuardrailResult.Modified(truncated, string.Format(System.Globalization.CultureInfo.InvariantCulture, reasonFormat, kept));
     }
 
     /// <summary>
     /// Cuts <paramref name="text"/> on a token boundary so that it holds at most
     /// <paramref name="maxTokens"/> tokens. The cut never splits a character.
     /// </summary>
-    private static (string Text, int Tokens) TruncateWithTokenizer(TiktokenTokenizer tokenizer, string text, int maxTokens)
+    private static (string Text, int Tokens) TruncateWithTokenizer(
+        TiktokenTokenizer tokenizer, string text, int maxTokens, CancellationToken cancellationToken)
+    {
+        // whole segments are kept while they fit; only the segment the budget runs out in is cut on a
+        // token boundary, so the tokenizer never works on more than one segment at a time
+        var keptLength = 0;
+        var keptTokens = 0;
+        foreach (var (start, length) in Segments(text))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var tokens = tokenizer.CountTokens(text.AsSpan(start, length));
+            if (keptTokens + tokens > maxTokens)
+            {
+                var (cut, cutTokens) = TruncateSegment(tokenizer, text.Substring(start, length), maxTokens - keptTokens);
+                return (text[..start] + cut, keptTokens + cutTokens);
+            }
+
+            keptLength = start + length;
+            keptTokens += tokens;
+        }
+
+        return (text[..keptLength], keptTokens);
+    }
+
+    private static (string Text, int Tokens) TruncateSegment(TiktokenTokenizer tokenizer, string segment, int maxTokens)
     {
         // the prefix is counted again on its own, since encoding it alone can merge differently at the
         // cut; the budget shrinks by any excess until the prefix fits
         for (var budget = maxTokens; budget > 0;)
         {
-            var index = tokenizer.GetIndexByTokenCount(text, budget, out var normalized, out _);
-            var prefix = (normalized ?? text)[..index];
+            var index = tokenizer.GetIndexByTokenCount(segment, budget, out var normalized, out _);
+            var prefix = (normalized ?? segment)[..index];
             var tokens = tokenizer.CountTokens(prefix);
             if (tokens <= maxTokens)
                 return (prefix, tokens);
@@ -169,6 +265,47 @@ public sealed class TokenLimitRule : IGuardrailRule
 
         return ("", 0);
     }
+
+    /// <summary>
+    /// Splits <paramref name="text"/> into segments of about <see cref="SegmentLength"/> characters.
+    /// A segment ends before a space that is followed by a letter or digit - where the tiktoken
+    /// pre-tokenizer splits anyway, so the segments' token counts add up to the text's. A run with no
+    /// such place for a whole segment's length is cut where it reaches it, never inside a character.
+    /// </summary>
+    internal static IEnumerable<(int Start, int Length)> Segments(string text)
+    {
+        var start = 0;
+        while (text.Length - start > SegmentLength)
+        {
+            var end = start + SegmentLength;
+
+            // the last natural boundary in the window, if there is one
+            var cut = -1;
+            for (var i = end; i > start; i--)
+            {
+                if (text[i] == ' ' && i + 1 < text.Length && char.IsLetterOrDigit(text[i + 1]))
+                {
+                    cut = i;
+                    break;
+                }
+            }
+
+            if (cut < 0)
+                cut = SafeCut(text, end);
+
+            yield return (start, cut - start);
+            start = cut;
+        }
+
+        if (start < text.Length)
+            yield return (start, text.Length - start);
+    }
+
+    // a cut at index that doesn't separate a surrogate pair
+    private static int SafeCut(string text, int index) =>
+        index > 0 && index < text.Length && char.IsLowSurrogate(text[index]) && char.IsHighSurrogate(text[index - 1])
+            ? index - 1
+            : index;
 
     /// <summary>The estimate used when the tokenizer's data is not deployed.</summary>
     internal static int EstimateTokens(string text)

@@ -15,29 +15,44 @@ namespace AgentGuard.AgentFramework.Workflows;
 /// <c>GuardedExecutor</c> variants.
 /// </summary>
 /// <remarks>
+/// <para>
+/// Messages are guarded on the way in. On the way out the guard covers a handler's result and, through the
+/// context it hands the inner executor (<see cref="GuardEmissions"/>), every message the inner executor
+/// sends or yields.
+/// </para>
+/// <para>
 /// Chat payloads are guarded without the <see cref="ITextExtractor"/>. A <see cref="ChatMessage"/> has its
 /// text checked and rewritten in place. A message collection or an <see cref="AgentResponse"/> goes
 /// through the <see cref="ChatMessageGuard"/> the way the agent middleware guards a request (on the way in)
 /// or a response (on the way out), and the newest message with text is checked whatever its role. Every
 /// other message goes through the extractor.
+/// </para>
 /// </remarks>
 internal sealed class ExecutorGuard
 {
+    /// <summary>The name of the span that records the verdict on a result or on a sent or yielded message.</summary>
+    public const string EmissionSpan = AgentGuardTelemetry.Spans.ExecutorGuard + " output";
+
     private readonly string _executorId;
     private readonly ChatMessageGuard _chatGuard;
     private readonly ITextExtractor _textExtractor;
     private readonly ILogger? _log;
+    private readonly bool _allowUnappliedModifications;
 
     public ExecutorGuard(string executorId, IGuardrailPolicy policy, GuardedExecutorOptions? options)
     {
         _executorId = executorId;
         _textExtractor = options?.TextExtractor ?? DefaultTextExtractor.Instance;
         _log = options?.Logger;
+        _allowUnappliedModifications = options?.AllowUnappliedModifications ?? false;
 
         // one guard per executor: its pipeline evaluates every message the executor sees, and it keeps the
         // verdicts reached for the earlier messages of a conversation
         _chatGuard = new ChatMessageGuard(policy, _log is null ? null : new LoggerWrapper(_log), options?.Ledger);
     }
+
+    /// <summary>The id of the inner executor, which violations and spans are reported under.</summary>
+    public string ExecutorId => _executorId;
 
     /// <summary>
     /// Guards a message and returns the one to continue with: the original, or a copy with the policy's
@@ -87,8 +102,45 @@ internal sealed class ExecutorGuard
     }
 
     /// <summary>
+    /// Wraps the workflow's context for the inner executor, so that what the inner executor sends and yields
+    /// through it is output-guarded (see <see cref="GuardedWorkflowContext"/>).
+    /// </summary>
+    /// <param name="context">The context the workflow runtime handed to the guarded executor.</param>
+    /// <returns>The context to hand to the inner executor.</returns>
+    public IWorkflowContext GuardEmissions(IWorkflowContext context) => new GuardedWorkflowContext(context, this);
+
+    /// <summary>
+    /// Guards a message the inner executor sends or yields and returns the one to forward: the original, or a
+    /// copy with the policy's rewrite applied. It is guarded as a handler's result is, the handling of a
+    /// rewrite that can't be applied included.
+    /// </summary>
+    /// <param name="message">The message, possibly wrapped in a <see cref="PortableValue"/> the executor relays.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The message to forward.</returns>
+    /// <exception cref="GuardrailViolationException">The policy blocked the message.</exception>
+    public async ValueTask<object> GuardEmissionAsync(object message, CancellationToken cancellationToken)
+    {
+        // a missing message is the workflow runtime's to reject
+        if (message is null)
+            return message!;
+
+        var portable = message as PortableValue;
+        var subject = portable?.As<object>() ?? message;
+
+        // the runtime routes a message by its own type, so that is the type a rewrite has to be rebuilt as
+        var guarded = await GuardAsync(subject, subject.GetType(), GuardrailPhase.Output, EmissionSpan, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (ReferenceEquals(guarded, subject))
+            return message;
+
+        return portable is null ? guarded! : new PortableValue(guarded!);
+    }
+
+    /// <summary>
     /// Guards a message of one of the inner executor's other handled types on its way in, then hands it to the
-    /// inner executor, which routes it to its own handler.
+    /// inner executor, which routes it to its own handler. What the handler sends, yields and returns is
+    /// output-guarded.
     /// </summary>
     /// <param name="inner">The inner executor.</param>
     /// <param name="message">The message, wrapped in a <see cref="PortableValue"/> when it came through a catch-all route.</param>
@@ -109,8 +161,8 @@ internal sealed class ExecutorGuard
         var guarded = await GuardAsync(subject, handledType ?? subject.GetType(), GuardrailPhase.Input, spanName, cancellationToken)
             .ConfigureAwait(false);
 
-        await InnerExecutor.ExecuteAsync(inner, ReferenceEquals(guarded, subject) ? message : guarded!, context, cancellationToken)
-            .ConfigureAwait(false);
+        await InnerExecutor.ExecuteAsync(
+            inner, ReferenceEquals(guarded, subject) ? message : guarded!, GuardEmissions(context), cancellationToken).ConfigureAwait(false);
     }
 
     private ValueTask<Verdict> EvaluateAsync(
@@ -139,17 +191,37 @@ internal sealed class ExecutorGuard
         if (result.IsBlocked)
             return Verdict.Blocked(result.BlockingResult!);
 
-        return result.WasModified
-            ? Verdict.Modified(Rebuild(message, messageType, result.FinalText))
-            : Verdict.Passed(message);
+        if (!result.WasModified)
+            return Verdict.Passed(message);
+
+        if (TryRebuild(message, messageType, result.FinalText, out var rebuilt))
+            return Verdict.Modified(rebuilt);
+
+        GuardedExecutorLog.ModificationDropped(_log, _executorId, messageType.Name, _allowUnappliedModifications);
+        return Unapplied(message, messageType, result);
     }
 
-    // the guard covers the user messages on the way in and the assistant messages on the way out, as it
-    // does for an agent; the newest message with text is checked whatever its role, since an executor's
-    // input is often another agent's response and its output a prompt for the next one
+    // the guard covers every message on the way in and the assistant messages on the way out, as it does
+    // for an agent; the newest message with text blocks whatever its role, since an executor's input is
+    // often another agent's response and its output a prompt for the next one
     private async ValueTask<Verdict> EvaluateMessagesAsync(
         object message, IReadOnlyList<ChatMessage> messages, Type messageType, GuardrailPhase phase, CancellationToken cancellationToken)
     {
+        if (phase == GuardrailPhase.Input)
+        {
+            // the input guard judges every message but only blocks on the newest user message; any other
+            // newest message blocks here first, and the guard then applies the verdict reached for it
+            var newestInput = LastIndexWithText(messages);
+            if (newestInput >= 0 && messages[newestInput].Role != ChatRole.User)
+            {
+                var check = await _chatGuard.EvaluateInputMessageAsync(
+                    CreateContext(messages[newestInput].Text, phase, messageType, messages), cancellationToken).ConfigureAwait(false);
+
+                if (check.IsBlocked)
+                    return Verdict.Blocked(check.BlockingResult!);
+            }
+        }
+
         var result = phase == GuardrailPhase.Input
             ? await _chatGuard.GuardInputAsync(messages, cancellationToken: cancellationToken).ConfigureAwait(false)
             : await _chatGuard.GuardOutputAsync(messages, cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -161,9 +233,8 @@ internal sealed class ExecutorGuard
         var modified = result.WasModified;
 
         var newest = LastIndexWithText(guarded);
-        var guardedRole = phase == GuardrailPhase.Input ? ChatRole.User : ChatRole.Assistant;
 
-        if (newest >= 0 && guarded[newest].Role != guardedRole)
+        if (phase == GuardrailPhase.Output && newest >= 0 && guarded[newest].Role != ChatRole.Assistant)
         {
             var check = await _chatGuard.Pipeline.RunAsync(
                 CreateContext(guarded[newest].Text, phase, messageType, guarded), cancellationToken).ConfigureAwait(false);
@@ -180,9 +251,33 @@ internal sealed class ExecutorGuard
             }
         }
 
-        return modified
-            ? Verdict.Modified(RebuildMessages(message, messageType, guarded))
-            : Verdict.Passed(message);
+        if (!modified)
+            return Verdict.Passed(message);
+
+        if (TryRebuildMessages(message, messageType, guarded, out var rebuilt))
+            return Verdict.Modified(rebuilt);
+
+        GuardedExecutorLog.MessagesModificationDropped(_log, _executorId, messageType.Name, _allowUnappliedModifications);
+        return Unapplied(message, messageType, result: null);
+    }
+
+    // a rewrite that can't be applied blocks the message, unless the executor was told to let the
+    // original through: passing it on unchanged would deliver exactly what a rule meant to remove
+    private Verdict Unapplied(object message, Type messageType, GuardrailPipelineResult? result)
+    {
+        if (_allowUnappliedModifications)
+            return Verdict.Passed(message);
+
+        var modifiedBy = result?.AllResults.LastOrDefault(r => r.IsModified)?.RuleName;
+        return Verdict.Blocked(new GuardrailResult
+        {
+            IsBlocked = true,
+            RuleName = modifiedBy ?? "unapplied-modification",
+            Reason = $"A guardrail rewrote the {messageType.Name}, but the rewrite can't be applied to it, so it was blocked " +
+                "rather than passed on unchanged. Implement ITextExtractor.TryRebuild for this type, or set " +
+                "GuardedExecutorOptions.AllowUnappliedModifications to pass the original on.",
+            Severity = GuardrailSeverity.High
+        });
     }
 
     private GuardrailContext CreateContext(
@@ -198,29 +293,33 @@ internal sealed class ExecutorGuard
             }
         };
 
-    // applies the rewritten text to the message; a message that can't be rebuilt goes on unchanged
-    private object Rebuild(object message, Type messageType, string text)
+    // applies the rewritten text to the message
+    private bool TryRebuild(object message, Type messageType, string text, out object rebuilt)
     {
         switch (message)
         {
             case string:
-                return text;
+                rebuilt = text;
+                return true;
             case ChatMessage chatMessage:
-                return GuardrailChatContent.WithText(chatMessage, text);
+                rebuilt = GuardrailChatContent.WithText(chatMessage, text);
+                return true;
         }
 
-        if (_textExtractor.TryRebuild(message, text, out var rebuilt) && messageType.IsInstanceOfType(rebuilt))
-            return rebuilt;
+        if (_textExtractor.TryRebuild(message, text, out var fromExtractor) && messageType.IsInstanceOfType(fromExtractor))
+        {
+            rebuilt = fromExtractor;
+            return true;
+        }
 
-        // the pipeline reported the rewrite as applied, so dropping it must not go unnoticed
-        GuardedExecutorLog.ModificationDropped(_log, _executorId, messageType.Name);
-        return message;
+        rebuilt = message;
+        return false;
     }
 
     // puts the guarded messages back in the shape the executor declared
-    private object RebuildMessages(object message, Type messageType, IReadOnlyList<ChatMessage> messages)
+    private static bool TryRebuildMessages(object message, Type messageType, IReadOnlyList<ChatMessage> messages, out object rebuilt)
     {
-        object? rebuilt = message switch
+        object? candidate = message switch
         {
             AgentResponse response => new AgentResponse([.. messages])
             {
@@ -239,11 +338,14 @@ internal sealed class ExecutorGuard
             _ => null
         };
 
-        if (rebuilt is not null && messageType.IsInstanceOfType(rebuilt))
-            return rebuilt;
+        if (candidate is not null && messageType.IsInstanceOfType(candidate))
+        {
+            rebuilt = candidate;
+            return true;
+        }
 
-        GuardedExecutorLog.MessagesModificationDropped(_log, _executorId, messageType.Name);
-        return message;
+        rebuilt = message;
+        return false;
     }
 
     private static int LastIndexWithText(IReadOnlyList<ChatMessage> messages)
@@ -272,24 +374,44 @@ internal static partial class GuardedExecutorLog
 {
     [LoggerMessage(
         Level = LogLevel.Warning,
-        Message = "Guardrail modified the text for executor '{ExecutorId}', but a {MessageType} can't be rebuilt from text, so the change could NOT be applied and the original value was passed through. Implement ITextExtractor.TryRebuild for this type, or use string, ChatMessage or chat message collection messages.")]
-    private static partial void LogModificationDropped(ILogger logger, string executorId, string messageType);
+        Message = "Guardrail modified the text for executor '{ExecutorId}', but a {MessageType} can't be rebuilt from text, so the change could NOT be applied and the original value was passed through (AllowUnappliedModifications is set). Implement ITextExtractor.TryRebuild for this type, or use string, ChatMessage or chat message collection messages.")]
+    private static partial void LogModificationPassedThrough(ILogger logger, string executorId, string messageType);
 
     [LoggerMessage(
         Level = LogLevel.Warning,
-        Message = "Guardrail modified the chat messages for executor '{ExecutorId}', but a {MessageType} can't be rebuilt from them, so the change could NOT be applied and the original value was passed through. Declare the messages as List<ChatMessage>, ChatMessage[] or an interface List<ChatMessage> implements.")]
-    private static partial void LogMessagesModificationDropped(ILogger logger, string executorId, string messageType);
+        Message = "Guardrail modified the text for executor '{ExecutorId}', but a {MessageType} can't be rebuilt from text, so the message was blocked. Implement ITextExtractor.TryRebuild for this type, use string, ChatMessage or chat message collection messages, or set AllowUnappliedModifications to pass the original on.")]
+    private static partial void LogModificationBlocked(ILogger logger, string executorId, string messageType);
 
-    public static void ModificationDropped(ILogger? logger, string executorId, string messageType)
+    [LoggerMessage(
+        Level = LogLevel.Warning,
+        Message = "Guardrail modified the chat messages for executor '{ExecutorId}', but a {MessageType} can't be rebuilt from them, so the change could NOT be applied and the original value was passed through (AllowUnappliedModifications is set). Declare the messages as List<ChatMessage>, ChatMessage[] or an interface List<ChatMessage> implements.")]
+    private static partial void LogMessagesModificationPassedThrough(ILogger logger, string executorId, string messageType);
+
+    [LoggerMessage(
+        Level = LogLevel.Warning,
+        Message = "Guardrail modified the chat messages for executor '{ExecutorId}', but a {MessageType} can't be rebuilt from them, so the message was blocked. Declare the messages as List<ChatMessage>, ChatMessage[] or an interface List<ChatMessage> implements, or set AllowUnappliedModifications to pass the original on.")]
+    private static partial void LogMessagesModificationBlocked(ILogger logger, string executorId, string messageType);
+
+    public static void ModificationDropped(ILogger? logger, string executorId, string messageType, bool passedThrough)
     {
-        if (logger is not null)
-            LogModificationDropped(logger, executorId, messageType);
+        if (logger is null)
+            return;
+
+        if (passedThrough)
+            LogModificationPassedThrough(logger, executorId, messageType);
+        else
+            LogModificationBlocked(logger, executorId, messageType);
     }
 
-    public static void MessagesModificationDropped(ILogger? logger, string executorId, string messageType)
+    public static void MessagesModificationDropped(ILogger? logger, string executorId, string messageType, bool passedThrough)
     {
-        if (logger is not null)
-            LogMessagesModificationDropped(logger, executorId, messageType);
+        if (logger is null)
+            return;
+
+        if (passedThrough)
+            LogMessagesModificationPassedThrough(logger, executorId, messageType);
+        else
+            LogMessagesModificationBlocked(logger, executorId, messageType);
     }
 }
 

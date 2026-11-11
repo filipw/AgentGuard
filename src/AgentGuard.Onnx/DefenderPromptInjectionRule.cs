@@ -18,7 +18,13 @@ namespace AgentGuard.Onnx;
 /// <para>
 /// Input longer than <see cref="DefenderPromptInjectionOptions.WindowSize"/> tokens is classified in
 /// overlapping windows so that no part of it goes unclassified; the input is blocked when any window
-/// is. Shorter input is classified in a single call.
+/// is. Shorter input is classified in a single call. A word longer than the tokenizer's per-word
+/// limit (100 characters), which the model would otherwise see as a single unknown token, is
+/// classified in pieces.
+/// </para>
+/// <para>
+/// Input the tokenizer or the model fails on is an error handled by
+/// <see cref="DefenderPromptInjectionOptions.OnError"/>; by default the rule fails closed and blocks it.
 /// </para>
 /// <para>
 /// The model ships in the Kyoto package that this package depends on - no separate download required.
@@ -32,11 +38,8 @@ public sealed class DefenderPromptInjectionRule : IGuardrailRule, IDisposable
     // the session adds [CLS] and [SEP] around the content tokens
     private const int SpecialTokenCount = 2;
 
-    private readonly IDisposable? _session;
-    private readonly Func<string, DefenderScore> _classify;
-    private readonly TextWindowSplitter _splitter;
+    private readonly WindowedClassifier<DefenderScore> _classifier;
     private readonly DefenderPromptInjectionOptions _options;
-    private int _disposed;
 
     /// <inheritdoc />
     public string Name => "defender-prompt-injection";
@@ -54,7 +57,8 @@ public sealed class DefenderPromptInjectionRule : IGuardrailRule, IDisposable
     /// <exception cref="ArgumentOutOfRangeException">
     /// Thrown when a threshold is NaN or outside 0.0-1.0, <see cref="DefenderPromptInjectionOptions.TemperatureT"/>
     /// is not a positive finite number, <see cref="DefenderPromptInjectionOptions.MaxTokenLength"/> leaves no
-    /// room for input tokens, or the window settings are invalid.
+    /// room for input tokens, the window settings are invalid, or
+    /// <see cref="DefenderPromptInjectionOptions.OnError"/> is not a defined value.
     /// </exception>
     /// <exception cref="FileNotFoundException">Thrown when a model or vocab file does not exist.</exception>
     public DefenderPromptInjectionRule(DefenderPromptInjectionOptions? options = null)
@@ -68,36 +72,57 @@ public sealed class DefenderPromptInjectionRule : IGuardrailRule, IDisposable
         // counts tokens exactly like the session's own tokenizer (same vocab and options), so that
         // input which fits in one window is recognised as such and classified in a single call
         var tokenizer = BertTokenizer.Create(vocabPath, new BertOptions { LowerCaseBeforeTokenization = true });
-        _splitter = WindowedClassification.CreateSplitter(
+        var contentTokenBudget = _options.MaxTokenLength - SpecialTokenCount;
+        var splitter = WindowedClassification.CreateSplitter(
             text => tokenizer.CountTokens(text),
-            _options.MaxTokenLength - SpecialTokenCount,
+            contentTokenBudget,
             _options.WindowSize,
             _options.WindowOverlap,
-            nameof(options));
+            nameof(options),
+            WordPieceTokenization.EncodesWithin(tokenizer, contentTokenBudget));
+        var wordBreaker = new LongWordBreaker(WordPieceTokenization.WordsWithinLimit(tokenizer), tokenizer.MaxInputCharsPerWord);
 
         var session = DefenderModelSession.Acquire(modelPath, vocabPath, _options.MaxTokenLength, _options.TemperatureT);
-        _session = session;
-        _classify = session.Classify;
+        _classifier = CreateClassifier(session.Classify, splitter, session, wordBreaker);
     }
 
     /// <summary>
     /// Internal constructor for testing - classifies with <paramref name="classify"/> and counts tokens
     /// with <paramref name="countTokens"/> instead of loading the model. <paramref name="session"/>, when
     /// given, stands in for the pooled session and is released by <see cref="Dispose"/>.
+    /// <paramref name="fitsSession"/> and <paramref name="wordBreaker"/> stand in for the checks the
+    /// real tokenizer provides.
     /// </summary>
     internal DefenderPromptInjectionRule(
         Func<string, DefenderScore> classify,
         TokenCounter countTokens,
         DefenderPromptInjectionOptions options,
-        IDisposable? session = null)
+        IDisposable? session = null,
+        SessionFitCheck? fitsSession = null,
+        LongWordBreaker? wordBreaker = null)
     {
         Validate(options);
         _options = options;
-        _classify = classify;
-        _session = session;
-        _splitter = WindowedClassification.CreateSplitter(
-            countTokens, options.MaxTokenLength - SpecialTokenCount, options.WindowSize, options.WindowOverlap, nameof(options));
+        var splitter = WindowedClassification.CreateSplitter(
+            countTokens, options.MaxTokenLength - SpecialTokenCount, options.WindowSize, options.WindowOverlap, nameof(options), fitsSession);
+        _classifier = CreateClassifier(classify, splitter, session, wordBreaker);
     }
+
+    private WindowedClassifier<DefenderScore> CreateClassifier(
+        Func<string, DefenderScore> classify, TextWindowSplitter splitter, IDisposable? session, LongWordBreaker? wordBreaker) =>
+        new(
+            this,
+            "Defender",
+            nameof(DefenderPromptInjectionOptions),
+            session,
+            classify,
+            score => ShouldBlock(score, _options.MainThreshold, _options.AuxThreshold),
+            score => score.Main,
+            splitter,
+            _options.MaxWindows,
+            _options.OnError,
+            wordBreaker,
+            lineBreaksAsSpaces: true);
 
     /// <summary>
     /// The multi-head decision rule: block when the main score clears its threshold and the aux
@@ -113,28 +138,8 @@ public sealed class DefenderPromptInjectionRule : IGuardrailRule, IDisposable
         GuardrailContext context,
         CancellationToken cancellationToken = default)
     {
-        // a disposed rule no longer holds a reference to the pooled session, which may already be freed
-        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
-
-        if (string.IsNullOrWhiteSpace(context.Text))
-            return ValueTask.FromResult(GuardrailResult.Passed());
-
-        if (!_splitter.TrySplit(context.Text, _options.MaxWindows, out var windows))
-        {
-            return ValueTask.FromResult(WindowedClassification.InputTooLong(
-                "Defender", nameof(DefenderPromptInjectionOptions), _options.MaxWindows));
-        }
-
-        var verdict = WindowedClassification.Classify(
-            context.Text,
-            windows,
-            _classify,
-            score => ShouldBlock(score, _options.MainThreshold, _options.AuxThreshold),
-            score => score.Main,
-            cancellationToken);
-
-        if (!verdict.IsBlocked)
-            return ValueTask.FromResult(GuardrailResult.Passed());
+        if (_classifier.Evaluate(context.Text, cancellationToken, out var verdict) is { } settled)
+            return ValueTask.FromResult(settled);
 
         var score = verdict.Score;
         var reason = verdict.IsWindowed
@@ -165,13 +170,11 @@ public sealed class DefenderPromptInjectionRule : IGuardrailRule, IDisposable
     /// <summary>
     /// Releases this rule's reference to the pooled ONNX inference session. The session is shared
     /// process-wide and freed when its last holder releases it, so the reference is released exactly
-    /// once: calling this again, from any thread, does nothing.
+    /// once: calling this again, from any thread, does nothing. An evaluation still running when this
+    /// is called finishes normally, and the reference is released when it does; evaluations started
+    /// afterwards throw <see cref="ObjectDisposedException"/>.
     /// </summary>
-    public void Dispose()
-    {
-        if (Interlocked.Exchange(ref _disposed, 1) == 0)
-            _session?.Dispose();
-    }
+    public void Dispose() => _classifier.Dispose();
 
     private static void Validate(DefenderPromptInjectionOptions options)
     {
@@ -182,6 +185,7 @@ public sealed class DefenderPromptInjectionRule : IGuardrailRule, IDisposable
         OptionValidation.RequireMaxTokenLength(options.MaxTokenLength, SpecialTokenCount, nameof(options));
         WindowedClassification.ValidateWindowOptions(
             options.WindowSize, options.WindowOverlap, options.MaxWindows, nameof(options));
+        OptionValidation.RequireErrorBehavior(options.OnError, nameof(options));
     }
 
     private static string ResolveModelPath(string? customPath, string fileName)

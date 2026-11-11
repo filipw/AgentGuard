@@ -28,7 +28,14 @@ namespace AgentGuard.Azure.Pii;
 /// <see cref="RuleConfiguration.UseManagedIdentity"/>, <see cref="RuleConfiguration.Domain"/>,
 /// <see cref="RuleConfiguration.TimeoutSeconds"/> and <see cref="RuleConfiguration.FailOpen"/>, plus
 /// the PII settings <c>PiiRedaction</c> honours: <see cref="RuleConfiguration.Replacement"/> and
-/// <see cref="RuleConfiguration.Countries"/>.
+/// <see cref="RuleConfiguration.Countries"/>. Any other setting on the rule entry is a configuration
+/// error, and so is an entity name that is neither an entity type Azure detects (<c>PERSON</c>,
+/// <c>EMAIL_ADDRESS</c>) nor, ignoring case, the Azure category behind one (<c>Person</c>, <c>Email</c>).
+/// </para>
+/// <para>
+/// With <c>FailOpen</c> left on, a failed Azure call lets the text through with what was found
+/// redacted and an error result (<c>IsError</c>) that the pipeline logs and records; with
+/// <c>"FailOpen": false</c> it blocks the text.
 /// </para>
 /// </remarks>
 public sealed class AzurePiiRuleFactory : IGuardrailRuleFactory
@@ -43,6 +50,18 @@ public sealed class AzurePiiRuleFactory : IGuardrailRuleFactory
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(configuration);
+
+        RuleSettings.EnsureOnly(
+            configuration,
+            nameof(RuleConfiguration.Endpoint),
+            nameof(RuleConfiguration.Entities),
+            nameof(RuleConfiguration.SubscriptionKey),
+            nameof(RuleConfiguration.UseManagedIdentity),
+            nameof(RuleConfiguration.Domain),
+            nameof(RuleConfiguration.TimeoutSeconds),
+            nameof(RuleConfiguration.FailOpen),
+            nameof(RuleConfiguration.Replacement),
+            nameof(RuleConfiguration.Countries));
 
         var endpoint = configuration.Endpoint
             ?? throw new InvalidOperationException("AzurePii requires Endpoint.");
@@ -62,24 +81,37 @@ public sealed class AzurePiiRuleFactory : IGuardrailRuleFactory
                 $"AzurePii: TimeoutSeconds must be at least 1, but was {configuration.TimeoutSeconds}."));
         }
 
-        builder.RedactPiiWithAzure(
-            new AzurePiiOptions
-            {
-                Endpoint = endpoint,
-                SupportedEntities = entities,
-                Domain = ParseDomain(configuration.Domain),
-                Timeout = TimeSpan.FromSeconds(configuration.TimeoutSeconds ?? 10),
-                FailOpen = configuration.FailOpen ?? true,
-                SubscriptionKey = useManagedIdentity ? null : configuration.SubscriptionKey,
-                TokenProvider = useManagedIdentity ? CreateManagedIdentityTokenProvider() : null,
-            },
-            // Entities above is what Azure is asked to detect, not a filter on what is redacted: the
-            // local recognizers keep detecting everything, as with the code-based overloads
-            new PiiOptions
-            {
-                Replacement = configuration.Replacement,
-                Countries = configuration.Countries is { Count: > 0 } ? configuration.Countries : null,
-            });
+        var azureOptions = new AzurePiiOptions
+        {
+            Endpoint = endpoint,
+            SupportedEntities = entities,
+            Domain = ParseDomain(configuration.Domain),
+            Timeout = TimeSpan.FromSeconds(configuration.TimeoutSeconds ?? 10),
+            FailOpen = configuration.FailOpen ?? true,
+            SubscriptionKey = useManagedIdentity ? null : configuration.SubscriptionKey,
+            TokenProvider = useManagedIdentity ? CreateManagedIdentityTokenProvider() : null,
+        };
+
+        try
+        {
+            builder.RedactPiiWithAzure(
+                azureOptions,
+                // Entities above is what Azure is asked to detect, not a filter on what is redacted: the
+                // local recognizers keep detecting everything, as with the code-based overloads
+                new PiiOptions
+                {
+                    Replacement = configuration.Replacement,
+                    Countries = configuration.Countries is { Count: > 0 } ? configuration.Countries : null,
+                });
+        }
+        catch (ArgumentException ex)
+        {
+            // a setting the builder rejects is a configuration error like the ones above
+            var message = ex.ParamName is null
+                ? ex.Message
+                : ex.Message.Replace($" (Parameter '{ex.ParamName}')", "", StringComparison.Ordinal);
+            throw new InvalidOperationException($"AzurePii: {message}", ex);
+        }
     }
 
     private static AzurePiiDomain ParseDomain(string? value)

@@ -112,9 +112,12 @@ public sealed class LlmOutputPolicyRule : LlmGuardrailRule
 
         if (_options.Action == OutputPolicyAction.Warn)
         {
+            // let through, but surfaced: logged at Warning and listed in the pipeline result's Warnings
             return new GuardrailResult
             {
                 IsBlocked = false,
+                IsWarning = true,
+                Reason = $"Response violates output policy (warn only): {reason}",
                 Metadata = new Dictionary<string, object>
                 {
                     ["violation_reason"] = reason,

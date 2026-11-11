@@ -86,6 +86,69 @@ public class AzurePiiRuleFactoryTests
         policy.Rules.Should().ContainSingle().Which.Name.Should().Be("pii");
     }
 
+    [Theory]
+    [InlineData("PERSON")]
+    [InlineData("Person")]
+    [InlineData("email")]
+    public void ShouldAcceptAnEntity_InTheEngineOrTheAzureSpelling(string entity)
+    {
+        var configuration = Configuration();
+        configuration.Entities = [entity];
+        var builder = new GuardrailPolicyBuilder();
+
+        new AzurePiiRuleFactory().Configure(builder, configuration);
+
+        using var policy = (GuardrailPolicy)builder.Build();
+        policy.Rules.Should().ContainSingle().Which.Name.Should().Be("pii");
+    }
+
+    [Theory]
+    [InlineData("EMAIL_ADRESS")]
+    [InlineData("Persn")]
+    public void ShouldRejectAnEntity_WhenAzureDoesNotDetectIt(string entity)
+    {
+        var configuration = Configuration();
+        configuration.Entities = ["PERSON", entity];
+
+        var act = () => new AzurePiiRuleFactory().Configure(new GuardrailPolicyBuilder(), configuration);
+
+        act.Should().Throw<InvalidOperationException>().WithMessage($"AzurePii: '{entity}' is not a PII entity type the detector finds*PERSON*");
+    }
+
+    [Fact]
+    public void ShouldRejectASetting_WhenTheRuleTypeDoesNotReadIt()
+    {
+        var configuration = Configuration();
+        configuration.AuthHeaderName = "X-Api-Key";
+
+        var act = () => new AzurePiiRuleFactory().Configure(new GuardrailPolicyBuilder(), configuration);
+
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("AzurePii: AuthHeaderName is not a setting of this rule type.*SubscriptionKey*");
+    }
+
+    [Fact]
+    public async Task ShouldReportAnError_WhenAzureCannotBeReached()
+    {
+        var result = await EvaluateAsync(Configuration(), "email john@example.com today");
+
+        result.IsError.Should().BeTrue();
+        result.IsBlocked.Should().BeFalse();
+        result.ModifiedText.Should().Be("email <EMAIL_ADDRESS> today");
+    }
+
+    [Fact]
+    public async Task ShouldBlockWithAnError_WhenAzureCannotBeReachedAndFailOpenIsOff()
+    {
+        var configuration = Configuration();
+        configuration.FailOpen = false;
+
+        var result = await EvaluateAsync(configuration, "email john@example.com today");
+
+        result.IsError.Should().BeTrue();
+        result.IsBlocked.Should().BeTrue();
+    }
+
     [Fact]
     public void ShouldRejectTheDomain_WhenItIsANumber()
     {

@@ -23,6 +23,10 @@ namespace AgentGuard.Onnx;
 /// input is classified in a single call.
 /// </para>
 /// <para>
+/// Input the tokenizer or the model fails on is an error handled by
+/// <see cref="OpirSafetyOptions.OnError"/>; by default the rule fails closed and blocks it.
+/// </para>
+/// <para>
 /// The model must be downloaded separately - see <c>eng/MODELS.md</c>. The official
 /// repo ships only PyTorch weights, so AgentGuard distributes a frozen-taxonomy ONNX export.
 /// </para>
@@ -34,12 +38,9 @@ public sealed class OpirSafetyRule : IGuardrailRule, IDisposable
     // the session surrounds the text with at least a one-token label prefix and a trailing [SEP]
     private const int MinSpecialTokenCount = 2;
 
-    private readonly IDisposable? _session;
-    private readonly Func<string, OpirScore> _classify;
+    private readonly WindowedClassifier<OpirScore> _classifier;
     private readonly IReadOnlyList<string> _labels;
-    private readonly TextWindowSplitter _splitter;
     private readonly OpirSafetyOptions _options;
-    private int _disposed;
 
     /// <inheritdoc />
     public string Name => "opir-content-safety";
@@ -59,7 +60,8 @@ public sealed class OpirSafetyRule : IGuardrailRule, IDisposable
     /// <exception cref="ArgumentOutOfRangeException">
     /// Thrown when <see cref="OpirSafetyOptions.Threshold"/> is NaN or outside 0.0-1.0,
     /// <see cref="OpirSafetyOptions.MaxTokenLength"/> leaves no room for input tokens after the label
-    /// prefix, or the window settings are invalid.
+    /// prefix, the window settings are invalid, or <see cref="OpirSafetyOptions.OnError"/> is not a
+    /// defined value.
     /// </exception>
     /// <exception cref="FileNotFoundException">Thrown when a configured file does not exist.</exception>
     public OpirSafetyRule(OpirSafetyOptions options)
@@ -77,7 +79,7 @@ public sealed class OpirSafetyRule : IGuardrailRule, IDisposable
         // input which fits in one window is recognised as such and classified in a single call
         var tokenizer = SentencePieceContentTokenizer.Load(tokenizerPath);
 
-        _splitter = WindowedClassification.CreateSplitter(
+        var splitter = WindowedClassification.CreateSplitter(
             WindowedClassification.CountContentTokens(tokenizer),
             TextTokenBudget(options.MaxTokenLength, ReadPrefixTokenCount(prefixPath)),
             options.WindowSize,
@@ -85,9 +87,9 @@ public sealed class OpirSafetyRule : IGuardrailRule, IDisposable
             nameof(options));
 
         var session = OpirModelSession.Acquire(modelPath, tokenizerPath, prefixPath, options.MaxTokenLength);
-        _session = session;
-        _classify = session.Classify;
         _labels = session.Labels;
+        _classifier = CreateClassifier(
+            SentencePieceContentTokenizer.WithRoomForNormalization<OpirScore>(tokenizer, session.Classify), splitter, session);
     }
 
     /// <summary>
@@ -107,12 +109,24 @@ public sealed class OpirSafetyRule : IGuardrailRule, IDisposable
     {
         Validate(options);
         _options = options;
-        _classify = classify;
         _labels = labels;
-        _session = session;
-        _splitter = WindowedClassification.CreateSplitter(
+        var splitter = WindowedClassification.CreateSplitter(
             countTokens, TextTokenBudget(options.MaxTokenLength, prefixTokenCount), options.WindowSize, options.WindowOverlap, nameof(options));
+        _classifier = CreateClassifier(classify, splitter, session);
     }
+
+    private WindowedClassifier<OpirScore> CreateClassifier(Func<string, OpirScore> classify, TextWindowSplitter splitter, IDisposable? session) =>
+        new(
+            this,
+            "Opir content-safety",
+            nameof(OpirSafetyOptions),
+            session,
+            classify,
+            score => score.MaxProbability >= _options.Threshold,
+            score => score.MaxProbability,
+            splitter,
+            _options.MaxWindows,
+            _options.OnError);
 
     /// <inheritdoc />
     /// <exception cref="ObjectDisposedException">Thrown when the rule has been disposed.</exception>
@@ -120,28 +134,8 @@ public sealed class OpirSafetyRule : IGuardrailRule, IDisposable
         GuardrailContext context,
         CancellationToken cancellationToken = default)
     {
-        // a disposed rule no longer holds a reference to the pooled session, which may already be freed
-        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
-
-        if (string.IsNullOrWhiteSpace(context.Text))
-            return ValueTask.FromResult(GuardrailResult.Passed());
-
-        if (!_splitter.TrySplit(context.Text, _options.MaxWindows, out var windows))
-        {
-            return ValueTask.FromResult(WindowedClassification.InputTooLong(
-                "Opir content-safety", nameof(OpirSafetyOptions), _options.MaxWindows));
-        }
-
-        var verdict = WindowedClassification.Classify(
-            context.Text,
-            windows,
-            _classify,
-            score => score.MaxProbability >= _options.Threshold,
-            score => score.MaxProbability,
-            cancellationToken);
-
-        if (!verdict.IsBlocked)
-            return ValueTask.FromResult(GuardrailResult.Passed());
+        if (_classifier.Evaluate(context.Text, cancellationToken, out var verdict) is { } settled)
+            return ValueTask.FromResult(settled);
 
         var score = verdict.Score;
         var reason = verdict.IsWindowed
@@ -175,13 +169,11 @@ public sealed class OpirSafetyRule : IGuardrailRule, IDisposable
     /// <summary>
     /// Releases this rule's reference to the pooled ONNX inference session. The session is shared
     /// process-wide and freed when its last holder releases it, so the reference is released exactly
-    /// once: calling this again, from any thread, does nothing.
+    /// once: calling this again, from any thread, does nothing. An evaluation still running when this
+    /// is called finishes normally, and the reference is released when it does; evaluations started
+    /// afterwards throw <see cref="ObjectDisposedException"/>.
     /// </summary>
-    public void Dispose()
-    {
-        if (Interlocked.Exchange(ref _disposed, 1) == 0)
-            _session?.Dispose();
-    }
+    public void Dispose() => _classifier.Dispose();
 
     private static void Validate(OpirSafetyOptions options)
     {
@@ -189,6 +181,7 @@ public sealed class OpirSafetyRule : IGuardrailRule, IDisposable
         OptionValidation.RequireMaxTokenLength(options.MaxTokenLength, MinSpecialTokenCount, nameof(options));
         WindowedClassification.ValidateWindowOptions(
             options.WindowSize, options.WindowOverlap, options.MaxWindows, nameof(options));
+        OptionValidation.RequireErrorBehavior(options.OnError, nameof(options));
     }
 
     // text tokens the session classifies without truncating: the rest after the label prefix and [SEP]

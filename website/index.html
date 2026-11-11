@@ -91,8 +91,9 @@ using AgentGuard.Onnx;
 using AgentGuard.Pii;
 
 // Wrap any IChatClient - works with OpenAI, Azure OpenAI, Ollama, or any
-// Microsoft.Extensions.AI client. Every user message of the request and every
-// assistant message of the response is guarded; history is propagated automatically.
+// Microsoft.Extensions.AI client. Every message of the request (your system prompt
+// aside), the tool results it carries and every assistant message of the response
+// are guarded; history is propagated automatically.
 var guardedClient = chatClient.UseAgentGuard(g => g
     .NormalizeInput()
     .BlockPromptInjection()
@@ -173,11 +174,11 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
       </div>
       <div class="feature-card">
         <h3>Input Normalization</h3>
-        <p>Decodes evasion encodings - base64, hex escapes, reversed text, leetspeak, Unicode homoglyphs - and strips invisible characters, including Unicode tag characters (surfacing the text they hide), before any other rule evaluates, so encoding-based attacks are caught by the downstream rules.</p>
+        <p>Decodes evasion encodings - base64, hex escapes, reversed text, leetspeak, Unicode homoglyphs - and strips invisible characters, including Unicode tag characters (surfacing the text they hide), before any other rule evaluates, so encoding-based attacks are caught by the downstream rules. What it decodes goes to those rules, never to the model, which receives the message as written.</p>
       </div>
       <div class="feature-card">
         <h3>Agentic &amp; RAG Guardrails</h3>
-        <p>Guard tool call arguments against SQL injection, code injection, SSRF, and more, before the tool runs (in Agent Framework, or with the <code>IChatClient</code> decorator inside a <code>FunctionInvokingChatClient</code>). Detect indirect prompt injection in tool results (emails, documents), including instructions hidden in invisible Unicode tag characters - in Agent Framework, before the model reads them. Filter RAG chunks for injection and secrets before they reach the LLM context.</p>
+        <p>Guard tool call arguments against SQL injection, code injection, SSRF, and more, before the tool runs (in Agent Framework, or with the <code>IChatClient</code> decorator inside a <code>FunctionInvokingChatClient</code>). Detect indirect prompt injection in tool results (emails, documents), including instructions hidden in invisible Unicode tag characters - before the model reads them, in Agent Framework and with the <code>IChatClient</code> decorator inside a <code>FunctionInvokingChatClient</code>. Filter RAG chunks for injection and secrets before they reach the LLM context.</p>
       </div>
       <div class="feature-card">
         <h3>Dynamic Rule Enabling</h3>
@@ -189,7 +190,7 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
       </div>
       <div class="feature-card">
         <h3>Tamper-evident Decision Ledger</h3>
-        <p>An optional SHA-256 hash-chained audit trail of every pipeline decision - policy, request, and allow/block/modify outcome. Any retroactive edit breaks the chain and is caught by <code>Verify()</code>. Hash-only by default, dependency-free, with an optional append-only JSONL file.</p>
+        <p>An optional SHA-256 hash-chained audit trail of every pipeline decision - policy, request, and allow/block/modify outcome. An edit to a recorded entry breaks the chain and is caught by <code>Verify()</code>; give the ledger an HMAC key held outside the log's host to also catch a chain that was rewritten and recomputed. Hash-only by default, dependency-free, with an optional append-only JSONL file.</p>
       </div>
     </div>
   </div>
@@ -260,11 +261,11 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
   <div class="feature-grid" style="margin-top:3rem">
     <div class="feature-card">
       <h3>Every boundary, one rule</h3>
-      <p>The order-20 <code>RedactPii()</code> rule runs on both input and output - every user message of a request and every assistant message of a response. In an Agent Framework agent, <code>GuardToolResults()</code> extends it to tool results, so retrieved records are scrubbed before they re-enter the model's context.</p>
+      <p>The order-20 <code>RedactPii()</code> rule runs on both input and output - every message of a request and every assistant message of a response. <code>GuardToolResults()</code> extends it to tool results, so retrieved records are scrubbed before they re-enter the model's context.</p>
     </div>
     <div class="feature-card">
       <h3>Reversible round-trip</h3>
-      <p>Encrypt PII in every message of the request, history included, before the provider sees it and decrypt the exact value back in the response - the model reasons over tokens, the user gets real data. Pass in your own engine to bring remote or Azure detectors into the round-trip. A wrong key fails loudly; lossy operators report themselves non-reversible.</p>
+      <p>Encrypt PII in every message of the request, history included, before the provider sees it and decrypt the exact value back in the response - the model reasons over tokens, the user gets real data. Pass in your own engine to bring remote or Azure detectors into the round-trip. A wrong key fails loudly; lossy operators report themselves non-reversible. Tools the agent invokes are part of the round-trip: a tool is called with the real value, and the PII in what it returns is encrypted before the model sees it.</p>
     </div>
     <div class="feature-card">
       <h3>Nothing leaves your process</h3>
@@ -465,7 +466,7 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
         <tr><th>Classifier</th><th>jackhhao</th><th>deepset (German)</th><th>per call</th></tr>
       </thead>
       <tbody>
-        <tr><td>regex (medium)</td><td>60% / 8%</td><td>8% / 0%</td><td>&lt;1 ms</td></tr>
+        <tr><td>regex (medium)</td><td>52% / 0%</td><td>8% / 0%</td><td>&lt;1 ms</td></tr>
         <tr><td>Defender (bundled)</td><td>92% / 0%</td><td><strong>72% / 0%</strong></td><td>~8 ms / window</td></tr>
         <tr><td>LLM (BYO) &middot; gemma-4-26b-a4b</td><td><strong>96% / 0%</strong></td><td>68% / 0%</td><td>~6 s</td></tr>
         <tr><td>LLM (BYO) &middot; qwen3-0.6b</td><td>32% / 16%</td><td>16% / 0%</td><td>~1.5 s</td></tr>
@@ -539,7 +540,7 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
     <div class="feature-grid">
       <div class="feature-card">
         <h3>1. Input Guardrails</h3>
-        <p>Normalization, RAG chunk filtering, prompt injection detection, PII redaction, secrets detection, topic boundary, token limits - on every user message of the request, before the LLM sees it.</p>
+        <p>Normalization, RAG chunk filtering, prompt injection detection, PII redaction, secrets detection, topic boundary, token limits - on every message of the request, before the LLM sees it.</p>
       </div>
       <div class="feature-card">
         <h3>2. Agent Execution</h3>
@@ -584,7 +585,7 @@ await foreach (var update in guardedAgent.RunStreamingAsync(messages, session, o
     </div>
     <div class="package-card">
       <div class="package-name">AgentGuard.RemoteClassifier</div>
-      <div class="package-desc">Remote ML classifier via HTTP. Call Sentinel-v2, Ollama, vLLM, or custom endpoints for SOTA prompt injection detection.</div>
+      <div class="package-desc">Remote ML classifier via HTTP. Call Sentinel-v2 or any other text-classification model served behind a Hugging Face-style endpoint (text in, label and score out), or your own, for SOTA prompt injection detection.</div>
     </div>
     <div class="package-card">
       <div class="package-name">AgentGuard.Azure</div>
@@ -704,7 +705,7 @@ builder.Services.AddOpenTelemetry()
     <p class="section-label">Audit &amp; Compliance</p>
     <h2 class="section-title">A tamper-evident decision trail.</h2>
     <p class="section-subtitle">
-      Every pipeline decision - what policy was active, what was requested, and why it was allowed, blocked, or modified - is stamped into a SHA-256 hash chain. Edit any recorded entry and the chain breaks. Hash-only by default; dependency-free.
+      Every pipeline decision - what policy was active, what was requested, and why it was allowed, blocked, or modified - is stamped into a SHA-256 hash chain. Edit a recorded entry and the chain breaks; to also catch a chain rewritten and recomputed from the edit onward, create the ledger with an HMAC key the log's holder cannot read. Hash-only by default; dependency-free.
     </p>
 <pre><code>using AgentGuard.Core.Ledger;
 

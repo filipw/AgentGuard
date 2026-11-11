@@ -56,6 +56,21 @@ public class AzureProtectedMaterialTests
     }
 
     [Fact]
+    public async Task ShouldSurfaceAWarning_WhenActionIsWarn()
+    {
+        var rule = new AzureProtectedMaterialRule(
+            CreateClient(new FakeProtectedMaterialHandler()),
+            new AzureProtectedMaterialOptions { Action = ProtectedMaterialAction.Warn });
+
+        var result = await rule.EvaluateAsync(Context(Words(200) + " " + FakeProtectedMaterialHandler.Lyrics));
+
+        result.IsBlocked.Should().BeFalse();
+        result.IsWarning.Should().BeTrue("a warn-only finding has to surface in the pipeline's warnings and log");
+        result.Reason.Should().Contain("warn only");
+        result.Metadata!["materialType"].Should().Be("text");
+    }
+
+    [Fact]
     public async Task ShouldDetectProtectedText_WhenItComesAfterTheLimit()
     {
         // text over 10K characters is analyzed in windows
@@ -245,6 +260,66 @@ public class AzureProtectedMaterialTests
 
         result.IsError.Should().BeTrue();
         result.IsBlocked.Should().Be(expectBlocked);
+    }
+
+    // a success status says the request was accepted, not that the text was analyzed
+
+    [Theory]
+    [InlineData("{}", false)]
+    [InlineData("null", false)]
+    [InlineData("""{"error": {"code": "InternalServerError", "message": "The service is unavailable."}}""", false)]
+    [InlineData("""{"protectedMaterialAnalysis": null}""", false)]
+    [InlineData("""{"protectedMaterialAnalysis": {}}""", false)]
+    [InlineData("""{"protectedMaterialAnalysis": {"detected": null}}""", false)]
+    [InlineData("{}", true)]
+    [InlineData("null", true)]
+    [InlineData("""{"error": {"code": "InternalServerError", "message": "The service is unavailable."}}""", true)]
+    [InlineData("""{"protectedMaterialAnalysis": {"codeCitations": []}}""", true)]
+    public async Task ShouldApplyOnError_WhenASuccessResponseLacksTheAnalysis(string body, bool analyzeCode)
+    {
+        var handler = new LambdaHttpHandler((_, _) => Task.FromResult(LambdaHttpHandler.Json(body)));
+        AzureProtectedMaterialRule Rule(ErrorBehavior onError) => new(
+            new AzureProtectedMaterialClient(Endpoint, "key", new HttpClient(handler)),
+            new AzureProtectedMaterialOptions { AnalyzeCode = analyzeCode, OnError = onError });
+        var context = analyzeCode ? CodeContext() : Context(Words(500));
+
+        var failClosed = await Rule(ErrorBehavior.FailClosed).EvaluateAsync(context);
+        var failOpen = await Rule(ErrorBehavior.FailOpen).EvaluateAsync(context);
+
+        failClosed.IsError.Should().BeTrue();
+        failClosed.IsBlocked.Should().BeTrue();
+        failOpen.IsError.Should().BeTrue();
+        failOpen.IsBlocked.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ShouldPass_WhenACompleteResponseReportsNothingDetected()
+    {
+        var handler = new LambdaHttpHandler((_, _) =>
+            Task.FromResult(LambdaHttpHandler.Json("""{"protectedMaterialAnalysis": {"detected": false}}""")));
+        var rule = new AzureProtectedMaterialRule(
+            new AzureProtectedMaterialClient(Endpoint, "key", new HttpClient(handler)),
+            new AzureProtectedMaterialOptions { AnalyzeCode = true, OnError = ErrorBehavior.FailClosed });
+
+        var result = await rule.EvaluateAsync(Context(Words(500)));
+
+        result.IsBlocked.Should().BeFalse();
+        result.IsError.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ShouldReportAMatch_WhenCodeWasDetectedBeforeALaterWindowCameBackWithoutAnAnalysis()
+    {
+        var handler = new LambdaHttpHandler((call, _) => Task.FromResult(LambdaHttpHandler.Json(call == 0
+            ? """{"protectedMaterialAnalysis": {"detected": true, "codeCitations": [{"license": "MIT", "sourceUrls": ["https://github.com/example/repo"]}]}}"""
+            : "{}")));
+        using var client = new AzureProtectedMaterialClient(Endpoint, "key", new HttpClient(handler));
+
+        var result = await client.AnalyzeCodeAsync(Words(30_000));
+
+        result.Detected.Should().BeTrue();
+        result.IsError.Should().BeFalse();
+        handler.Calls.Should().Be(2);
     }
 
     // an answer under the service minimum, so only the code in the "Code" property is sent

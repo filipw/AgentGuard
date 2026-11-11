@@ -9,14 +9,18 @@ models (sequential): `gemma-4-26b-a4b-qat` (26B MoE, ~4B active), `gemma-4-e2b` 
 `qwen3-0.6b` (0.6B dense).
 
 Sample: balanced 25/class per dataset (`--max-rows 25`), so treat deltas under ~10pp as noise.
+The regex rows were re-measured after the pattern rewrite of November 2026; the Defender and LLM rows
+are from the earlier run. At medium sensitivity the regex rule no longer matches plain role play
+("pretend to be ..."), which accounted for all of its false positives on jackhhao and for the recall
+it gave up; the high tier still matches it.
 Timing (the `time` column = wall-clock for the whole dataset, sequential) measured on an Apple M4 Pro.
 
 ## jackhhao/jailbreak-classification (test, held-out) - 50 rows
 
 | classifier | prec | recall | F1 | FPR | errors | time |
 |---|---|---|---|---|---|---|
-| regex-medium | 88% | 60% | 71% | 8.0% | 0 | 0s |
-| regex-high | 88% | 60% | 71% | 8.0% | 0 | 0s |
+| regex-medium | 100% | 52% | 68% | 0.0% | 0 | 0s |
+| regex-high | 87% | 52% | 65% | 8.0% | 0 | 0s |
 | defender | 100% | 92% | 96% | 0.0% | 0 | 1s |
 | llm (gemma 26B-a4b) | 100% | 96% | **98%** | 0.0% | - | 361s |
 | llm (gemma 2B) | 92% | 92% | 92% | 8.0% | - | 332s |
@@ -71,9 +75,10 @@ German-heavy deepset benign rows show the Defender false positives the 25-row sa
 
 | dataset | classifier | prec | recall | F1 | FPR | errors |
 |---|---|---|---|---|---|---|
-| jackhhao (262 rows) | regex-medium | 91% | 56% | 69% | 6.5% | 0 |
+| jackhhao (262 rows) | regex-medium | 100% | 47% | 64% | 0.0% | 0 |
+| jackhhao (262 rows) | regex-high | 90% | 53% | 66% | 6.5% | 0 |
 | jackhhao (262 rows) | defender | 98% | 94% | 96% | 1.6% | 0 |
-| deepset (116 rows) | regex-medium | 100% | 3% | 6% | 0.0% | 0 |
+| deepset (116 rows) | regex-medium | 100% | 5% | 10% | 0.0% | 0 |
 | deepset (116 rows) | defender | 80% | 62% | 70% | 16.1% | 0 |
 
 Repro: `dotnet run -c Release -- --max-rows 25 [--llm-model <id>]` (see README). Larger `--max-rows`

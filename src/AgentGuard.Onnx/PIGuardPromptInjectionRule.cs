@@ -19,6 +19,10 @@ namespace AgentGuard.Onnx;
 /// is. Shorter input is classified in a single call.
 /// </para>
 /// <para>
+/// Input the tokenizer or the model fails on is an error handled by
+/// <see cref="PIGuardPromptInjectionOptions.OnError"/>; by default the rule fails closed and blocks it.
+/// </para>
+/// <para>
 /// The model must be downloaded separately - see <c>eng/MODELS.md</c>. The official
 /// repo ships only PyTorch weights, so AgentGuard distributes an ONNX export.
 /// </para>
@@ -30,11 +34,8 @@ public sealed class PIGuardPromptInjectionRule : IGuardrailRule, IDisposable
     // the session adds [CLS] and [SEP] around the tokenizer output
     private const int SpecialTokenCount = 2;
 
-    private readonly IDisposable? _session;
-    private readonly Func<string, float> _classify;
-    private readonly TextWindowSplitter _splitter;
+    private readonly WindowedClassifier<float> _classifier;
     private readonly PIGuardPromptInjectionOptions _options;
-    private int _disposed;
 
     /// <inheritdoc />
     public string Name => "piguard-prompt-injection";
@@ -52,8 +53,8 @@ public sealed class PIGuardPromptInjectionRule : IGuardrailRule, IDisposable
     /// <exception cref="ArgumentException">Thrown when model or tokenizer path is invalid.</exception>
     /// <exception cref="ArgumentOutOfRangeException">
     /// Thrown when <see cref="PIGuardPromptInjectionOptions.Threshold"/> is NaN or outside 0.0-1.0,
-    /// <see cref="PIGuardPromptInjectionOptions.MaxTokenLength"/> leaves no room for input tokens, or the
-    /// window settings are invalid.
+    /// <see cref="PIGuardPromptInjectionOptions.MaxTokenLength"/> leaves no room for input tokens, the
+    /// window settings are invalid, or <see cref="PIGuardPromptInjectionOptions.OnError"/> is not a defined value.
     /// </exception>
     /// <exception cref="FileNotFoundException">Thrown when the model or tokenizer file does not exist.</exception>
     public PIGuardPromptInjectionRule(PIGuardPromptInjectionOptions options)
@@ -69,7 +70,7 @@ public sealed class PIGuardPromptInjectionRule : IGuardrailRule, IDisposable
         // content ids only: the session adds [CLS] and [SEP] itself
         var tokenizer = SentencePieceContentTokenizer.Load(tokenizerPath);
 
-        _splitter = WindowedClassification.CreateSplitter(
+        var splitter = WindowedClassification.CreateSplitter(
             WindowedClassification.CountContentTokens(tokenizer),
             WindowedClassification.OnnxSessionContentBudget(tokenizer, options.MaxTokenLength),
             options.WindowSize,
@@ -77,8 +78,10 @@ public sealed class PIGuardPromptInjectionRule : IGuardrailRule, IDisposable
             nameof(options));
 
         var session = new OnnxModelSession(modelPath, tokenizer, options.MaxTokenLength);
-        _session = session;
-        _classify = text => session.Classify(text).InjectionProbability;
+        _classifier = CreateClassifier(
+            SentencePieceContentTokenizer.WithRoomForNormalization(tokenizer, text => session.Classify(text).InjectionProbability),
+            splitter,
+            session);
     }
 
     /// <summary>
@@ -95,11 +98,23 @@ public sealed class PIGuardPromptInjectionRule : IGuardrailRule, IDisposable
     {
         Validate(options);
         _options = options;
-        _classify = classify;
-        _session = session;
-        _splitter = WindowedClassification.CreateSplitter(
+        var splitter = WindowedClassification.CreateSplitter(
             countTokens, options.MaxTokenLength - SpecialTokenCount, options.WindowSize, options.WindowOverlap, nameof(options));
+        _classifier = CreateClassifier(classify, splitter, session);
     }
+
+    private WindowedClassifier<float> CreateClassifier(Func<string, float> classify, TextWindowSplitter splitter, IDisposable? session) =>
+        new(
+            this,
+            "PIGuard",
+            nameof(PIGuardPromptInjectionOptions),
+            session,
+            classify,
+            probability => probability >= _options.Threshold,
+            probability => probability,
+            splitter,
+            _options.MaxWindows,
+            _options.OnError);
 
     /// <inheritdoc />
     /// <exception cref="ObjectDisposedException">Thrown when the rule has been disposed.</exception>
@@ -107,28 +122,8 @@ public sealed class PIGuardPromptInjectionRule : IGuardrailRule, IDisposable
         GuardrailContext context,
         CancellationToken cancellationToken = default)
     {
-        // a disposed rule has released its inference session
-        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
-
-        if (string.IsNullOrWhiteSpace(context.Text))
-            return ValueTask.FromResult(GuardrailResult.Passed());
-
-        if (!_splitter.TrySplit(context.Text, _options.MaxWindows, out var windows))
-        {
-            return ValueTask.FromResult(WindowedClassification.InputTooLong(
-                "PIGuard", nameof(PIGuardPromptInjectionOptions), _options.MaxWindows));
-        }
-
-        var verdict = WindowedClassification.Classify(
-            context.Text,
-            windows,
-            _classify,
-            probability => probability >= _options.Threshold,
-            probability => probability,
-            cancellationToken);
-
-        if (!verdict.IsBlocked)
-            return ValueTask.FromResult(GuardrailResult.Passed());
+        if (_classifier.Evaluate(context.Text, cancellationToken, out var verdict) is { } settled)
+            return ValueTask.FromResult(settled);
 
         var injectionProb = verdict.Score;
         var reason = verdict.IsWindowed
@@ -154,13 +149,11 @@ public sealed class PIGuardPromptInjectionRule : IGuardrailRule, IDisposable
     }
 
     /// <summary>
-    /// Disposes the underlying ONNX inference session. Calling this again, from any thread, does nothing.
+    /// Disposes the underlying ONNX inference session. Calling this again, from any thread, does
+    /// nothing. An evaluation still running when this is called finishes normally, and the session is
+    /// disposed when it does; evaluations started afterwards throw <see cref="ObjectDisposedException"/>.
     /// </summary>
-    public void Dispose()
-    {
-        if (Interlocked.Exchange(ref _disposed, 1) == 0)
-            _session?.Dispose();
-    }
+    public void Dispose() => _classifier.Dispose();
 
     private static void Validate(PIGuardPromptInjectionOptions options)
     {
@@ -168,5 +161,6 @@ public sealed class PIGuardPromptInjectionRule : IGuardrailRule, IDisposable
         OptionValidation.RequireMaxTokenLength(options.MaxTokenLength, SpecialTokenCount, nameof(options));
         WindowedClassification.ValidateWindowOptions(
             options.WindowSize, options.WindowOverlap, options.MaxWindows, nameof(options));
+        OptionValidation.RequireErrorBehavior(options.OnError, nameof(options));
     }
 }

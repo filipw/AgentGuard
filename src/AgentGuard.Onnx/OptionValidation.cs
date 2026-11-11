@@ -1,3 +1,5 @@
+using AgentGuard.Core.Abstractions;
+
 namespace AgentGuard.Onnx;
 
 /// <summary>
@@ -36,5 +38,18 @@ internal static class OptionValidation
             throw new ArgumentOutOfRangeException(
                 paramName, maxTokenLength, $"MaxTokenLength must be greater than {specialTokenCount} to leave room for any input tokens.");
         }
+    }
+
+    /// <summary>
+    /// Throws unless <paramref name="onError"/> is a defined <see cref="ErrorBehavior"/>. An undefined
+    /// value would be treated as fail-open, quietly turning the rule off for input it cannot classify.
+    /// </summary>
+    /// <param name="onError">The configured behaviour.</param>
+    /// <param name="paramName">The caller's options parameter name, for the exception.</param>
+    /// <exception cref="ArgumentOutOfRangeException">Thrown when the value is not a defined behaviour.</exception>
+    public static void RequireErrorBehavior(ErrorBehavior onError, string paramName)
+    {
+        if (!Enum.IsDefined(onError))
+            throw new ArgumentOutOfRangeException(paramName, onError, "OnError must be a defined ErrorBehavior value.");
     }
 }

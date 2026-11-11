@@ -58,6 +58,8 @@ public class LlmCopyrightRuleTests
         var result = await rule.EvaluateAsync(Ctx("Mr. Dursley of number four, Privet Drive..."));
 
         result.IsBlocked.Should().BeFalse();
+        result.IsWarning.Should().BeTrue("a warn-only finding has to surface in the pipeline's warnings and log");
+        result.Reason.Should().Contain("warn only");
         result.Metadata.Should().NotBeNull();
         result.Metadata!["copyright_source"].Should().Be("J.K. Rowling - Harry Potter");
         result.Metadata["copyright_type"].Should().Be("book");

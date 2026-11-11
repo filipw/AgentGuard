@@ -329,6 +329,117 @@ public class AzurePromptShieldTests
         result.IsBlocked.Should().Be(expectBlocked);
     }
 
+    // a success status says the request was accepted, not that the prompt was analyzed
+
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("null")]
+    [InlineData("""{"error": {"code": "InternalServerError", "message": "The service is unavailable."}}""")]
+    [InlineData("""{"documentsAnalysis": []}""")]
+    [InlineData("""{"userPromptAnalysis": null, "documentsAnalysis": []}""")]
+    [InlineData("""{"userPromptAnalysis": {}, "documentsAnalysis": []}""")]
+    [InlineData("""{"userPromptAnalysis": {"attackDetected": null}, "documentsAnalysis": []}""")]
+    public async Task ShouldApplyOnError_WhenASuccessResponseLacksThePromptAnalysis(string body)
+    {
+        var handler = new LambdaHttpHandler((_, _) => Task.FromResult(LambdaHttpHandler.Json(body)));
+
+        var failClosed = await RuleOver(handler, ErrorBehavior.FailClosed).EvaluateAsync(Context(FakePromptShieldHandler.Jailbreak));
+        var failOpen = await RuleOver(handler, ErrorBehavior.FailOpen).EvaluateAsync(Context(FakePromptShieldHandler.Jailbreak));
+
+        failClosed.IsError.Should().BeTrue();
+        failClosed.IsBlocked.Should().BeTrue();
+        failOpen.IsError.Should().BeTrue();
+        failOpen.IsBlocked.Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("""{"userPromptAnalysis": {"attackDetected": false}}""")]
+    [InlineData("""{"userPromptAnalysis": {"attackDetected": false}, "documentsAnalysis": []}""")]
+    [InlineData("""{"userPromptAnalysis": {"attackDetected": false}, "documentsAnalysis": [{"attackDetected": false}]}""")]
+    [InlineData("""{"userPromptAnalysis": {"attackDetected": false}, "documentsAnalysis": [{"attackDetected": false}, {}]}""")]
+    public async Task ShouldApplyOnError_WhenASuccessResponseDoesNotCoverEveryDocument(string body)
+    {
+        var handler = new LambdaHttpHandler((_, _) => Task.FromResult(LambdaHttpHandler.Json(body)));
+        var rule = new AzurePromptShieldRule(
+            new AzurePromptShieldClient(Endpoint, "key", new HttpClient(handler)),
+            new AzurePromptShieldOptions { AnalyzeDocuments = true, OnError = ErrorBehavior.FailClosed });
+
+        var result = await rule.EvaluateAsync(Context("summarize these", "first document", FakePromptShieldHandler.Injection));
+
+        result.IsError.Should().BeTrue();
+        result.IsBlocked.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ShouldBlock_WhenAnIncompleteResponseStillReportsAnAttack()
+    {
+        // the missing document analysis could not have cleared the attack on the prompt
+        var handler = new LambdaHttpHandler((_, _) =>
+            Task.FromResult(LambdaHttpHandler.Json("""{"userPromptAnalysis": {"attackDetected": true}}""")));
+        var rule = new AzurePromptShieldRule(
+            new AzurePromptShieldClient(Endpoint, "key", new HttpClient(handler)),
+            new AzurePromptShieldOptions { AnalyzeDocuments = true });
+
+        var result = await rule.EvaluateAsync(Context(FakePromptShieldHandler.Jailbreak, "a document"));
+
+        result.IsBlocked.Should().BeTrue();
+        result.IsError.Should().BeFalse();
+        result.Metadata!["attackType"].Should().Be("userPrompt");
+    }
+
+    [Fact]
+    public async Task ShouldPass_WhenACompleteResponseReportsNoAttack()
+    {
+        var handler = new LambdaHttpHandler((_, _) =>
+            Task.FromResult(LambdaHttpHandler.Json("""{"userPromptAnalysis": {"attackDetected": false}}""")));
+
+        var result = await RuleOver(handler, ErrorBehavior.FailClosed).EvaluateAsync(Context("What is the weather?"));
+
+        result.IsBlocked.Should().BeFalse();
+        result.IsError.Should().BeFalse();
+    }
+
+    // the documents arrive through the property bag, in whatever collection the host put them
+
+    public static TheoryData<object> DocumentCollections() => new()
+    {
+        new[] { "clean", FakePromptShieldHandler.Injection },
+        new List<string> { "clean", FakePromptShieldHandler.Injection },
+        new HashSet<string> { "clean", FakePromptShieldHandler.Injection },
+        new Queue<string>(["clean", FakePromptShieldHandler.Injection]),
+        new[] { "clean", FakePromptShieldHandler.Injection }.Where(d => d.Length > 0),
+        FakePromptShieldHandler.Injection,
+    };
+
+    [Theory]
+    [MemberData(nameof(DocumentCollections))]
+    public async Task ShouldAnalyzeDocuments_WhateverCollectionHoldsThem(object documents)
+    {
+        var (rule, handler) = CreateRule();
+        var context = new GuardrailContext { Text = "summarize these", Phase = GuardrailPhase.Input };
+        context.Properties[AzurePromptShieldRule.DocumentsKey] = documents;
+
+        var result = await rule.EvaluateAsync(context);
+
+        result.IsBlocked.Should().BeTrue();
+        result.Metadata!["attackType"].Should().Be("document");
+        handler.Calls.Should().ContainSingle().Which.Documents.Should().Contain(FakePromptShieldHandler.Injection);
+    }
+
+    [Fact]
+    public async Task ShouldSkipNullDocuments_WhenTheCollectionHoldsSome()
+    {
+        var (rule, handler) = CreateRule();
+        var context = new GuardrailContext { Text = "summarize these", Phase = GuardrailPhase.Input };
+        context.Properties[AzurePromptShieldRule.DocumentsKey] = new string?[] { null, FakePromptShieldHandler.Injection };
+
+        var result = await rule.EvaluateAsync(context);
+
+        result.IsBlocked.Should().BeTrue();
+        result.Metadata!["documentIndex"].Should().Be(1);
+        handler.Calls.Should().ContainSingle().Which.Documents.Should().Equal(FakePromptShieldHandler.Injection);
+    }
+
     private static AzurePromptShieldRule RuleOver(HttpMessageHandler handler, ErrorBehavior onError) =>
         new(new AzurePromptShieldClient(Endpoint, "key", new HttpClient(handler)), new AzurePromptShieldOptions { OnError = onError });
 

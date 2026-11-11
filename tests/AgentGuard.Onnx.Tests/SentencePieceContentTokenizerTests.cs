@@ -7,11 +7,18 @@ namespace AgentGuard.Onnx.Tests;
 /// <summary>
 /// The SentencePiece tokenizer shared by the DeBERTa, PIGuard and Opir rules must emit content ids
 /// only, because Kyoto's sessions add <c>[CLS]</c>/<c>[SEP]</c> (or the label prefix and <c>[SEP]</c>)
-/// themselves. Tested against a hand-built model with the DeBERTa v3 special-token layout.
+/// themselves. Tested against a hand-built model with the DeBERTa v3 special-token layout. The
+/// sessions encode with a token limit, which must also work for text whose normalized form is much
+/// longer than the text; that is tested against a variant of the model whose normalization expands a
+/// character, as the NFKC rules of the real models do.
 /// </summary>
 public sealed class SentencePieceContentTokenizerTests : IDisposable
 {
+    // the content-token limit Kyoto's sessions encode with at the default MaxTokenLength
+    private const int SessionTokenLimit = 510;
+
     private readonly string _modelPath = SentencePieceTestModel.WriteToTempFile();
+    private readonly string _expandingModelPath = SentencePieceTestModel.WriteToTempFile(expanding: true);
 
     [Fact]
     public void ShouldAddClsAsBos_WhenCreatedWithTheLibraryDefaults()
@@ -57,5 +64,78 @@ public sealed class SentencePieceContentTokenizerTests : IDisposable
         WindowedClassification.CountContentTokens(tokenizer)("hello world").Should().Be(2);
     }
 
-    public void Dispose() => File.Delete(_modelPath);
+    [Fact]
+    public void ShouldOverflowInTheLibrary_WhenShortTextExpandsUnderNormalizationAndIsEncodedWithATokenLimit()
+    {
+        // guards the fixture: this is the tokenizer failure the padding exists for. Encoding with a
+        // limit keeps the normalized text in a buffer sized from the input; counting does not.
+        var tokenizer = SentencePieceContentTokenizer.Load(_expandingModelPath);
+        var text = new string(SentencePieceTestModel.ExpandingCharacter, 2);
+
+        var encodeWithLimit = () => tokenizer.EncodeToIds(text, SessionTokenLimit, out _, out _);
+
+        encodeWithLimit.Should().Throw<IndexOutOfRangeException>();
+        tokenizer.EncodeToIds(text, addBeginningOfSentence: false, addEndOfSentence: false).Should().NotBeEmpty();
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(5)]
+    [InlineData(40)]
+    [InlineData(400)]
+    public void ShouldEncodeExpandingTextWithATokenLimit_WhenPaddedForNormalization(int expandingCharacters)
+    {
+        var tokenizer = SentencePieceContentTokenizer.Load(_expandingModelPath);
+        var text = "hello " + new string(SentencePieceTestModel.ExpandingCharacter, expandingCharacters) + " world";
+        var expected = tokenizer.EncodeToIds(text, addBeginningOfSentence: false, addEndOfSentence: false);
+
+        var padded = SentencePieceContentTokenizer.PadForNormalization(tokenizer, text);
+        var ids = tokenizer.EncodeToIds(padded, int.MaxValue - 1, out _, out _);
+
+        ids.Should().Equal(expected, "the padding must not change what the model sees");
+        padded.TrimEnd(' ').Should().Be(text);
+    }
+
+    [Fact]
+    public void ShouldTruncateLikeTheUnpaddedText_WhenPaddedTextExceedsTheTokenLimit()
+    {
+        var tokenizer = SentencePieceContentTokenizer.Load(_expandingModelPath);
+        var text = new string(SentencePieceTestModel.ExpandingCharacter, 3);
+        var all = tokenizer.EncodeToIds(text, addBeginningOfSentence: false, addEndOfSentence: false);
+
+        var ids = tokenizer.EncodeToIds(SentencePieceContentTokenizer.PadForNormalization(tokenizer, text), 5, out _, out _);
+
+        ids.Should().Equal(all.Take(5));
+    }
+
+    [Theory]
+    [InlineData("hello world")]
+    [InlineData("  hello   world  ")]
+    [InlineData("h")]
+    public void ShouldLeaveTextAlone_WhenNormalizationDoesNotExpandIt(string text)
+    {
+        var tokenizer = SentencePieceContentTokenizer.Load(_expandingModelPath);
+
+        SentencePieceContentTokenizer.PadForNormalization(tokenizer, text).Should().BeSameAs(text);
+    }
+
+    [Fact]
+    public void ShouldClassifyExpandingText_WhenTheSessionEncodesWithATokenLimit()
+    {
+        var tokenizer = SentencePieceContentTokenizer.Load(_expandingModelPath);
+        var text = new string(SentencePieceTestModel.ExpandingCharacter, 2);
+
+        // encodes the way Kyoto's sessions do before running the model
+        var classify = SentencePieceContentTokenizer.WithRoomForNormalization(
+            tokenizer, input => tokenizer.EncodeToIds(input, SessionTokenLimit, out _, out _).Count);
+
+        classify(text).Should().Be(WindowedClassification.CountContentTokens(tokenizer)(text));
+    }
+
+    public void Dispose()
+    {
+        File.Delete(_modelPath);
+        File.Delete(_expandingModelPath);
+    }
 }

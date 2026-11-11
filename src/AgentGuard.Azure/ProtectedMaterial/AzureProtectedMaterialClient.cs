@@ -44,8 +44,8 @@ public sealed record ProtectedMaterialResult
     public IReadOnlyList<CodeCitation> CodeCitations { get; init; } = [];
 
     /// <summary>
-    /// True when an API call failed (error, timeout, retry exhaustion) and none of the calls that did
-    /// complete detected protected material. The result is a fail-open default, not an actual
+    /// True when an API call failed (error, timeout, retry exhaustion, or a success response without
+    /// a <c>detected</c> value) and none of the calls that did complete detected protected material. The result is a fail-open default, not an actual
     /// classification. Text below the service's minimum length is not an error: it is not sent, and
     /// comes back as not detected.
     /// </summary>
@@ -134,7 +134,8 @@ public sealed partial class AzureProtectedMaterialClient : IDisposable
     /// Text shorter than the service's 110-character minimum is not sent and comes back as not
     /// detected - too short to match protected material, and not an error. Text over the 10K-character
     /// limit is analyzed in overlapping windows, one request at a time, until one of them reports a
-    /// match. When a request fails the remaining ones are skipped and the result is an error.
+    /// match. A success response without a <c>detected</c> value (an empty or error-shaped body) counts
+    /// as a failed request. When a request fails the remaining ones are skipped and the result is an error.
     /// Cancellation of <paramref name="cancellationToken"/> is never a failure: it throws
     /// <see cref="OperationCanceledException"/>, whatever exception the request that was under way ends with.
     /// </remarks>
@@ -153,7 +154,7 @@ public sealed partial class AzureProtectedMaterialClient : IDisposable
                 var result = await PostAsync(url, new TextRequest { Text = window }, cancellationToken);
 
                 // a match is the whole answer; the remaining windows cannot add to it
-                if (result?.ProtectedMaterialAnalysis?.Detected == true)
+                if (result.ProtectedMaterialAnalysis?.Detected == true)
                     return new ProtectedMaterialResult { Detected = true, MaterialType = ProtectedMaterialType.Text };
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -184,8 +185,9 @@ public sealed partial class AzureProtectedMaterialClient : IDisposable
     /// <remarks>
     /// Code shorter than the service's 110-character minimum is not sent and comes back as not
     /// detected. Code over the 10K-character limit is analyzed in overlapping windows (split at line
-    /// breaks where possible), one request at a time, and their citations are combined. When a request
-    /// fails the remaining ones are skipped, and the result is an error unless a match was already found.
+    /// breaks where possible), one request at a time, and their citations are combined. A success
+    /// response without a <c>detected</c> value counts as a failed request. When a request fails the
+    /// remaining ones are skipped, and the result is an error unless a match was already found.
     /// Cancellation of <paramref name="cancellationToken"/> is never a failure: it throws
     /// <see cref="OperationCanceledException"/>, whatever exception the request that was under way ends with.
     /// </remarks>
@@ -206,7 +208,7 @@ public sealed partial class AzureProtectedMaterialClient : IDisposable
             try
             {
                 var result = await PostAsync(url, new CodeRequest { Code = window }, cancellationToken);
-                var analysis = result?.ProtectedMaterialAnalysis;
+                var analysis = result.ProtectedMaterialAnalysis;
 
                 if (analysis?.Detected == true)
                     detected = true;
@@ -279,13 +281,20 @@ public sealed partial class AzureProtectedMaterialClient : IDisposable
         return windows;
     }
 
-    private async Task<ProtectedMaterialResponse?> PostAsync<TRequest>(
+    private async Task<ProtectedMaterialResponse> PostAsync<TRequest>(
         string path, TRequest request, CancellationToken cancellationToken)
     {
         using var response = await SendWithRetryAsync(path, request, cancellationToken);
         response.EnsureSuccessStatusCode();
 
-        return await response.Content.ReadFromJsonAsync<ProtectedMaterialResponse>(JsonOptions, cancellationToken);
+        var result = await response.Content.ReadFromJsonAsync<ProtectedMaterialResponse>(JsonOptions, cancellationToken);
+
+        // a success status alone is not a verdict: an empty or error-shaped body carries no
+        // "detected" value, and reading that as "not detected" would pass text nobody analyzed
+        if (result?.ProtectedMaterialAnalysis?.Detected is null)
+            throw new InvalidDataException("The response has no protectedMaterialAnalysis.detected value.");
+
+        return result;
     }
 
     /// <summary>
@@ -376,7 +385,8 @@ public sealed partial class AzureProtectedMaterialClient : IDisposable
 
     private sealed class ProtectedMaterialAnalysisDto
     {
-        public bool Detected { get; init; }
+        // nullable so that a body without the field is told apart from "not detected"
+        public bool? Detected { get; init; }
         public List<CodeCitationDto>? CodeCitations { get; init; }
     }
 

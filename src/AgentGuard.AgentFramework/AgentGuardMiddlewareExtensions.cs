@@ -105,9 +105,24 @@ public static class AgentGuardMiddlewareExtensions
     /// conversation (<see cref="ChatClientAgentSession.ConversationId"/>). With other chat history
     /// providers, or a conversation the service stores, the saved history keeps the unguarded response;
     /// when it must never hold unguarded output, guard the agent's <see cref="IChatClient"/> instead
-    /// (<see cref="GuardrailChatClientExtensions.UseAgentGuard(IChatClient, IGuardrailPolicy, ILogger{GuardrailPipeline}?, IGuardrailLedger?)"/>):
+    /// (<see cref="GuardrailChatClientExtensions.UseAgentGuard(IChatClient, IGuardrailPolicy, ILogger{GuardrailPipeline}?, IGuardrailLedger?, IEnumerable{ChatRole}?)"/>):
     /// the <see cref="GuardrailChatClient"/> decorator runs before the agent saves the response, except
     /// for progressive streaming, which delivers text before it is checked.
+    /// </para>
+    /// <para>
+    /// The model answers the whole conversation, while this middleware is given only the messages of the
+    /// current run. In a run with a session, output rules and re-ask therefore get the session's earlier
+    /// turns as conversation history (<see cref="GuardrailContext.Messages"/>), followed by the run's
+    /// messages - so a groundedness check sees what an answer builds on, and a re-asked answer is
+    /// generated with the same history. The earlier turns are read from the session as they are saved,
+    /// before any chat reducer; they are context only: never evaluated as new input, and never changed.
+    /// Turns the caller passes again at the start of the run's messages are not repeated. Like the saved
+    /// response, they can only be read from the default <see cref="InMemoryChatHistoryProvider"/> in a
+    /// run with a session and no server-side conversation. Without a session, with another chat history
+    /// provider, or with a conversation the service stores, output rules and re-ask get the run's messages
+    /// only; guard the agent's <see cref="IChatClient"/> instead when they need the whole conversation
+    /// there, since the <see cref="GuardrailChatClient"/> decorator sees every request as the model does.
+    /// Input rules get the run's messages in every case.
     /// </para>
     /// </remarks>
     public static AIAgentBuilder UseAgentGuard(
@@ -130,7 +145,12 @@ public static class AgentGuardMiddlewareExtensions
         // threading it through by hand.
         return builder.Use((innerAgent, services) =>
         {
-            var guard = new ChatMessageGuard(policy, logger, ledger ?? services?.GetService<IGuardrailLedger>());
+            // a message a context provider or the chat history added to the run is checked like the
+            // rest of the request, but it is not the input the run is about: a block of the caller's
+            // own newest message is what blocks the run
+            var guard = new ChatMessageGuard(policy, logger, ledger ?? services?.GetService<IGuardrailLedger>())
+                .WithSupplementalMessages(static message =>
+                    message.GetAgentRequestMessageSourceType() != AgentRequestMessageSourceType.External);
 
             var guarded = new AIAgentBuilder(innerAgent);
             guarded.Use(
@@ -200,10 +220,13 @@ public static class AgentGuardMiddlewareExtensions
         if (input.Result.IsBlocked)
             return new AgentResponse([new ChatMessage(ChatRole.Assistant, input.ViolationMessage)]);
 
+        // read before the run, which adds itself to the session's history
+        var conversation = SessionHistoryRewriter.WithEarlierTurns(inner, session, input.Result.Messages);
+
         var response = await inner.RunAsync(input.Result.Messages, session, options, ct);
 
         var responseMessages = response.Messages as IReadOnlyList<ChatMessage> ?? [.. response.Messages];
-        var output = await RunOutputGuardrails(guard, policy, responseMessages, input.Result.Messages, inner.Name, ct);
+        var output = await RunOutputGuardrails(guard, policy, responseMessages, conversation, inner.Name, ct);
 
         AgentResponse guarded;
         if (output.Result.IsBlocked)
@@ -259,7 +282,7 @@ public static class AgentGuardMiddlewareExtensions
         ChatMessageGuard guard,
         IGuardrailPolicy policy,
         IReadOnlyList<ChatMessage> responseMessages,
-        IReadOnlyList<ChatMessage> requestMessages,
+        IReadOnlyList<ChatMessage> conversation,
         string? agentName,
         CancellationToken ct)
     {
@@ -276,7 +299,9 @@ public static class AgentGuardMiddlewareExtensions
             // every assistant message is checked on its own - the text a model writes alongside a tool
             // call is shown to the user too - together with the response's tool calls and, as a safety
             // net for tools that bypass FunctionInvokingChatClient (hosted tools, MCP), its tool results
-            var result = await guard.GuardOutputAsync(responseMessages, requestMessages, agentName, ct);
+            // the conversation the response answers is context for the rules and for re-ask, nothing more:
+            // only the response's messages are evaluated
+            var result = await guard.GuardOutputAsync(responseMessages, conversation, agentName, ct);
             return await ConcludeAsync(outputActivity, policy, result, ct);
         }
         catch (Exception ex)
@@ -423,6 +448,9 @@ public static class AgentGuardMiddlewareExtensions
         StreamOutcome outcome,
         [EnumeratorCancellation] CancellationToken ct)
     {
+        // read before the run, which adds itself to the session's history
+        var conversation = SessionHistoryRewriter.WithEarlierTurns(innerAgent, session, processedMessages);
+
         var updates = new List<AgentResponseUpdate>();
         await foreach (var update in innerAgent.RunStreamingAsync(processedMessages, session, options, ct))
             updates.Add(update);
@@ -432,7 +460,7 @@ public static class AgentGuardMiddlewareExtensions
         var response = agentResponse.AsChatResponse();
         var saved = response.Messages as IReadOnlyList<ChatMessage> ?? [.. response.Messages];
 
-        var output = await RunOutputGuardrails(guard, policy, saved, processedMessages, innerAgent.Name, ct);
+        var output = await RunOutputGuardrails(guard, policy, saved, conversation, innerAgent.Name, ct);
 
         if (output.Result.IsBlocked)
         {
@@ -480,11 +508,14 @@ public static class AgentGuardMiddlewareExtensions
     {
         var streamingPipeline = new StreamingGuardrailPipeline(policy, policy.ProgressiveStreaming, ledger: guard.Pipeline.Ledger);
 
+        // read before the run, which adds itself to the session's history
+        var conversation = SessionHistoryRewriter.WithEarlierTurns(innerAgent, session, processedMessages);
+
         var outputContext = new GuardrailContext
         {
             Text = "", // will be set per-evaluation inside the pipeline
             Phase = GuardrailPhase.Output,
-            Messages = processedMessages,
+            Messages = conversation,
             AgentName = innerAgent.Name
         };
 
@@ -531,7 +562,7 @@ public static class AgentGuardMiddlewareExtensions
         }
 
         // tool calls, tool results and reasoning were held back while the text streamed: check them now
-        var result = await guard.GuardToolsAndReasoningAsync(saved, processedMessages, innerAgent.Name, ct);
+        var result = await guard.GuardToolsAndReasoningAsync(saved, conversation, innerAgent.Name, ct);
 
         if (result.IsBlocked)
         {

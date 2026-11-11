@@ -22,8 +22,8 @@ public sealed class AzureProtectedMaterialOptions
     public ProtectedMaterialAction Action { get; init; } = ProtectedMaterialAction.Block;
 
     /// <summary>
-    /// What to do when the Azure API call fails (timeout, 429 exhaustion, HTTP error).
-    /// Default: <see cref="ErrorBehavior.FailOpen"/>.
+    /// What to do when the Azure API call fails (timeout, 429 exhaustion, HTTP error, or a success
+    /// response without the analysis). Default: <see cref="ErrorBehavior.FailOpen"/>.
     /// </summary>
     public ErrorBehavior OnError { get; init; } = ErrorBehavior.FailOpen;
 }
@@ -144,9 +144,12 @@ public sealed class AzureProtectedMaterialRule : IGuardrailRule
 
         if (_options.Action == ProtectedMaterialAction.Warn)
         {
+            // let through, but surfaced: logged at Warning and listed in the pipeline result's Warnings
             return new GuardrailResult
             {
                 IsBlocked = false,
+                IsWarning = true,
+                Reason = $"Azure Protected Material detection found protected {materialType.ToString().ToLowerInvariant()} in the response (warn only).",
                 Metadata = metadata
             };
         }

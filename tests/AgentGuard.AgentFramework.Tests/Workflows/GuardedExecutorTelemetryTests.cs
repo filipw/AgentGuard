@@ -68,6 +68,24 @@ public class GuardedExecutorTelemetryTests : IDisposable
     }
 
     [Fact]
+    public async Task ShouldRecordBlockedOutputSpan_WhenVoidExecutorSendsBlockedMessage()
+    {
+        var guarded = new AnnouncingExecutor("announcer").WithGuardrails(PolicyWith(
+            Rule(context => context.Phase == GuardrailPhase.Output ? GuardrailResult.Blocked("unsafe announcement") : GuardrailResult.Passed())));
+
+        var act = () => guarded.HandleAsync("hello", Mock.Of<IWorkflowContext>()).AsTask();
+        await act.Should().ThrowAsync<GuardrailViolationException>();
+
+        var output = _activities.Single(a => a.OperationName == $"{AgentGuardTelemetry.Spans.ExecutorGuard} output");
+        output.GetTagItem(AgentGuardTelemetry.Tags.Outcome).Should().Be(AgentGuardTelemetry.Outcomes.Blocked);
+        output.GetTagItem(AgentGuardTelemetry.Tags.BlockedReason).Should().Be("unsafe announcement");
+        output.GetTagItem(AgentGuardTelemetry.Tags.ExecutorId).Should().Be("announcer");
+        output.GetTagItem(AgentGuardTelemetry.Tags.Phase).Should().Be("output");
+        output.GetTagItem(AgentGuardTelemetry.Tags.MessageType).Should().Be(nameof(String));
+        output.Status.Should().Be(ActivityStatusCode.Unset);
+    }
+
+    [Fact]
     public async Task ShouldRecordModifiedOutcome_WhenInputRewritten()
     {
         var guarded = new EchoExecutor("echo").WithGuardrails(PolicyWith(Rule(_ => GuardrailResult.Modified("clean", "rewritten"))));
@@ -110,6 +128,12 @@ public class GuardedExecutorTelemetryTests : IDisposable
     {
         public override ValueTask HandleAsync(string message, IWorkflowContext context, CancellationToken cancellationToken = default) =>
             ValueTask.CompletedTask;
+    }
+
+    private sealed class AnnouncingExecutor(string id) : Executor<string>(id)
+    {
+        public override ValueTask HandleAsync(string message, IWorkflowContext context, CancellationToken cancellationToken = default) =>
+            context.SendMessageAsync($"announcing {message}", targetId: null, cancellationToken);
     }
 
     private sealed class UpperExecutor(string id) : Executor<string, string>(id)

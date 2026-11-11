@@ -21,8 +21,9 @@ internal readonly record struct WindowedVerdict<TScore>(
 }
 
 /// <summary>
-/// Shared windowed-classification logic for the ONNX classifier rules: runs a classifier over every
-/// window of an input and builds the common result pieces (window metadata, the too-long block).
+/// Shared windowed-classification building blocks for the ONNX classifier rules: runs a classifier
+/// over every window of an input and builds the common result pieces (window metadata, the too-long
+/// block). <see cref="WindowedClassifier{TScore}"/> puts them together into a rule's evaluation.
 /// </summary>
 internal static class WindowedClassification
 {
@@ -149,9 +150,13 @@ internal static class WindowedClassification
     /// <param name="windowSize">Configured window size in tokens.</param>
     /// <param name="windowOverlap">Configured window overlap in tokens.</param>
     /// <param name="paramName">The caller's options parameter name, for exceptions.</param>
+    /// <param name="fitsSession">
+    /// Checks that the session encodes a window completely, for tokenizers that can run out of room on
+    /// text whose token count fits.
+    /// </param>
     /// <exception cref="ArgumentOutOfRangeException">Thrown when the budget leaves no room for the configured overlap.</exception>
     public static TextWindowSplitter CreateSplitter(
-        TokenCounter countTokens, int modelTokenBudget, int windowSize, int windowOverlap, string paramName)
+        TokenCounter countTokens, int modelTokenBudget, int windowSize, int windowOverlap, string paramName, SessionFitCheck? fitsSession = null)
     {
         if (modelTokenBudget < 1)
             throw new ArgumentOutOfRangeException(paramName, "MaxTokenLength is too small to leave room for any input tokens.");
@@ -165,6 +170,6 @@ internal static class WindowedClassification
                 "WindowSize capped to what MaxTokenLength allows).");
         }
 
-        return new TextWindowSplitter(countTokens, effectiveWindowSize, windowOverlap);
+        return new TextWindowSplitter(countTokens, effectiveWindowSize, windowOverlap, fitsSession);
     }
 }

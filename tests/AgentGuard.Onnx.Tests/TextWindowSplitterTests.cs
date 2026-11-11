@@ -7,7 +7,7 @@ namespace AgentGuard.Onnx.Tests;
 
 /// <summary>
 /// Unit tests for <see cref="TextWindowSplitter"/>. Most use simple word- and character-based token
-/// counters so the windowing logic is verified in isolation; one property test runs it with the
+/// counters so the windowing logic is verified in isolation; the property tests run it with the
 /// Defender rule's real WordPiece tokenizer (bundled vocab only, no model is loaded).
 /// </summary>
 public class TextWindowSplitterTests
@@ -229,6 +229,132 @@ public class TextWindowSplitterTests
             windows[i + 1].Start.Should().BeLessThan(windows[i].End, "consecutive windows overlap");
     }
 
+    // session fit: a session can stop short of the end of a window whose token count fits. The fake
+    // session below has room for ten units; a word takes one, a word starting with BIG takes five.
+
+    [Fact]
+    public void ShouldNotUseASingleWindow_WhenTheCountFitsButTheSessionWouldStopEarly()
+    {
+        var splitter = new TextWindowSplitter(WindowingTestHelpers.CountWords, windowSize: 8, windowOverlap: 2, HasRoomFor(10));
+        const string text = "w0 w1 w2 w3 BIG4 BIG5 w6";
+
+        var windows = splitter.Split(text);
+
+        windows.Should().HaveCountGreaterThan(1, "seven words fit the window, but need fifteen units of room");
+        Texts(text, windows).Should().OnlyContain(window => RoomNeeded(window) <= 10);
+        Texts(text, windows).SelectMany(window => window.Split(' ')).Distinct().Should().BeEquivalentTo(text.Split(' '));
+    }
+
+    [Fact]
+    public void ShouldKeepEveryWindowWithinWhatTheSessionEncodes_WhenWordsNeedMoreRoomThanTheirCount()
+    {
+        var splitter = new TextWindowSplitter(WindowingTestHelpers.CountWords, windowSize: 8, windowOverlap: 2, HasRoomFor(10));
+        var words = Enumerable.Range(0, 200).Select(i => i % 7 == 3 || i % 11 == 0 ? $"BIG{i}" : $"w{i}").ToArray();
+        var text = string.Join(' ', words);
+
+        var windows = splitter.Split(text);
+
+        Texts(text, windows).Should().OnlyContain(
+            window => WindowingTestHelpers.CountWords(window) <= 8 && RoomNeeded(window) <= 10,
+            "no window may be cut short by the session");
+        Texts(text, windows).SelectMany(window => window.Split(' ')).Distinct().Should().HaveCount(200, "no word may be left out");
+        windows.Should().OnlyHaveUniqueItems("a window that adds nothing is not classified again");
+    }
+
+    [Fact]
+    public void ShouldGiveTheSameWindows_WhenTheSessionEncodesEveryWindowWhole()
+    {
+        var text = WindowingTestHelpers.Words(300);
+        var plain = new TextWindowSplitter(WindowingTestHelpers.CountWords, windowSize: 10, windowOverlap: 4);
+        var withCheck = new TextWindowSplitter(WindowingTestHelpers.CountWords, windowSize: 10, windowOverlap: 4, _ => true);
+
+        withCheck.Split(text).Should().Equal(plain.Split(text));
+    }
+
+    [Fact]
+    public void ShouldClassifyAWordInSlices_WhenItAloneDoesNotFitTheSession()
+    {
+        // a session with room for six characters
+        var splitter = new TextWindowSplitter(
+            WindowingTestHelpers.CountWords, windowSize: 4, windowOverlap: 1, text => WindowingTestHelpers.CountNonWhitespaceChars(text) <= 6);
+        const string text = "ab cd abcdefghijklmnopqrstuvwxyz ef gh";
+
+        var windows = splitter.Split(text);
+
+        Texts(text, windows).Should().OnlyContain(window => WindowingTestHelpers.CountNonWhitespaceChars(window) <= 6);
+        CoveredCharacters(text, windows).Should().Be(text.Count(c => !char.IsWhiteSpace(c)), "every character must be classified");
+    }
+
+    [Fact]
+    public void ShouldKeepSurrogatePairsWhole_WhenSlicingAWord()
+    {
+        // a session with room for two characters, each emoji being one
+        var splitter = new TextWindowSplitter(
+            WindowingTestHelpers.CountWords, windowSize: 4, windowOverlap: 1, text => text.ToString().EnumerateRunes().Count() <= 2);
+        var text = string.Concat(Enumerable.Repeat("\U0001F600", 7));
+
+        var windows = splitter.Split(text);
+
+        Texts(text, windows).Should().OnlyContain(window => !char.IsLowSurrogate(window[0]) && !char.IsHighSurrogate(window[window.Length - 1]));
+        windows.Sum(window => window.Length).Should().Be(text.Length);
+    }
+
+    [Fact]
+    public void ShouldThrow_WhenASingleCharacterDoesNotFitTheSession()
+    {
+        var splitter = new TextWindowSplitter(
+            WindowingTestHelpers.CountWords, windowSize: 4, windowOverlap: 1, text => !text.Contains('!'));
+
+        var act = () => splitter.Split("ab cd e!f gh");
+
+        act.Should().Throw<InvalidOperationException>("no window can hold that character, so it cannot be classified");
+    }
+
+    [Fact]
+    public void ShouldGiveUp_WhenSlicesTakeMoreThanMaxWindows()
+    {
+        var splitter = new TextWindowSplitter(
+            WindowingTestHelpers.CountWords, windowSize: 4, windowOverlap: 1, text => WindowingTestHelpers.CountNonWhitespaceChars(text) <= 2);
+        const string text = "abcdefghijklmnopqrstuvwxyz";
+
+        splitter.TrySplit(text + " " + text, maxWindows: 5, out var windows).Should().BeFalse();
+        windows.Should().BeEmpty();
+        splitter.TrySplit(text, maxWindows: 0, out windows).Should().BeTrue();
+        windows.Should().HaveCountGreaterThan(5);
+    }
+
+    [Theory]
+    [InlineData(256, 254, 32)]
+    [InlineData(256, 200, 32)]
+    [InlineData(256, 64, 32)]
+    [InlineData(34, 32, 8)]
+    public void ShouldProduceWindowsTheRealSessionEncodesWhole_WhenWordsNeedMoreRoomThanTheirCount(
+        int maxTokenLength, int windowSize, int windowOverlap)
+    {
+        // the Defender rule's WordPiece tokenizer, from the bundled vocab (no model is loaded)
+        var tokenizer = BertTokenizer.Create(
+            Path.Combine(AppContext.BaseDirectory, "defender-model", "vocab.txt"),
+            new BertOptions { LowerCaseBeforeTokenization = true });
+        var budget = maxTokenLength - 2;
+        var fits = WordPieceTokenization.EncodesWithin(tokenizer, budget);
+        var splitter = new TextWindowSplitter(span => tokenizer.CountTokens(span), windowSize, windowOverlap, fits);
+        const string sentence = "The museum opens at nine, and the guided tour of the clock gallery starts at eleven.";
+        var text = string.Join(
+            " ",
+            Enumerable.Range(0, 60).Select(i => i % 4 == 3 ? WordPieceTokenizationTests.RoomHungryWord : sentence));
+
+        var windows = splitter.Split(text);
+
+        foreach (var window in Texts(text, windows))
+        {
+            tokenizer.CountTokens(window).Should().BeLessThanOrEqualTo(windowSize);
+            tokenizer.EncodeToIds(window, budget, addSpecialTokens: false, out _, out _).Count
+                .Should().Be(tokenizer.CountTokens(window), "the session must encode the whole window");
+        }
+
+        CoveredCharacters(text, windows).Should().Be(text.Count(c => !char.IsWhiteSpace(c)), "every character must be classified");
+    }
+
     [Theory]
     [InlineData(0, 0)]
     [InlineData(10, 10)]
@@ -240,6 +366,19 @@ public class TextWindowSplitterTests
 
         act.Should().Throw<ArgumentOutOfRangeException>();
     }
+
+    private static SessionFitCheck HasRoomFor(int room) => text => RoomNeeded(text) <= room;
+
+    private static int RoomNeeded(ReadOnlySpan<char> text)
+    {
+        var room = 0;
+        foreach (var word in text.ToString().Split(' ', StringSplitOptions.RemoveEmptyEntries))
+            room += word.StartsWith("BIG", StringComparison.Ordinal) ? 5 : 1;
+        return room;
+    }
+
+    private static List<string> Texts(string text, IReadOnlyList<TextWindow> windows) =>
+        windows.Select(window => text.Substring(window.Start, window.Length)).ToList();
 
     private static (int First, int Last) WordRange(string text, TextWindow window)
     {

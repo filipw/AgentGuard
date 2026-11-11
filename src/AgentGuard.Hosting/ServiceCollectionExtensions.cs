@@ -63,9 +63,31 @@ public sealed class AgentGuardOptions
         Ledger = new HashChainLedger(jsonlFilePath, maxInMemoryEntries);
         return this;
     }
+
+    /// <summary>
+    /// Enables a keyed <see cref="HashChainLedger"/> decision ledger: each entry's hash is an HMAC under
+    /// <paramref name="key"/>, so someone who can rewrite the ledger file but does not hold the key cannot
+    /// produce a chain that verifies. Without a key the chain only detects accidental corruption.
+    /// </summary>
+    /// <param name="key">The secret the chain is keyed with, at least <see cref="HashChainLedger.MinKeyLength"/> bytes. Keep it apart from the ledger file.</param>
+    /// <param name="jsonlFilePath">
+    /// When set, each entry is also written to this JSONL file; a file that already holds entries written
+    /// with the same key is continued.
+    /// </param>
+    /// <param name="maxInMemoryEntries">Caps the in-memory chain; null retains every decision.</param>
+    /// <exception cref="ArgumentException"><paramref name="key"/> is shorter than <see cref="HashChainLedger.MinKeyLength"/> bytes.</exception>
+    /// <exception cref="InvalidDataException">
+    /// The last line of <paramref name="jsonlFilePath"/> is not an intact ledger entry, so its chain
+    /// cannot be continued.
+    /// </exception>
+    public AgentGuardOptions UseDecisionLedger(byte[] key, string? jsonlFilePath = null, int? maxInMemoryEntries = null)
+    {
+        Ledger = new HashChainLedger(key, jsonlFilePath, maxInMemoryEntries);
+        return this;
+    }
 }
 
-internal sealed class AgentGuardFactory : IAgentGuardFactory
+internal sealed partial class AgentGuardFactory : IAgentGuardFactory
 {
     private readonly Dictionary<string, IGuardrailPolicy> _policies = [];
     private readonly IGuardrailPolicy _defaultPolicy;
@@ -88,7 +110,10 @@ internal sealed class AgentGuardFactory : IAgentGuardFactory
         }
     }
 
-    public AgentGuardFactory(AgentGuardConfiguration config, IServiceProvider serviceProvider)
+    /// <param name="config">The configuration that was read.</param>
+    /// <param name="serviceProvider">Resolves what the configured rules depend on, and the logger.</param>
+    /// <param name="source">Where <paramref name="config"/> was read from, for the no-rules warning.</param>
+    public AgentGuardFactory(AgentGuardConfiguration config, IServiceProvider serviceProvider, IConfiguration? source = null)
     {
         if (config.DefaultPolicy is not null)
         {
@@ -104,7 +129,39 @@ internal sealed class AgentGuardFactory : IAgentGuardFactory
             ConfigurationMapper.ApplyConfiguration(b, policyConfig, serviceProvider);
             _policies[name] = b.Build();
         }
+
+        WarnAboutPoliciesWithoutRules(serviceProvider.GetService<ILoggerFactory>(), source);
     }
+
+    // running without guardrails is allowed, but a policy with no rules lets everything through, and
+    // that is also what a misnamed configuration section produces - so it is never left unsaid
+    private void WarnAboutPoliciesWithoutRules(ILoggerFactory? loggerFactory, IConfiguration? source)
+    {
+        if (loggerFactory is null)
+            return;
+
+        var section = source as IConfigurationSection;
+        var prefix = section is null ? "" : section.Path + ":";
+        var hint = section is not null && !section.Exists()
+            ? $" The configuration section '{section.Path}' does not exist."
+            : "";
+
+        var logger = loggerFactory.CreateLogger<AgentGuardFactory>();
+
+        if (_defaultPolicy.Rules.Count == 0)
+            LogPolicyWithoutRules(logger, "default policy", $"{prefix}{nameof(AgentGuardConfiguration.DefaultPolicy)}:{nameof(PolicyConfiguration.Rules)}", hint);
+
+        foreach (var (name, policy) in _policies)
+        {
+            if (policy.Rules.Count == 0)
+                LogPolicyWithoutRules(logger, $"policy '{name}'", $"{prefix}{nameof(AgentGuardConfiguration.Policies)}:{name}:{nameof(PolicyConfiguration.Rules)}", hint);
+        }
+    }
+
+    [LoggerMessage(
+        Level = LogLevel.Warning,
+        Message = "The AgentGuard {Policy} has no rules and lets every message through: no rules were found at '{RulesPath}'.{Hint}")]
+    private static partial void LogPolicyWithoutRules(ILogger logger, string policy, string rulesPath, string hint);
 
     public IGuardrailPolicy GetPolicy(string name) =>
         _policies.TryGetValue(name, out var p) ? p
@@ -145,10 +202,26 @@ public static class ServiceCollectionExtensions
     /// Registers AgentGuard with policies loaded from <see cref="IConfiguration"/> (e.g. appsettings.json).
     /// LLM-based rules and ContentSafety rules resolve their dependencies (IChatClient, IContentSafetyClassifier) from DI.
     /// </summary>
+    /// <remarks>
+    /// The configuration is read when the policies are built, the first time <see cref="IAgentGuardFactory"/>
+    /// or the registered <see cref="GuardrailPipeline"/> is resolved. A value that can't be read or a key
+    /// that is not a known setting then throws an <see cref="InvalidOperationException"/>: a rule is never
+    /// left out of a policy because one of its settings was mistyped. The same goes for a setting that
+    /// belongs to a different rule type than the one it is written on.
+    /// <para>
+    /// Configuration that defines no rules is not an error - the policy is then empty and lets everything
+    /// through - but each such policy is reported with a warning, through the container's
+    /// <see cref="ILoggerFactory"/> when one is registered, that names the configuration path the rules
+    /// were looked for at. Pass the section that holds <c>DefaultPolicy</c> and <c>Policies</c>, e.g.
+    /// <c>configuration.GetSection("AgentGuard")</c>.
+    /// </para>
+    /// </remarks>
     public static IServiceCollection AddAgentGuard(this IServiceCollection services, IConfiguration configuration)
     {
-        var config = configuration.Get<AgentGuardConfiguration>() ?? new AgentGuardConfiguration();
-        services.AddSingleton<IAgentGuardFactory>(sp => new AgentGuardFactory(config, sp));
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        services.AddSingleton<IAgentGuardFactory>(sp =>
+            new AgentGuardFactory(AgentGuardConfigurationReader.Read(configuration), sp, configuration));
         services.AddSingleton(sp =>
             new GuardrailPipeline(
                 sp.GetRequiredService<IAgentGuardFactory>().GetDefaultPolicy(),

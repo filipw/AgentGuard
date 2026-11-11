@@ -353,6 +353,60 @@ public class DefenderPromptInjectionRuleTests
     }
 
     [Fact]
+    public async Task ShouldLetEvaluationsInFlightFinishOnTheModel_WhenDisposedWhileTheyRun()
+    {
+        const int Evaluations = 4;
+        var before = DefenderModelSession.ActiveSessionCount;
+
+        // long enough that every evaluation is still running its windows through the model at Dispose
+        var context = new GuardrailContext
+        {
+            Text = string.Join(" ", Enumerable.Repeat("The weather today is pleasant and the garden looks lovely.", 400)),
+            Phase = GuardrailPhase.Input
+        };
+
+        for (var round = 0; round < 3; round++)
+        {
+            var rule = new DefenderPromptInjectionRule(new DefenderPromptInjectionOptions { MaxWindows = 0 });
+            using var running = new CountdownEvent(Evaluations);
+            var evaluations = Enumerable.Range(0, Evaluations)
+                .Select(_ => Task.Run(async () =>
+                {
+                    running.Signal();
+                    return await rule.EvaluateAsync(context);
+                }))
+                .ToArray();
+            running.Wait();
+            await Task.Delay(20);
+            var inFlight = evaluations.Count(evaluation => !evaluation.IsCompleted);
+
+            rule.Dispose();
+            var afterDispose = async () => await rule.EvaluateAsync(context);
+            await afterDispose.Should().ThrowAsync<ObjectDisposedException>();
+
+            // an evaluation that had not entered the rule yet when it was disposed is refused, like any later one
+            var outcomes = await Task.WhenAll(evaluations.Select(async evaluation =>
+            {
+                try
+                {
+                    return await evaluation;
+                }
+                catch (ObjectDisposedException)
+                {
+                    return null;
+                }
+            }));
+
+            inFlight.Should().BePositive("the fixture needs an evaluation in flight at Dispose");
+            outcomes.Should().Contain(result => result != null);
+            outcomes.Where(result => result != null).Should().OnlyContain(
+                result => !result!.IsBlocked && !result.IsError, "an evaluation in flight classifies its whole input");
+            DefenderModelSession.ActiveSessionCount.Should().Be(before,
+                "the session is released once the last evaluation has left");
+        }
+    }
+
+    [Fact]
     public void ShouldReleaseTheSessionOnce_WhenDisposedTwice()
     {
         var session = new CountingDisposable();
@@ -383,6 +437,79 @@ public class DefenderPromptInjectionRuleTests
         var act = async () => await rule.EvaluateAsync(new GuardrailContext { Text = "hello", Phase = GuardrailPhase.Input });
 
         await act.Should().ThrowAsync<ObjectDisposedException>();
+    }
+
+    [Fact]
+    public async Task ShouldFinishTheEvaluationInFlight_WhenDisposedDuringClassification()
+    {
+        var outcome = await InFlightDisposal.RunAsync((session, insideClassifier) => new DefenderPromptInjectionRule(
+            _ =>
+            {
+                insideClassifier();
+                return new DefenderScore(0.05f, 0.3f);
+            },
+            WindowingTestHelpers.CountWords,
+            new DefenderPromptInjectionOptions(),
+            session));
+
+        outcome.ReleasesDuringEvaluation.Should().Be(0, "the session must not be released under a running evaluation");
+        outcome.ThrowsObjectDisposedAfterwards.Should().BeTrue("no evaluation may start once the rule is disposed");
+        outcome.Result.IsBlocked.Should().BeFalse("the evaluation in flight finishes normally");
+        outcome.Result.IsError.Should().BeFalse();
+        outcome.ReleasesAfterEvaluation.Should().Be(1, "the session is released when the evaluation has finished");
+    }
+
+    // errors: input the tokenizer or the model fails on is handled by OnError
+
+    [Fact]
+    public void ShouldFailClosedOnErrors_WhenOnErrorIsNotSet()
+    {
+        new DefenderPromptInjectionOptions().OnError.Should().Be(ErrorBehavior.FailClosed);
+    }
+
+    [Fact]
+    public async Task ShouldBlockWithAnErrorResult_WhenTheClassifierFailsOnTheInput()
+    {
+        var rule = new DefenderPromptInjectionRule(
+            _ => throw new InvalidOperationException("model failure"), WindowingTestHelpers.CountWords, new DefenderPromptInjectionOptions());
+
+        var result = await rule.EvaluateAsync(new GuardrailContext { Text = "an input the model cannot take", Phase = GuardrailPhase.Input });
+
+        result.IsBlocked.Should().BeTrue("a crafted input must not switch the classifier off");
+        result.IsError.Should().BeTrue();
+        result.Reason.Should().Contain("defender-prompt-injection");
+        result.Metadata.Should().Contain("error", true);
+        ((string)result.Metadata!["errorDetail"]).Should().Contain("model failure");
+    }
+
+    [Theory]
+    [InlineData(ErrorBehavior.FailOpen, false)]
+    [InlineData(ErrorBehavior.Warn, true)]
+    public async Task ShouldPassWithAnErrorResult_WhenTheClassifierFailsAndOnErrorLetsInputThrough(ErrorBehavior onError, bool isWarning)
+    {
+        var rule = new DefenderPromptInjectionRule(
+            _ => throw new InvalidOperationException("model failure"),
+            WindowingTestHelpers.CountWords,
+            new DefenderPromptInjectionOptions { OnError = onError });
+
+        var result = await rule.EvaluateAsync(new GuardrailContext { Text = "an input the model cannot take", Phase = GuardrailPhase.Input });
+
+        result.IsBlocked.Should().BeFalse();
+        result.IsError.Should().BeTrue();
+        result.IsWarning.Should().Be(isWarning);
+    }
+
+    [Fact]
+    public void ShouldThrow_WhenOnErrorIsNotADefinedValue()
+    {
+        const ErrorBehavior onError = (ErrorBehavior)42;
+
+        var act = () => new DefenderPromptInjectionRule(
+            _ => throw new InvalidOperationException("model failure"),
+            WindowingTestHelpers.CountWords,
+            new DefenderPromptInjectionOptions { OnError = onError });
+
+        act.Should().Throw<ArgumentOutOfRangeException>().WithMessage("*OnError*");
     }
 
     // windowing: input longer than one window is classified window by window (fake classifier that

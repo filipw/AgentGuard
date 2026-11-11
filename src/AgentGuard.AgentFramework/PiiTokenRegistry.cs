@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Agents.AI;
@@ -15,13 +16,18 @@ namespace AgentGuard.AgentFramework;
 /// is serialized with the session. It keeps the most recent <see cref="Capacity"/> tokens, oldest first.
 /// </para>
 /// <para>
-/// Recording reads the list, adds to a copy and writes the copy back. Two runs on the same session at the same
-/// time can each overwrite the other's addition; the tokens of the run that lost are then not restored in later
-/// turns. The list itself is never modified in place, so a run still reading an older copy is not affected.
+/// Recording reads the list, adds to a copy and writes the copy back, one recording at a time for a session
+/// object, so tools that run concurrently in one run, or runs that share the session object, each keep their
+/// tokens. The list itself is never modified in place, so a run still reading an older copy is not affected.
+/// Two copies of a session - the same serialized state restored twice - are recorded separately, and saving
+/// one over the other loses the other's tokens, as it loses the rest of its state.
 /// </para>
 /// </remarks>
 internal static class PiiTokenRegistry
 {
+    // one lock per session object: recording is a read-modify-write of the session's state
+    private static readonly ConditionalWeakTable<AgentSession, Lock> RecordingLocks = new();
+
     /// <summary>The <see cref="AgentSession.StateBag"/> key the tokens are stored under.</summary>
     public const string StateKey = "AgentGuard.PiiReversibleRedaction.Tokens";
 
@@ -54,23 +60,26 @@ internal static class PiiTokenRegistry
     /// <see cref="Capacity"/>.
     /// </summary>
     /// <param name="session">The run's session.</param>
-    /// <param name="tokens">The tokens minted for the run's request.</param>
+    /// <param name="tokens">The tokens minted for the run: its request's, or a tool result's.</param>
     public static void Record(AgentSession session, IEnumerable<string> tokens)
     {
-        var recorded = Read(session);
-        var known = new HashSet<string>(recorded, StringComparer.Ordinal);
+        lock (RecordingLocks.GetOrCreateValue(session))
+        {
+            var recorded = Read(session);
+            var known = new HashSet<string>(recorded, StringComparer.Ordinal);
 
-        var added = tokens.Where(known.Add).ToList();
-        if (added.Count == 0)
-            return;
+            var added = tokens.Where(known.Add).ToList();
+            if (added.Count == 0)
+                return;
 
-        var all = recorded.Concat(added);
-        var excess = recorded.Count + added.Count - Capacity;
+            var all = recorded.Concat(added);
+            var excess = recorded.Count + added.Count - Capacity;
 
-        session.StateBag.SetValue(
-            StateKey,
-            (excess > 0 ? all.Skip(excess) : all).ToArray(),
-            PiiTokenRegistryJsonContext.Default.Options);
+            session.StateBag.SetValue(
+                StateKey,
+                (excess > 0 ? all.Skip(excess) : all).ToArray(),
+                PiiTokenRegistryJsonContext.Default.Options);
+        }
     }
 }
 

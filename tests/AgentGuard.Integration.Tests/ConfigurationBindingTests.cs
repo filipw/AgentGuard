@@ -800,6 +800,97 @@ public class ConfigurationBindingTests
         act.Should().Throw<InvalidOperationException>().WithMessage("TokenLimit: MaxTokens must be at least 1, but was 0.");
     }
 
+    // a value that can't be read must fail the first resolve, not silently drop the rule from the policy
+
+    [Theory]
+    [InlineData("TokenLimit", "MaxTokens", "4k")]
+    [InlineData("RemotePii", "FailOpen", "no")]
+    [InlineData("PromptInjection", "Sensitivity", "Paranoid")]
+    public void ShouldThrow_WhenARuleSettingCannotBeRead(string type, string setting, string value)
+    {
+        var provider = BuildProvider(new()
+        {
+            ["DefaultPolicy:Rules:0:Type"] = "PromptInjection",
+            ["DefaultPolicy:Rules:1:Type"] = type,
+            [$"DefaultPolicy:Rules:1:{setting}"] = value,
+        });
+
+        var act = () => provider.GetRequiredService<IAgentGuardFactory>();
+
+        act.Should().Throw<InvalidOperationException>().WithMessage($"*{setting}*");
+    }
+
+    [Fact]
+    public void ShouldThrow_WhenARuleSettingInANamedPolicyCannotBeRead()
+    {
+        var provider = BuildProvider(new()
+        {
+            ["Policies:strict:Rules:0:Type"] = "TokenLimit",
+            ["Policies:strict:Rules:0:MaxTokens"] = "lots",
+        });
+
+        var act = () => provider.GetRequiredService<IAgentGuardFactory>();
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*strict*");
+    }
+
+    // the documented call is AddAgentGuard(configuration.GetSection("AgentGuard")): the policies then sit
+    // below a parent section, and a valid configuration has to load from there
+    [Fact]
+    public void ShouldLoadPolicies_WhenConfigurationIsANestedSection()
+    {
+        var root = BuildConfig(new Dictionary<string, string?>
+        {
+            ["AgentGuard:DefaultPolicy:Rules:0:Type"] = "PromptInjection",
+            ["AgentGuard:DefaultPolicy:Rules:1:Type"] = "Secrets",
+            ["AgentGuard:DefaultPolicy:Rules:2:Type"] = "TokenLimit",
+            ["AgentGuard:DefaultPolicy:Rules:2:MaxTokens"] = "4000",
+            ["AgentGuard:Policies:strict:Rules:0:Type"] = "PromptInjection",
+        });
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddAgentGuard(root.GetSection("AgentGuard"));
+        var factory = services.BuildServiceProvider().GetRequiredService<IAgentGuardFactory>();
+
+        factory.GetDefaultPolicy().Rules.Should().HaveCount(3);
+        factory.GetPolicy("strict").Rules.Should().HaveCount(1);
+    }
+
+    [Fact]
+    public void ShouldThrow_WhenARuleValueCannotBeRead_InANestedSection()
+    {
+        var root = BuildConfig(new Dictionary<string, string?>
+        {
+            ["AgentGuard:DefaultPolicy:Rules:0:Type"] = "PromptInjection",
+            ["AgentGuard:DefaultPolicy:Rules:1:Type"] = "TokenLimit",
+            ["AgentGuard:DefaultPolicy:Rules:1:MaxTokens"] = "4k",
+        });
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddAgentGuard(root.GetSection("AgentGuard"));
+        var provider = services.BuildServiceProvider();
+
+        var act = () => provider.GetRequiredService<IAgentGuardFactory>();
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*default policy*TokenLimit*MaxTokens*");
+    }
+
+    [Fact]
+    public void ShouldThrow_WhenARuleSettingIsMisspelled()
+    {
+        var provider = BuildProvider(new()
+        {
+            ["DefaultPolicy:Rules:0:Type"] = "TokenLimit",
+            ["DefaultPolicy:Rules:0:MaxTokenz"] = "100",
+        });
+
+        var act = () => provider.GetRequiredService<IAgentGuardFactory>();
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*MaxTokenz*");
+    }
+
     [Theory]
     [InlineData("PromptInjection", "Sensitivity", "7")]
     [InlineData("TokenLimit", "Phase", "4")]
@@ -854,6 +945,268 @@ public class ConfigurationBindingTests
         {
             CultureInfo.CurrentCulture = previous;
         }
+    }
+
+    // a setting another rule type reads would otherwise bind and then be ignored, leaving the rule
+    // on a default the configuration appears to override
+
+    [Theory]
+    [InlineData("Secrets", "Action", "Redact", "SecretAction")]
+    [InlineData("ToolResultGuardrail", "SecretAction", "Redact", "Action, StripUnicodeControl")]
+    [InlineData("Retrieval", "Action", "Sanitize", "DetectPii, DetectPromptInjection, DetectSecrets, RetrievalAction")]
+    [InlineData("PromptInjection", "Threshold", "0.5", "Sensitivity")]
+    [InlineData("PiiRedaction", "Endpoint", "https://detector.example.com", "Countries, Entities, Replacement")]
+    [InlineData("TokenLimit", "Sensitivity", "High", "MaxTokens, OverflowStrategy, Phase")]
+    [InlineData("InputNormalization", "MaxTokens", "100", "DecodeBase64, DecodeHex, DetectReversedText, NormalizeUnicode")]
+    [InlineData("ToolCallGuardrail", "Action", "Block", "Categories")]
+    [InlineData("DefenderPromptInjection", "ModelPath", "model.onnx", "MaxWindows, Threshold, WindowOverlap, WindowSize")]
+    [InlineData("DebertaPromptInjection", "Sensitivity", "High", "MaxWindows, ModelPath, Threshold, TokenizerPath, WindowOverlap, WindowSize")]
+    [InlineData("ContentSafety", "Sensitivity", "High", "BlocklistNames, HaltOnBlocklistHit, MaxAllowedSeverity")]
+    [InlineData("LlmPromptInjection", "Sensitivity", "High", "IncludeClassification, SystemPrompt")]
+    [InlineData("LlmPiiDetection", "Replacement", "[X]", "PiiAction, SystemPrompt")]
+    [InlineData("LlmTopicBoundary", "PolicyDescription", "be nice", "AllowedTopics, SystemPrompt")]
+    [InlineData("LlmOutputPolicy", "GroundednessAction", "Warn", "OutputPolicyAction, PolicyDescription, SystemPrompt")]
+    [InlineData("LlmGroundedness", "CopyrightAction", "Warn", "GroundednessAction, SystemPrompt")]
+    [InlineData("LlmCopyright", "GroundednessAction", "Warn", "CopyrightAction, SystemPrompt")]
+    public void ShouldThrow_WhenARuleSetsASettingItsTypeDoesNotRead(string type, string setting, string value, string accepted)
+    {
+        var provider = BuildProvider(new()
+        {
+            ["DefaultPolicy:Rules:0:Type"] = type,
+            [$"DefaultPolicy:Rules:0:{setting}"] = value,
+        });
+
+        var act = () => provider.GetRequiredService<IAgentGuardFactory>();
+
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage($"{type}: {setting} is not a setting of this rule type. Its settings are: {accepted}.");
+    }
+
+    [Fact]
+    public void ShouldThrow_WhenARuleInANamedPolicySetsASettingItsTypeDoesNotRead()
+    {
+        var provider = BuildProvider(new()
+        {
+            ["Policies:strict:Rules:0:Type"] = "PromptInjection",
+            ["Policies:strict:Rules:1:Type"] = "Secrets",
+            ["Policies:strict:Rules:1:Action"] = "Redact",
+        });
+
+        var act = () => provider.GetRequiredService<IAgentGuardFactory>();
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("Secrets: Action is not a setting of this rule type.*");
+    }
+
+    [Fact]
+    public void ShouldThrow_WhenAListSettingIsSetOnARuleTypeThatDoesNotReadIt()
+    {
+        var provider = BuildProvider(new()
+        {
+            ["DefaultPolicy:Rules:0:Type"] = "Secrets",
+            ["DefaultPolicy:Rules:0:Entities:0"] = "EMAIL_ADDRESS",
+        });
+
+        var act = () => provider.GetRequiredService<IAgentGuardFactory>();
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("Secrets: Entities is not a setting of this rule type.*");
+    }
+
+    [Fact]
+    public void ShouldThrow_WhenOnnxPromptInjectionHasATokenizerPathButNoModelPath()
+    {
+        var provider = BuildProvider(new()
+        {
+            ["DefaultPolicy:Rules:0:Type"] = "OnnxPromptInjection",
+            ["DefaultPolicy:Rules:0:TokenizerPath"] = "spm.model",
+        });
+
+        var act = () => provider.GetRequiredService<IAgentGuardFactory>();
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("OnnxPromptInjection: TokenizerPath*ModelPath*");
+    }
+
+    [Theory]
+    [InlineData("RemotePii", "SubscriptionKey", "key")]
+    [InlineData("AzurePii", "AuthHeaderName", "X-Api-Key")]
+    [InlineData("AzurePii", "Sensitivity", "High")]
+    public void ShouldThrow_WhenAnAdapterRuleSetsASettingItsTypeDoesNotRead(string type, string setting, string value)
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton<IGuardrailRuleFactory, RemotePiiRuleFactory>();
+        services.AddSingleton<IGuardrailRuleFactory, AzurePiiRuleFactory>();
+        services.AddAgentGuard(BuildConfig(new Dictionary<string, string?>
+        {
+            ["DefaultPolicy:Rules:0:Type"] = type,
+            ["DefaultPolicy:Rules:0:Endpoint"] = "https://detector.example.com/detect",
+            ["DefaultPolicy:Rules:0:Entities:0"] = "PERSON",
+            [$"DefaultPolicy:Rules:0:{setting}"] = value,
+        }));
+        var provider = services.BuildServiceProvider();
+
+        var act = () => provider.GetRequiredService<IAgentGuardFactory>();
+
+        act.Should().Throw<InvalidOperationException>().WithMessage($"{type}: {setting} is not a setting of this rule type.*");
+    }
+
+    [Fact]
+    public void ShouldLoadEveryRule_WhenEachSetsOnlyTheSettingsItsTypeReads()
+    {
+        var provider = BuildProvider(new()
+        {
+            ["DefaultPolicy:Rules:0:Type"] = "InputNormalization",
+            ["DefaultPolicy:Rules:0:DecodeBase64"] = "false",
+            ["DefaultPolicy:Rules:0:DecodeHex"] = "false",
+            ["DefaultPolicy:Rules:0:DetectReversedText"] = "false",
+            ["DefaultPolicy:Rules:0:NormalizeUnicode"] = "true",
+            ["DefaultPolicy:Rules:1:Type"] = "PromptInjection",
+            ["DefaultPolicy:Rules:1:Sensitivity"] = "High",
+            ["DefaultPolicy:Rules:2:Type"] = "PiiRedaction",
+            ["DefaultPolicy:Rules:2:Entities:0"] = "EMAIL_ADDRESS",
+            ["DefaultPolicy:Rules:2:Replacement"] = "[X]",
+            ["DefaultPolicy:Rules:2:Countries:0"] = "uk",
+            ["DefaultPolicy:Rules:3:Type"] = "TokenLimit",
+            ["DefaultPolicy:Rules:3:MaxTokens"] = "100",
+            ["DefaultPolicy:Rules:3:Phase"] = "Output",
+            ["DefaultPolicy:Rules:3:OverflowStrategy"] = "Warn",
+            ["DefaultPolicy:Rules:4:Type"] = "Secrets",
+            ["DefaultPolicy:Rules:4:SecretAction"] = "Redact",
+            ["DefaultPolicy:Rules:5:Type"] = "ToolCallGuardrail",
+            ["DefaultPolicy:Rules:5:Categories"] = "All",
+            ["DefaultPolicy:Rules:6:Type"] = "ToolResultGuardrail",
+            ["DefaultPolicy:Rules:6:Action"] = "Sanitize",
+            ["DefaultPolicy:Rules:6:StripUnicodeControl"] = "false",
+            ["DefaultPolicy:Rules:7:Type"] = "Retrieval",
+            ["DefaultPolicy:Rules:7:DetectPromptInjection"] = "true",
+            ["DefaultPolicy:Rules:7:DetectSecrets"] = "true",
+            ["DefaultPolicy:Rules:7:DetectPii"] = "true",
+            ["DefaultPolicy:Rules:7:RetrievalAction"] = "Sanitize",
+        });
+
+        provider.GetRequiredService<IAgentGuardFactory>().GetDefaultPolicy().Rules.Should().HaveCount(8);
+    }
+
+    [Fact]
+    public void ShouldRejectAPiiEntity_WhenNoRecognizerDetectsIt()
+    {
+        var provider = BuildProvider(new()
+        {
+            ["DefaultPolicy:Rules:0:Type"] = "PiiRedaction",
+            ["DefaultPolicy:Rules:0:Entities:0"] = "EMAIL_ADRESS",
+        });
+
+        var act = () => provider.GetRequiredService<IAgentGuardFactory>();
+
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("PiiRedaction: 'EMAIL_ADRESS' is not a PII entity type the detector finds. Accepted:*EMAIL_ADDRESS*");
+    }
+
+    // a limit configured for both directions must not quietly become an input-only limit
+
+    [Theory]
+    [InlineData("Both")]
+    [InlineData("both")]
+    [InlineData("Input, Output")]
+    public void ShouldLimitInputAndOutput_WhenTheTokenLimitPhaseIsBoth(string phase)
+    {
+        var provider = BuildProvider(new()
+        {
+            ["DefaultPolicy:Rules:0:Type"] = "TokenLimit",
+            ["DefaultPolicy:Rules:0:MaxTokens"] = "5",
+            ["DefaultPolicy:Rules:0:Phase"] = phase,
+        });
+
+        var rules = provider.GetRequiredService<IAgentGuardFactory>().GetDefaultPolicy().Rules;
+
+        rules.Select(r => r.Name).Should().BeEquivalentTo("token-limit-input", "token-limit-output");
+        rules.Select(r => r.Phase).Should().BeEquivalentTo([GuardrailPhase.Input, GuardrailPhase.Output]);
+    }
+
+    [Fact]
+    public async Task ShouldRejectLongInputAndTruncateLongOutput_WhenTheTokenLimitPhaseIsBothWithoutAStrategy()
+    {
+        const string longText = "one two three four five six seven eight nine ten eleven twelve";
+        var provider = BuildProvider(new()
+        {
+            ["DefaultPolicy:Rules:0:Type"] = "TokenLimit",
+            ["DefaultPolicy:Rules:0:MaxTokens"] = "5",
+            ["DefaultPolicy:Rules:0:Phase"] = "Both",
+        });
+        var pipeline = provider.GetRequiredService<GuardrailPipeline>();
+
+        var input = await pipeline.RunAsync(new GuardrailContext { Text = longText, Phase = GuardrailPhase.Input });
+        var output = await pipeline.RunAsync(new GuardrailContext { Text = longText, Phase = GuardrailPhase.Output });
+
+        input.IsBlocked.Should().BeTrue();
+        output.IsBlocked.Should().BeFalse();
+        output.WasModified.Should().BeTrue();
+        output.FinalText.Length.Should().BeLessThan(longText.Length);
+    }
+
+    [Fact]
+    public async Task ShouldApplyTheStrategyToInputAndOutput_WhenTheTokenLimitPhaseIsBothWithAStrategy()
+    {
+        const string longText = "one two three four five six seven eight nine ten eleven twelve";
+        var provider = BuildProvider(new()
+        {
+            ["DefaultPolicy:Rules:0:Type"] = "TokenLimit",
+            ["DefaultPolicy:Rules:0:MaxTokens"] = "5",
+            ["DefaultPolicy:Rules:0:Phase"] = "Both",
+            ["DefaultPolicy:Rules:0:OverflowStrategy"] = "Reject",
+        });
+        var pipeline = provider.GetRequiredService<GuardrailPipeline>();
+
+        var input = await pipeline.RunAsync(new GuardrailContext { Text = longText, Phase = GuardrailPhase.Input });
+        var output = await pipeline.RunAsync(new GuardrailContext { Text = longText, Phase = GuardrailPhase.Output });
+
+        input.IsBlocked.Should().BeTrue();
+        output.IsBlocked.Should().BeTrue();
+    }
+
+    // a misnamed section or key must not turn into a policy that lets everything through
+
+    [Theory]
+    [InlineData("DefaultPolcy:Rules:0:Type", "DefaultPolcy")]
+    [InlineData("DefaultPolicy:Rule:0:Type", "Rule")]
+    [InlineData("DefaultPolicy:Rules:0:Typ", "Typ")]
+    [InlineData("Policy:strict:Rules:0:Type", "Policy")]
+    [InlineData("Policies:strict:Rule:0:Type", "Rule")]
+    [InlineData("Rules:0:Type", "Rules")]
+    public void ShouldThrow_WhenAConfigurationKeyIsMisnamed(string key, string misnamed)
+    {
+        var provider = BuildProvider(new() { [key] = "PromptInjection" });
+
+        var act = () => provider.GetRequiredService<IAgentGuardFactory>();
+
+        act.Should().Throw<InvalidOperationException>().WithMessage($"*{misnamed}*");
+    }
+
+    [Fact]
+    public void ShouldThrow_WhenTheSectionHoldsOnlyKeysThatAreNotAgentGuardSettings()
+    {
+        var root = BuildConfig(new Dictionary<string, string?>
+        {
+            ["Logging:LogLevel:Default"] = "Information",
+            ["AllowedHosts"] = "*",
+        });
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddAgentGuard(root);
+        var provider = services.BuildServiceProvider();
+
+        var act = () => provider.GetRequiredService<IAgentGuardFactory>();
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*DefaultPolicy*");
+    }
+
+    [Fact]
+    public void ShouldThrow_WhenARuleHasNoType()
+    {
+        var provider = BuildProvider(new() { ["DefaultPolicy:Rules:0:Sensitivity"] = "High" });
+
+        var act = () => provider.GetRequiredService<IAgentGuardFactory>();
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*rule type*");
     }
 
     private sealed class CustomRuleFactory : IGuardrailRuleFactory

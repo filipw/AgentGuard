@@ -175,7 +175,7 @@ You'll see guardrail pipeline runs as nested spans in the trace view, with per-r
 
 ## Tamper-evident decision ledger
 
-Beyond traces and metrics, AgentGuard can keep a **tamper-evident audit trail** of pipeline decisions for compliance and forensics. Each decision (what policy was active, what was requested, and why it was allowed/blocked/modified) is stamped into a SHA-256 hash chain: every entry hashes its own fields together with the previous entry's hash, so any retroactive edit breaks the chain and is detected by `Verify()`.
+Beyond traces and metrics, AgentGuard can keep a **tamper-evident audit trail** of pipeline decisions for compliance and forensics. Each decision (what policy was active, what was requested, and why it was allowed/blocked/modified) is stamped into a hash chain: every entry hashes its own fields together with the previous entry's hash, so a retroactive edit breaks the chain and is detected by `Verify()`. Create the ledger with a key (see [What tamper-evidence covers](#what-tamper-evidence-covers)) when the log has to hold against someone who can rewrite the file.
 
 The ledger types live in `AgentGuard.Core.Ledger` and are dependency-free (`System.Security.Cryptography` + `System.Text.Json`):
 
@@ -196,6 +196,7 @@ builder.Services.AddAgentGuard(options =>
     options.DefaultPolicy(p => p.BlockPromptInjection());
     options.UseDecisionLedger();                       // in-memory hash chain
     // options.UseDecisionLedger("audit/decisions.jsonl"); // also mirror to JSONL
+    // options.UseDecisionLedger(key, "audit/decisions.jsonl"); // keyed (HMAC) chain - see Threat model
 });
 ```
 
@@ -243,10 +244,35 @@ The loaded ledger is verification-only by default. Pass `resumeWriting: true` to
 
 The ledger is an audit **side-channel**: if recording a decision fails (for example a JSONL write error), the failure is logged and swallowed so it never breaks guardrail evaluation. The in-memory chain and the request both continue.
 
+An entry whose line could not be written stays in memory and is written, in order, ahead of the next entry (and once more when the ledger is disposed), so a passing I/O error leaves the file one intact chain. Up to 10,000 entries wait this way. Past that the oldest are given up, and a later `Load` reports the break at the first entry after the gap.
+
 ### What tamper-evidence covers
 
 Editing an entry, or removing one from the middle of the chain, breaks the linkage and is reported
-by `Verify()`. Removing entries from the **end** is not detectable: a hash chain carries no record of
+by `Verify()`. Who that holds against depends on how the ledger is created:
+
+- **Without a key** (`new HashChainLedger(path)`, `UseDecisionLedger(path)`) the chain is plain
+  SHA-256 over the entries' own fields. It catches corruption and edits made without recomputing
+  the chain. Anyone who can rewrite the file can recompute every hash from the edit onward, and the
+  result verifies.
+- **With a key** each hash is an HMAC-SHA256 under that key, so a rewritten chain only verifies for
+  someone who holds the key. That protects the log from whoever can write the file only as long as
+  the key is kept where they cannot read it - a secret store, not a file beside the log.
+
+```csharp
+byte[] key = Convert.FromBase64String(secrets["AgentGuard:LedgerKey"]);   // 16 bytes or more; 32 random bytes is the natural size
+
+services.AddSingleton<IGuardrailLedger>(new HashChainLedger(key, "audit/decisions.jsonl"));
+
+// verification needs the same key
+var loaded = HashChainLedger.Load("audit/decisions.jsonl", key);
+bool intact = loaded.Verify();
+```
+
+A file is continued only under the key it was written with: opening a keyed ledger over an unkeyed
+file, or the other way round, throws `InvalidDataException`.
+
+Removing entries from the **end** is not detectable either way: a hash chain carries no record of
 how long it should be, so a truncated chain is indistinguishable from one that simply stopped there.
 Detecting that needs an external anchor - the last sequence number recorded somewhere the chain's
 holder cannot reach, or periodic publication of the head hash.

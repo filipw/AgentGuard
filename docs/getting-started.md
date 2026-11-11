@@ -69,7 +69,7 @@ var guardedClient = chatClient.UseAgentGuard(g => g
 var response = await guardedClient.GetResponseAsync(conversationHistory);
 ```
 
-Every user message in the request is guarded, not only the last one. The newest is always evaluated; an earlier one reuses the verdict already reached for identical text (from a bounded cache) or, on a miss, is judged against the conversation as it stood. An earlier user message the policy blocks is replaced with `ChatMessageGuard.RemovedMessagePlaceholder`, and only a block of the newest user message blocks the call. Output guardrails evaluate each assistant message of the response (streamed responses too), and its tool calls and tool results together with the final text. The reasoning of each assistant message goes through the output rules separately: a rewrite replaces it and a block removes it, without blocking the answer. Rewrites keep images, attachments, tool calls, encrypted reasoning and metadata.
+Every message in the request is guarded, not only the last one, except system messages (the application's own prompt; pass `trustedRoles: []` to `UseAgentGuard` to check them too, or name other roles to skip) and assistant messages the decorator itself returned earlier, which are the model's own answers coming back as history. The newest user message is always evaluated; any other message reuses the verdict already reached for identical text (from a bounded cache) or, on a miss, is judged against the conversation as it stood (verdicts are not reused when a rule is gated with `.When()` / `.Unless()`, and one from an evaluation in which a rule failed is not kept). Another message the policy blocks is replaced with `ChatMessageGuard.RemovedMessagePlaceholder`, and only a block of the newest user message blocks the call. With `GuardToolResults()` in the policy, the tool results in the request are checked as well: a blocked one is replaced with `ChatMessageGuard.BlockedToolResultPlaceholder`, a sanitized one substituted. Output guardrails evaluate each assistant message of the response (streamed responses too), and its tool calls and tool results together with the final text. The reasoning of each assistant message goes through the output rules separately: a rewrite replaces it and a block removes it, without blocking the answer. Rewrites keep images, attachments, tool calls, encrypted reasoning and metadata.
 
 Streaming is also supported - input guardrails run before the stream starts. By default output guardrails evaluate the buffered full response before chunks are forwarded to the caller; a policy with `UseProgressiveStreaming()` streams answer tokens immediately and emits retraction/replacement events instead, holding tool calls, reasoning and other non-text content back until the final check.
 
@@ -77,7 +77,7 @@ To have tool-call guardrails vet each model turn before its tool calls run, plac
 
 ### 3. Microsoft Agent Framework Middleware
 
-Deepest integration. Add as a pipeline stage via `UseAgentGuard()` on `AIAgentBuilder`. Conversation history flows from the MAF `messages` parameter automatically.
+Deepest integration. Add as a pipeline stage via `UseAgentGuard()` on `AIAgentBuilder`. Conversation history flows from the MAF `messages` parameter automatically; in a run with a session that uses the default in-memory history provider, output rules and re-ask also get the session's earlier turns as context.
 
 ```csharp
 using AgentGuard.AgentFramework;
@@ -98,7 +98,7 @@ var response = await guardedAgent.RunAsync(messages, session, options);
 
 Supports both `RunAsync` and `RunStreamingAsync`, including progressive streaming with retraction events. Messages are guarded the same way as in the `IChatClient` decorator: every user message of the request, and each assistant message of the response.
 
-`ChatClientAgent` saves its response to the session's chat history before this middleware sees it. With the default in-memory history provider, an output block or rewrite is applied to the stored response too, so the next turn doesn't replay what was blocked or redacted. Other history providers and service-side conversations keep the raw response; if that matters, also add `UseAgentGuard()` to the agent's `IChatClient`, which guards the response before the agent saves it.
+`ChatClientAgent` saves its response to the session's chat history before this middleware sees it. With the default in-memory history provider, an output block or rewrite is applied to the stored response too, so the next turn doesn't replay what was blocked or redacted. Other history providers and service-side conversations keep the raw response; if that matters, also add `UseAgentGuard()` to the agent's `IChatClient`, which guards the response before the agent saves it. The same goes for conversation context: with those providers output rules see only the current run's messages, while the `IChatClient` decorator sees every request as the model does.
 
 When the agent invokes functions through a `FunctionInvokingChatClient` (`ChatClientAgent` has one), `GuardToolCalls()` checks each call's arguments before the tool runs - a blocked call is never executed and the model receives `ToolResultMiddlewareOptions.BlockedToolCallPlaceholder` instead - and `GuardToolResults()` checks each tool result before the model sees it.
 
