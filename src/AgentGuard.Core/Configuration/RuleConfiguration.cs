@@ -27,6 +27,8 @@ public sealed class RuleConfiguration
     /// CRYPTO, IP_ADDRESS, URL, MAC_ADDRESS, US_ITIN). When empty, all supported entities are detected
     /// (PiiRedaction only). For RemotePii / AzurePii this is the set the remote detector supports
     /// (e.g. PERSON, ADDRESS) and is required - there is no "detect everything" default for a remote call.
+    /// Names are matched ignoring case, AzurePii also accepts Azure's own category names (e.g. Person),
+    /// and a name the detector does not find throws when the policy is built.
     /// </summary>
     public List<string>? Entities { get; set; }
     /// <summary>
@@ -48,7 +50,10 @@ public sealed class RuleConfiguration
     // --- TokenLimit ---
     /// <summary>Maximum token count, at least 1. Default: 4000.</summary>
     public int? MaxTokens { get; set; }
-    /// <summary>Phase: Input or Output. Default: Input.</summary>
+    /// <summary>
+    /// Phase: Input, Output or Both. Default: Input. Both adds one limit per direction; without an
+    /// <see cref="OverflowStrategy"/> the input limit rejects and the output limit truncates.
+    /// </summary>
     public string? Phase { get; set; }
     /// <summary>Overflow strategy: Reject, Truncate, or Warn. Default: Reject for input, Truncate for output.</summary>
     public string? OverflowStrategy { get; set; }
@@ -161,8 +166,9 @@ public sealed class RuleConfiguration
     /// <summary>Per-request timeout in seconds (RemotePii / AzurePii), at least 1. Default: 10.</summary>
     public int? TimeoutSeconds { get; set; }
     /// <summary>
-    /// When true (default), a remote/Azure failure is swallowed and local-only recognizers still
-    /// redact what they can (RemotePii / AzurePii). When false, the failure propagates.
+    /// When true (default), a remote/Azure failure does not block: local-only recognizers still
+    /// redact what they can, and the result is marked as an error so the gap is logged and recorded
+    /// (RemotePii / AzurePii). When false, the failure blocks the text.
     /// </summary>
     public bool? FailOpen { get; set; }
 

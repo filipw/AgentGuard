@@ -25,6 +25,7 @@ internal static class SsrfDetector
     internal const string InternalNetwork = "Internal network SSRF";
     internal const string CloudMetadata = "Cloud metadata SSRF";
     internal const string InternalHostname = "DNS rebinding via special TLDs";
+    internal const string UnqualifiedHostname = "Unqualified internal host name SSRF";
 
     // longer than any real host plus userinfo; a longer run after a scheme without "//" is not
     // treated as an authority
@@ -55,7 +56,7 @@ internal static class SsrfDetector
 
     // well-known metadata endpoints are flagged wherever they appear
     private static readonly Regex MetadataPattern = new(
-        @"(?<![\d.])(?:169\.254\.169\.254|169\.254\.170\.2|100\.100\.100\.200|192\.0\.0\.192)(?!\d)|\bmetadata\.google\.internal\b|(?<![0-9A-Fa-f:])fd00:ec2::254(?![0-9A-Fa-f:])",
+        @"(?<![\d.])(?:169\.254\.169\.254|169\.254\.170\.2|100\.100\.100\.200|192\.0\.0\.192|168\.63\.129\.16)(?!\d)|\bmetadata\.google\.internal\b|(?<![0-9A-Fa-f:])fd00:ec2::254(?![0-9A-Fa-f:])",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, Timeout);
 
     // where a host ends. Userinfo may hold most of these (a URL parser reads "http://x;@127.0.0.1/" as
@@ -68,7 +69,8 @@ internal static class SsrfDetector
     private static readonly SearchValues<char> UrlTerminators =
         SearchValues.Create("/\\?#\"`<> \t\r\n\f\v ");
 
-    private static readonly string[] InternalSuffixes = [".internal", ".local", ".corp", ".lan", ".intranet", ".home.arpa"];
+    // .svc is how a Kubernetes service is named from inside the cluster (kubernetes.default.svc)
+    private static readonly string[] InternalSuffixes = [".internal", ".local", ".corp", ".lan", ".intranet", ".home.arpa", ".svc"];
 
     /// <summary>The patterns this detector runs, for warming.</summary>
     internal static IEnumerable<Regex> Patterns => [SchemePattern, ProtocolRelativePattern, BareHostPattern, MetadataPattern];
@@ -98,7 +100,7 @@ internal static class SsrfDetector
             if (scheme.Equals("file", StringComparison.OrdinalIgnoreCase) ? slashes != 2 : slashes < 2 && !IsSpecialScheme(scheme))
                 continue;
 
-            if (CheckAuthority(text, match.Index + match.Length, slashed: slashes >= 2) is { } description)
+            if (CheckAuthority(text, match.Index + match.Length, slashed: slashes >= 2, network: slashes >= 2 && IsSpecialScheme(scheme)) is { } description)
                 return description;
 
             if (slashes >= 2 && CheckWithUri(text, match.Index, match.Index + match.Length) is { } uriDescription)
@@ -107,7 +109,7 @@ internal static class SsrfDetector
 
         foreach (var match in ProtocolRelativePattern.MatchesUntilTimeout(text))
         {
-            if (CheckAuthority(text, match.Index + match.Length, slashed: true) is { } description)
+            if (CheckAuthority(text, match.Index + match.Length, slashed: true, network: false) is { } description)
                 return description;
         }
 
@@ -122,11 +124,11 @@ internal static class SsrfDetector
             }
             else if (match.Groups["ip6"].Success)
             {
-                description = ClassifyHost(NormalizeHost("[" + match.Groups["ip6"].Value + "]"), fromUrl: false);
+                description = ClassifyHost(NormalizeHost("[" + match.Groups["ip6"].Value + "]"), HostSource.Bare);
             }
             else
             {
-                description = ClassifyHostname(match.Groups["name"].Value.ToLowerInvariant(), fromUrl: false);
+                description = ClassifyHostname(match.Groups["name"].Value.ToLowerInvariant(), HostSource.Bare);
             }
 
             if (description is not null)
@@ -150,7 +152,11 @@ internal static class SsrfDetector
     /// Whether the authority follows "//". Only then is it followed past <see cref="MaxAuthorityLength"/>:
     /// a "//" ends any authority before it, so no two such scans overlap and the scan stays linear.
     /// </param>
-    private static string? CheckAuthority(string text, int start, bool slashed)
+    /// <param name="network">
+    /// Whether this is the authority of a URL a network client connects to: an http, ws or ftp scheme
+    /// followed by "//". Only there is a name without a dot taken to be a host.
+    /// </param>
+    private static string? CheckAuthority(string text, int start, bool slashed, bool network)
     {
         // the search is bounded, so a run of scheme-like prefixes with no terminator in sight costs
         // at most MaxAuthorityLength each rather than the rest of the text
@@ -190,7 +196,7 @@ internal static class SsrfDetector
             host = (colon >= 0 ? authority[..colon] : authority).TrimEnd(']');
         }
 
-        return ClassifyHost(NormalizeHost(host.ToString()), fromUrl: true);
+        return ClassifyHost(NormalizeHost(host.ToString()), network ? HostSource.NetworkUrl : HostSource.Url);
     }
 
     /// <summary>
@@ -225,7 +231,9 @@ internal static class SsrfDetector
             return null;
         }
 
-        return host.Length == 0 ? null : ClassifyHost(NormalizeHost(host), fromUrl: true);
+        return host.Length == 0
+            ? null
+            : ClassifyHost(NormalizeHost(host), IsSpecialScheme(uri.Scheme) ? HostSource.NetworkUrl : HostSource.Url);
     }
 
     /// <summary>
@@ -249,12 +257,35 @@ internal static class SsrfDetector
             }
         }
 
+        // IDNA drops these before a name is looked up, so "local\u00ADhost" is localhost
+        if (decoded.AsSpan().IndexOfAny(IgnoredInHostNames) >= 0)
+            decoded = string.Concat(decoded.Where(c => !IgnoredInHostNames.Contains(c)));
+
         decoded = decoded.ToLowerInvariant();
 
         return decoded.Length > 1 && decoded[^1] == '.' ? decoded[..^1] : decoded;
     }
 
-    private static string? ClassifyHost(string host, bool fromUrl)
+    // soft hyphen, combining grapheme joiner, zero-width characters, word joiner, BOM, and the
+    // Mongolian and general variation selectors
+    private static readonly SearchValues<char> IgnoredInHostNames = SearchValues.Create(
+        "\u00AD\u034F\u180B\u180C\u180D\u200B\u200C\u200D\u2060\uFEFF"
+        + "\uFE00\uFE01\uFE02\uFE03\uFE04\uFE05\uFE06\uFE07\uFE08\uFE09\uFE0A\uFE0B\uFE0C\uFE0D\uFE0E\uFE0F");
+
+    /// <summary>Where a host was read from, which decides how much a bare name is trusted to be a host.</summary>
+    private enum HostSource
+    {
+        /// <summary>A host with no scheme in front of it.</summary>
+        Bare,
+
+        /// <summary>The authority of a URL of any scheme, including app-specific ones (slack://channel).</summary>
+        Url,
+
+        /// <summary>The authority of a URL a network client connects to: http, https, ws, wss, ftp.</summary>
+        NetworkUrl
+    }
+
+    private static string? ClassifyHost(string host, HostSource source)
     {
         if (host.Length == 0)
             return null;
@@ -272,7 +303,7 @@ internal static class SsrfDetector
         if (LooksLikeIPv4(host) && IPAddress.TryParse(host, out var v4) && v4.AddressFamily == AddressFamily.InterNetwork)
             return ClassifyAddress(v4);
 
-        return ClassifyHostname(host, fromUrl);
+        return ClassifyHostname(host, source);
     }
 
     // the character set of every IPv4 form IPAddress accepts: decimal, octal and 0x-prefixed hex parts
@@ -290,8 +321,10 @@ internal static class SsrfDetector
         return true;
     }
 
-    private static string? ClassifyHostname(string host, bool fromUrl)
+    private static string? ClassifyHostname(string host, HostSource source)
     {
+        var fromUrl = source != HostSource.Bare;
+
         if (host == "localhost" || host.EndsWith(".localhost", StringComparison.Ordinal))
             return Localhost;
 
@@ -303,13 +336,33 @@ internal static class SsrfDetector
             return CloudMetadata;
         }
 
+        // the API server as named from another namespace, without the .svc suffix
+        if (fromUrl && host is "kubernetes.default")
+            return InternalHostname;
+
         foreach (var suffix in InternalSuffixes)
         {
             if (host.EndsWith(suffix, StringComparison.Ordinal) && host.Length > suffix.Length)
                 return InternalHostname;
         }
 
+        // a name with no dot is resolved through the local search domain or the hosts file, so it
+        // can only be a machine on the caller's own network: http://redis:6379/, http://kubernetes/
+        if (source == HostSource.NetworkUrl && IsUnqualifiedName(host))
+            return UnqualifiedHostname;
+
         return null;
+    }
+
+    private static bool IsUnqualifiedName(string host)
+    {
+        foreach (var c in host)
+        {
+            if (!char.IsAsciiLetterOrDigit(c) && c != '-' && c != '_')
+                return false;
+        }
+
+        return host.Length > 0;
     }
 
     private static string? ClassifyAddress(IPAddress address)
@@ -321,8 +374,12 @@ internal static class SsrfDetector
         if (!address.TryWriteBytes(b, out _))
             return null;
 
-        if ((b[0], b[1], b[2], b[3]) is (169, 254, 169, 254) or (169, 254, 170, 2) or (100, 100, 100, 200) or (192, 0, 0, 192))
+        // the instance metadata services, and Azure's WireServer, which hands out the same secrets
+        if ((b[0], b[1], b[2], b[3]) is (169, 254, 169, 254) or (169, 254, 170, 2) or (100, 100, 100, 200) or (192, 0, 0, 192)
+            or (168, 63, 129, 16))
+        {
             return CloudMetadata;
+        }
 
         // 127/8 loopback; 0/8 "this network", which connects to the local host
         if (b[0] is 127 or 0)

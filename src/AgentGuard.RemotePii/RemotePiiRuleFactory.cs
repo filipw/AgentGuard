@@ -25,6 +25,13 @@ namespace AgentGuard.RemotePii;
 /// <see cref="RuleConfiguration.AuthHeaderValue"/>, <see cref="RuleConfiguration.TimeoutSeconds"/> and
 /// <see cref="RuleConfiguration.FailOpen"/>, plus the PII settings <c>PiiRedaction</c> honours:
 /// <see cref="RuleConfiguration.Replacement"/> and <see cref="RuleConfiguration.Countries"/>.
+/// Any other setting on the rule entry, and an entity name that is not a known entity type, is a
+/// configuration error.
+/// </para>
+/// <para>
+/// With <c>FailOpen</c> left on, a failed remote call lets the text through with the local redactions
+/// applied and an error result (<c>IsError</c>) that the pipeline logs and records; with
+/// <c>"FailOpen": false</c> it blocks the text.
 /// </para>
 /// </remarks>
 public sealed class RemotePiiRuleFactory : IGuardrailRuleFactory
@@ -37,6 +44,17 @@ public sealed class RemotePiiRuleFactory : IGuardrailRuleFactory
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(configuration);
+
+        RuleSettings.EnsureOnly(
+            configuration,
+            nameof(RuleConfiguration.Endpoint),
+            nameof(RuleConfiguration.Entities),
+            nameof(RuleConfiguration.AuthHeaderName),
+            nameof(RuleConfiguration.AuthHeaderValue),
+            nameof(RuleConfiguration.TimeoutSeconds),
+            nameof(RuleConfiguration.FailOpen),
+            nameof(RuleConfiguration.Replacement),
+            nameof(RuleConfiguration.Countries));
 
         var endpoint = configuration.Endpoint
             ?? throw new InvalidOperationException("RemotePii requires Endpoint.");
@@ -52,22 +70,33 @@ public sealed class RemotePiiRuleFactory : IGuardrailRuleFactory
                 $"RemotePii: TimeoutSeconds must be at least 1, but was {configuration.TimeoutSeconds}."));
         }
 
-        builder.RedactPiiWithRemote(
-            new RemotePiiOptions
-            {
-                Endpoint = endpoint,
-                SupportedEntities = entities,
-                AuthHeaderName = configuration.AuthHeaderName,
-                AuthHeaderValue = configuration.AuthHeaderValue,
-                Timeout = TimeSpan.FromSeconds(configuration.TimeoutSeconds ?? 10),
-                FailOpen = configuration.FailOpen ?? true,
-            },
-            // Entities above is what the remote detector supports, not a filter on what is redacted:
-            // the local recognizers keep detecting everything, as with the code-based overloads
-            new PiiOptions
-            {
-                Replacement = configuration.Replacement,
-                Countries = configuration.Countries is { Count: > 0 } ? configuration.Countries : null,
-            });
+        try
+        {
+            builder.RedactPiiWithRemote(
+                new RemotePiiOptions
+                {
+                    Endpoint = endpoint,
+                    SupportedEntities = entities,
+                    AuthHeaderName = configuration.AuthHeaderName,
+                    AuthHeaderValue = configuration.AuthHeaderValue,
+                    Timeout = TimeSpan.FromSeconds(configuration.TimeoutSeconds ?? 10),
+                    FailOpen = configuration.FailOpen ?? true,
+                },
+                // Entities above is what the remote detector supports, not a filter on what is redacted:
+                // the local recognizers keep detecting everything, as with the code-based overloads
+                new PiiOptions
+                {
+                    Replacement = configuration.Replacement,
+                    Countries = configuration.Countries is { Count: > 0 } ? configuration.Countries : null,
+                });
+        }
+        catch (ArgumentException ex)
+        {
+            // a setting the builder rejects is a configuration error like the ones above
+            var message = ex.ParamName is null
+                ? ex.Message
+                : ex.Message.Replace($" (Parameter '{ex.ParamName}')", "", StringComparison.Ordinal);
+            throw new InvalidOperationException($"RemotePii: {message}", ex);
+        }
     }
 }

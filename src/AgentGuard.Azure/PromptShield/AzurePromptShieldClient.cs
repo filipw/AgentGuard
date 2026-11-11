@@ -21,8 +21,9 @@ public sealed record PromptShieldResult
     public IReadOnlyList<bool> DocumentAttacksDetected { get; init; } = [];
 
     /// <summary>
-    /// True when an API call failed (error, timeout, retry exhaustion) and none of the calls that did
-    /// complete detected an attack. The result is a fail-open default, not an actual classification.
+    /// True when an API call failed (error, timeout, retry exhaustion, or a success response without
+    /// the analysis the request asked for) and none of the calls that did complete detected an attack.
+    /// The result is a fail-open default, not an actual classification.
     /// An attack that was detected is reported as such even when a later call failed, because the
     /// missing analysis could not have cleared it.
     /// </summary>
@@ -115,8 +116,10 @@ public sealed partial class AzurePromptShieldClient : IDisposable
     /// prompt into overlapping windows, each oversized document likewise, and the documents packed into
     /// batches that fit. Requests are sent one at a time, each prompt window paired with a document
     /// batch, and an attack found by any of them is reported. Whitespace-only prompts and documents are
-    /// not sent. When a request fails the remaining ones are skipped, and the result is an error unless
-    /// an attack was already detected. Cancellation of <paramref name="cancellationToken"/> is never a
+    /// not sent. A response is only a verdict when it holds an <c>attackDetected</c> value for the
+    /// prompt and for every document sent; a success response without them (an empty or error-shaped
+    /// body, fewer document analyses than documents) counts as a failed request. When a request fails
+    /// the remaining ones are skipped, and the result is an error unless an attack was already detected. Cancellation of <paramref name="cancellationToken"/> is never a
     /// failure: it throws <see cref="OperationCanceledException"/>, whatever exception the request
     /// that was under way ends with.
     /// </remarks>
@@ -159,8 +162,17 @@ public sealed partial class AzurePromptShieldClient : IDisposable
                 var analyses = result?.DocumentsAnalysis ?? [];
                 for (var j = 0; j < batch.Count && j < analyses.Count; j++)
                 {
-                    if (analyses[j].AttackDetected)
+                    if (analyses[j]?.AttackDetected == true)
                         documentAttacksDetected[batch[j].DocumentIndex] = true;
+                }
+
+                // a success status alone is not a verdict: the attacks a partial answer does report
+                // are kept above, but what it leaves out was not analyzed
+                if (DescribeMissingAnalysis(request, result) is { } missing)
+                {
+                    LogIncompleteResponse(_logger, missing);
+                    failed = true;
+                    break;
                 }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -236,6 +248,25 @@ public sealed partial class AzurePromptShieldClient : IDisposable
         return batches;
     }
 
+    /// <summary>
+    /// What a response fails to cover of the request it answers, or null when it holds an
+    /// <c>attackDetected</c> verdict for the prompt and for every document that was sent.
+    /// </summary>
+    private static string? DescribeMissingAnalysis(ShieldPromptRequest request, ShieldPromptResponse? response)
+    {
+        if (response is null)
+            return "the response body is empty";
+
+        if (request.UserPrompt is not null && response.UserPromptAnalysis?.AttackDetected is null)
+            return "userPromptAnalysis.attackDetected is missing";
+
+        var analyzed = response.DocumentsAnalysis?.Count(analysis => analysis?.AttackDetected is not null) ?? 0;
+        if (analyzed < request.Documents.Count)
+            return $"documentsAnalysis covers {analyzed} of the {request.Documents.Count} documents sent";
+
+        return null;
+    }
+
     private async Task<ShieldPromptResponse?> ShieldAsync(ShieldPromptRequest request, CancellationToken cancellationToken)
     {
         var url = $"/contentsafety/text:shieldPrompt?api-version={ApiVersion}";
@@ -299,6 +330,9 @@ public sealed partial class AzurePromptShieldClient : IDisposable
     [LoggerMessage(Level = LogLevel.Error, Message = "Azure Prompt Shield analysis failed")]
     private static partial void LogAnalysisFailed(ILogger logger, Exception ex);
 
+    [LoggerMessage(Level = LogLevel.Error, Message = "Azure Prompt Shield returned a success response without the analysis the request asked for: {Missing}")]
+    private static partial void LogIncompleteResponse(ILogger logger, string missing);
+
     [LoggerMessage(Level = LogLevel.Warning, Message = "Azure Prompt Shield rate limited, retry {Attempt}/{MaxRetries} after {RetryAfter}")]
     private static partial void LogRateLimited(ILogger logger, int attempt, int maxRetries, TimeSpan retryAfter);
 
@@ -316,17 +350,18 @@ public sealed partial class AzurePromptShieldClient : IDisposable
     private sealed class ShieldPromptRequest
     {
         public string? UserPrompt { get; init; }
-        public IReadOnlyList<string> Documents { get; init; } = [];
+        public List<string> Documents { get; init; } = [];
     }
 
     private sealed class ShieldPromptResponse
     {
         public AnalysisResult? UserPromptAnalysis { get; init; }
-        public List<AnalysisResult>? DocumentsAnalysis { get; init; }
+        public List<AnalysisResult?>? DocumentsAnalysis { get; init; }
     }
 
     private sealed class AnalysisResult
     {
-        public bool AttackDetected { get; init; }
+        // nullable so that a body without the field is told apart from "no attack"
+        public bool? AttackDetected { get; init; }
     }
 }

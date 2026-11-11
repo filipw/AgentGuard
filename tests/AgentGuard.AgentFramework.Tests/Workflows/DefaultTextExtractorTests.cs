@@ -92,6 +92,12 @@ public class DefaultTextExtractorTests
     }
 
     [Fact]
+    public void ShouldReturnNull_WhenObjectHasNeitherTextNorItsOwnToString()
+    {
+        _extractor.ExtractText(new ObjectWithoutText()).Should().BeNull("a type name is not text to guard");
+    }
+
+    [Fact]
     public void ShouldReturnEmptyString_WhenMessageIsEmptyString()
     {
         _extractor.ExtractText("").Should().Be("");
@@ -101,6 +107,8 @@ public class DefaultTextExtractorTests
     {
         public string? Text { get; set; }
     }
+
+    private class ObjectWithoutText;
 
     private class ObjectWithoutTextProperty(int value)
     {

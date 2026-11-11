@@ -22,8 +22,8 @@ public sealed class AzureProtectedMaterialOptions
     public ProtectedMaterialAction Action { get; init; } = ProtectedMaterialAction.Block;
 
     /// <summary>
-    /// What to do when the Azure API call fails (timeout, 429 exhaustion, HTTP error).
-    /// Default: <see cref="ErrorBehavior.FailOpen"/>.
+    /// What to do when the Azure API call fails (timeout, 429 exhaustion, HTTP error, or a success
+    /// response without the analysis). Default: <see cref="ErrorBehavior.FailOpen"/>.
     /// </summary>
     public ErrorBehavior OnError { get; init; } = ErrorBehavior.FailOpen;
 }

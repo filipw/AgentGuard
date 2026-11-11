@@ -255,6 +255,89 @@ public class OpirSafetyRuleTests
     }
 
     [Fact]
+    public async Task ShouldFinishTheEvaluationInFlight_WhenDisposedDuringClassification()
+    {
+        var outcome = await InFlightDisposal.RunAsync((session, insideClassifier) => new OpirSafetyRule(
+            _ =>
+            {
+                insideClassifier();
+                return new OpirScore(0.05f, "toxicity", [0.05f, 0.01f, 0.01f, 0.01f, 0.01f, 0.01f]);
+            },
+            Labels,
+            WindowingTestHelpers.CountWords,
+            prefixTokenCount: 30,
+            new OpirSafetyOptions { ModelPath = "m", TokenizerPath = "t", PrefixPath = "p" },
+            session));
+
+        outcome.ReleasesDuringEvaluation.Should().Be(0, "the session must not be released under a running evaluation");
+        outcome.ThrowsObjectDisposedAfterwards.Should().BeTrue("no evaluation may start once the rule is disposed");
+        outcome.Result.IsBlocked.Should().BeFalse("the evaluation in flight finishes normally");
+        outcome.Result.IsError.Should().BeFalse();
+        outcome.ReleasesAfterEvaluation.Should().Be(1, "the session is released when the evaluation has finished");
+    }
+
+    // errors: input the tokenizer or the model fails on is handled by OnError
+
+    [Fact]
+    public void ShouldFailClosedOnErrors_WhenOnErrorIsNotSet()
+    {
+        new OpirSafetyOptions { ModelPath = "m", TokenizerPath = "t", PrefixPath = "p" }.OnError.Should().Be(ErrorBehavior.FailClosed);
+    }
+
+    [Fact]
+    public async Task ShouldBlockWithAnErrorResult_WhenTheClassifierFailsOnTheInput()
+    {
+        var rule = new OpirSafetyRule(
+            _ => throw new InvalidOperationException("model failure"),
+            Labels,
+            WindowingTestHelpers.CountWords,
+            prefixTokenCount: 30,
+            new OpirSafetyOptions { ModelPath = "m", TokenizerPath = "t", PrefixPath = "p" });
+
+        var result = await rule.EvaluateAsync(new GuardrailContext { Text = "an input the model cannot take", Phase = GuardrailPhase.Input });
+
+        result.IsBlocked.Should().BeTrue("a crafted input must not switch the classifier off");
+        result.IsError.Should().BeTrue();
+        result.Reason.Should().Contain("opir-content-safety");
+        result.Metadata.Should().Contain("error", true);
+        ((string)result.Metadata!["errorDetail"]).Should().Contain("model failure");
+    }
+
+    [Theory]
+    [InlineData(ErrorBehavior.FailOpen, false)]
+    [InlineData(ErrorBehavior.Warn, true)]
+    public async Task ShouldPassWithAnErrorResult_WhenTheClassifierFailsAndOnErrorLetsInputThrough(ErrorBehavior onError, bool isWarning)
+    {
+        var rule = new OpirSafetyRule(
+            _ => throw new InvalidOperationException("model failure"),
+            Labels,
+            WindowingTestHelpers.CountWords,
+            prefixTokenCount: 30,
+            new OpirSafetyOptions { ModelPath = "m", TokenizerPath = "t", PrefixPath = "p", OnError = onError });
+
+        var result = await rule.EvaluateAsync(new GuardrailContext { Text = "an input the model cannot take", Phase = GuardrailPhase.Input });
+
+        result.IsBlocked.Should().BeFalse();
+        result.IsError.Should().BeTrue();
+        result.IsWarning.Should().Be(isWarning);
+    }
+
+    [Fact]
+    public void ShouldThrow_WhenOnErrorIsNotADefinedValue()
+    {
+        const ErrorBehavior onError = (ErrorBehavior)42;
+
+        var act = () => new OpirSafetyRule(
+            _ => throw new InvalidOperationException("model failure"),
+            Labels,
+            WindowingTestHelpers.CountWords,
+            prefixTokenCount: 30,
+            new OpirSafetyOptions { ModelPath = "m", TokenizerPath = "t", PrefixPath = "p", OnError = onError });
+
+        act.Should().Throw<ArgumentOutOfRangeException>().WithMessage("*OnError*");
+    }
+
+    [Fact]
     public async Task ShouldReturnPassed_WhenTextIsEmpty()
     {
         var rule = CreateRuleWithoutSession();

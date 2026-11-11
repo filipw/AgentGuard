@@ -48,6 +48,8 @@ public sealed partial class AzureContentSafetyClassifier : IContentSafetyClassif
     /// Text over the service's 10K-character limit is split into overlapping windows (at whitespace
     /// where possible) that are sent one request at a time; each category reports its worst severity
     /// across the windows and blocklist matches are combined. Whitespace-only windows are not sent.
+    /// A success response with neither a scored category nor a blocklist match (an empty or
+    /// error-shaped body) counts as a failed window.
     /// When a window fails the remaining ones are skipped and the result is an error, unless the
     /// windows already analyzed decide the verdict on their own - a blocklist match, or a category in
     /// <see cref="ContentSafetyOptions.Categories"/> above <see cref="ContentSafetyOptions.MaxAllowedSeverity"/> -
@@ -77,13 +79,19 @@ public sealed partial class AzureContentSafetyClassifier : IContentSafetyClassif
             {
                 var response = await _client.AnalyzeTextAsync(CreateRequest(window, options), cancellationToken);
 
+                var analyzedCategories = 0;
                 if (response.Value.CategoriesAnalysis is not null)
                 {
                     foreach (var cat in response.Value.CategoriesAnalysis)
                     {
+                        // a category without a severity was not analyzed; it is not "safe"
+                        if (cat.Severity is not { } severity)
+                            continue;
+
+                        analyzedCategories++;
                         var mapped = MapCategory(cat.Category);
                         if (mapped != ContentSafetyCategory.None)
-                            RecordWorst(categories, mapped, MapSeverity(cat.Severity ?? 0));
+                            RecordWorst(categories, mapped, MapSeverity(severity));
                     }
                 }
 
@@ -102,6 +110,11 @@ public sealed partial class AzureContentSafetyClassifier : IContentSafetyClassif
                         }
                     }
                 }
+
+                // a success status alone is not a verdict: the service scores every category unless a
+                // blocklist hit halted it, so a body with neither says nothing about the text
+                if (analyzedCategories == 0 && response.Value.BlocklistsMatch is not { Count: > 0 })
+                    throw new InvalidDataException("The response has neither a category analysis nor a blocklist match.");
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {

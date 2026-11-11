@@ -59,6 +59,17 @@ public class PiiTokenRegistryTests
     }
 
     [Fact]
+    public void ShouldKeepEveryToken_WhenTheyAreRecordedConcurrently()
+    {
+        var session = new TestSession();
+        var tokens = Enumerable.Range(0, 256).Select(i => $"token-{i}").ToList();
+
+        Parallel.ForEach(tokens, new ParallelOptions { MaxDegreeOfParallelism = 16 }, token => PiiTokenRegistry.Record(session, [token]));
+
+        PiiTokenRegistry.Read(session).Should().BeEquivalentTo(tokens);
+    }
+
+    [Fact]
     public void ShouldReadNothing_WhenThereIsNoSessionOrTheStateIsNotAList()
     {
         var session = new TestSession(AgentSessionStateBag.Deserialize(

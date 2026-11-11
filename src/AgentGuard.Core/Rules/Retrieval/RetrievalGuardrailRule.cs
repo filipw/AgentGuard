@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using AgentGuard.Core.Abstractions;
+using AgentGuard.Core.Rules.ToolResult;
 
 namespace AgentGuard.Core.Rules.Retrieval;
 
@@ -65,7 +66,11 @@ public enum RetrievalFilterAction
     /// <summary>Remove the chunk entirely from the context.</summary>
     Remove,
 
-    /// <summary>Sanitize the chunk (e.g. redact PII, strip injection attempts) but keep it.</summary>
+    /// <summary>
+    /// Sanitize the chunk but keep it: secrets and PII are replaced where they stand, and an
+    /// injected instruction is removed together with the rest of its paragraph, since a match only
+    /// marks where an instruction starts.
+    /// </summary>
     Sanitize
 }
 
@@ -75,7 +80,21 @@ public enum RetrievalFilterAction
 public sealed class RetrievalGuardrailOptions
 {
     /// <summary>Check for prompt injection patterns embedded in retrieved content. Default: true.</summary>
+    /// <remarks>
+    /// Retrieved content is checked the way tool results are: with the patterns of
+    /// <see cref="ToolResultGuardrailRule"/> for <see cref="InjectionRiskLevel"/>, on the text as
+    /// stored and with its invisible characters removed, and inside encoded runs. Invisible
+    /// characters are also removed from the chunks handed on.
+    /// </remarks>
     public bool DetectPromptInjection { get; init; } = true;
+
+    /// <summary>
+    /// How much of the indirect-injection pattern set to apply to retrieved content. Default:
+    /// <see cref="ToolRiskLevel.Medium"/>. Use <see cref="ToolRiskLevel.High"/> for stores that hold
+    /// content written by outsiders (inboxes, tickets, scraped pages), where wording that is only
+    /// suspicious in a message should count too.
+    /// </summary>
+    public ToolRiskLevel InjectionRiskLevel { get; init; } = ToolRiskLevel.Medium;
 
     /// <summary>Check for PII in retrieved chunks. Default: false.</summary>
     public bool DetectPII { get; init; }
@@ -90,6 +109,10 @@ public sealed class RetrievalGuardrailOptions
     public int? MaxChunks { get; init; }
 
     /// <summary>Action to take when a chunk violates a filter. Default: Remove.</summary>
+    /// <remarks>
+    /// A chunk that could not be scanned within the pattern time budget is removed under either
+    /// action: what was not checked cannot be sanitized.
+    /// </remarks>
     public RetrievalFilterAction Action { get; init; } = RetrievalFilterAction.Remove;
 
     /// <summary>Custom chunk filters. Each receives the chunk text and returns true if the chunk should be flagged.</summary>
@@ -106,7 +129,8 @@ public sealed class RetrievalGuardrailOptions
 ///
 /// This rule operates on the <see cref="GuardrailContext.Properties"/> bag - callers place
 /// retrieved chunks under the <c>RetrievalChunks</c> key, and the rule writes back approved
-/// chunks under <c>ApprovedChunks</c>.
+/// chunks under <c>ApprovedChunks</c>. Nothing puts chunks there on its own: in a policy the rule
+/// is inert until the code that retrieves does so, or calls <see cref="EvaluateChunks"/> directly.
 ///
 /// Order 8 - runs early, before prompt injection detection (order 10), so that poisoned
 /// chunks are removed before downstream rules evaluate the combined context.
@@ -114,7 +138,7 @@ public sealed class RetrievalGuardrailOptions
 public sealed class RetrievalGuardrailRule : IGuardrailRule
 {
     private readonly RetrievalGuardrailOptions _options;
-    private readonly List<Regex> _injectionPatterns;
+    private readonly ToolResultGuardrailRule _injection;
 
     /// <summary>Property-bag key the caller places the retrieved chunks under.</summary>
     public const string RetrievalChunksKey = "RetrievalChunks";
@@ -124,6 +148,14 @@ public sealed class RetrievalGuardrailRule : IGuardrailRule
 
     /// <summary>Property-bag key carrying the full per-chunk evaluation.</summary>
     public const string RetrievalResultKey = "RetrievalGuardrailResult";
+
+    private const string InjectionFilter = "prompt-injection";
+    private const string SecretsFilter = "secrets";
+    private const string PiiFilter = "pii";
+    private const string IncompleteFilter = "scan-incomplete";
+
+    // the name the injection check reports a chunk under
+    private const string ChunkSourceName = "retrieval";
 
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(200);
 
@@ -136,10 +168,16 @@ public sealed class RetrievalGuardrailRule : IGuardrailRule
     public RetrievalGuardrailRule(RetrievalGuardrailOptions? options = null)
     {
         _options = options ?? new();
-        _injectionPatterns = BuildInjectionPatterns();
+
+        // a retrieved chunk is content the model did not write and the user did not type, exactly
+        // like a tool result, so it is held to the same patterns
+        _injection = new ToolResultGuardrailRule(new ToolResultGuardrailOptions
+        {
+            Action = _options.Action == RetrievalFilterAction.Sanitize ? ToolResultAction.Sanitize : ToolResultAction.Block,
+            SanitizationReplacement = _options.SanitizationReplacement
+        });
 
         // compiled patterns generate IL on first use; pay it here, not on the first request
-        RegexPatterns.Warm(_injectionPatterns);
         RegexPatterns.Warm(SecretPatterns);
         RegexPatterns.Warm(PiiPatterns);
     }
@@ -156,12 +194,15 @@ public sealed class RetrievalGuardrailRule : IGuardrailRule
     {
         // Retrieve chunks from the context properties bag
         if (!context.Properties.TryGetValue(RetrievalChunksKey, out var chunksObj) ||
-            chunksObj is not IReadOnlyList<RetrievedChunk> chunks ||
-            chunks.Count == 0)
+            chunksObj is not IEnumerable<RetrievedChunk> given)
         {
             // No chunks to evaluate - pass through
             return ValueTask.FromResult(GuardrailResult.Passed());
         }
+
+        var chunks = given as IReadOnlyList<RetrievedChunk> ?? given.ToList();
+        if (chunks.Count == 0)
+            return ValueTask.FromResult(GuardrailResult.Passed());
 
         var result = EvaluateChunks(chunks);
 
@@ -169,18 +210,22 @@ public sealed class RetrievalGuardrailRule : IGuardrailRule
         context.Properties[ApprovedChunksKey] = result.ApprovedChunks;
         context.Properties[RetrievalResultKey] = result;
 
+        var incomplete = result.EvaluationResults.Count(r => r.TriggeredFilter == IncompleteFilter);
         if (result.FilteredCount > 0)
         {
             return ValueTask.FromResult(new GuardrailResult
             {
                 IsModified = true,
+                // a chunk dropped because it could not be scanned is a failure to check, not a finding
+                IsError = incomplete > 0,
                 ModifiedText = context.Text,  // Original user query unchanged
                 Reason = $"Retrieval guardrail filtered {result.FilteredCount} of {chunks.Count} chunks",
                 Metadata = new Dictionary<string, object>
                 {
                     ["filteredCount"] = result.FilteredCount,
                     ["totalChunks"] = chunks.Count,
-                    ["approvedCount"] = result.ApprovedChunks.Count
+                    ["approvedCount"] = result.ApprovedChunks.Count,
+                    ["incompleteScans"] = incomplete
                 }
             });
         }
@@ -236,54 +281,21 @@ public sealed class RetrievalGuardrailRule : IGuardrailRule
         // Evaluate remaining chunks for content violations
         foreach (var chunk in workingChunks)
         {
-            var triggered = EvaluateChunkContent(chunk.Content);
+            var evaluation = EvaluateChunk(chunk);
+            evaluations.Add(evaluation);
 
-            if (triggered.Count == 0)
-            {
-                evaluations.Add(new ChunkEvaluationResult { Chunk = chunk });
-                approved.Add(chunk);
+            if (evaluation.IsFiltered)
                 continue;
-            }
 
-            var reason = string.Join("; ", triggered.Select(t => t.Reason));
-            var filters = string.Join(", ", triggered.Select(t => t.Filter));
-
-            if (_options.Action == RetrievalFilterAction.Remove)
-            {
-                evaluations.Add(new ChunkEvaluationResult
+            approved.Add(evaluation.SanitizedContent is null
+                ? chunk
+                : new RetrievedChunk
                 {
-                    Chunk = chunk,
-                    IsFiltered = true,
-                    Reason = reason,
-                    TriggeredFilter = filters
+                    Content = evaluation.SanitizedContent,
+                    Source = chunk.Source,
+                    Score = chunk.Score,
+                    Metadata = chunk.Metadata
                 });
-                continue;
-            }
-
-            // Sanitize: every filter that fired is applied. Dispatching on only the first one left
-            // a chunk that tripped both the injection and the secret filter approved with the
-            // secret still in it.
-            var sanitized = chunk.Content;
-            foreach (var (_, filter) in triggered)
-            {
-                sanitized = SanitizeContent(sanitized, filter);
-            }
-
-            evaluations.Add(new ChunkEvaluationResult
-            {
-                Chunk = chunk,
-                IsFiltered = false,
-                SanitizedContent = sanitized,
-                Reason = reason,
-                TriggeredFilter = filters
-            });
-            approved.Add(new RetrievedChunk
-            {
-                Content = sanitized,
-                Source = chunk.Source,
-                Score = chunk.Score,
-                Metadata = chunk.Metadata
-            });
         }
 
         return new RetrievalGuardrailResult
@@ -294,65 +306,137 @@ public sealed class RetrievalGuardrailRule : IGuardrailRule
     }
 
     /// <summary>
-    /// Returns every filter that the chunk trips, not just the first. Sanitization dispatches on
-    /// this list, so a chunk carrying more than one kind of problem has all of them removed.
+    /// Runs every enabled filter over one chunk. All of them run, not just the first to fire, so a
+    /// chunk carrying more than one kind of problem has each of them removed when sanitizing.
     /// </summary>
-    private List<(string Reason, string Filter)> EvaluateChunkContent(string content)
+    private ChunkEvaluationResult EvaluateChunk(RetrievedChunk chunk)
     {
         var triggered = new List<(string Reason, string Filter)>();
+        var sanitize = _options.Action == RetrievalFilterAction.Sanitize;
+        var incomplete = false;
 
-        // Check for prompt injection patterns
-        if (_options.DetectPromptInjection && _injectionPatterns.Exists(p => p.IsMatchOrFalse(content)))
+        // the text the later filters see and, when the chunk is kept, the text handed on
+        var content = chunk.Content;
+
+        if (_options.DetectPromptInjection && !string.IsNullOrWhiteSpace(content))
         {
-            triggered.Add(("Retrieved chunk contains prompt injection pattern", "prompt-injection"));
+            var inspection = _injection.Inspect(ChunkSourceName, content, _options.InjectionRiskLevel);
+            incomplete |= inspection.TimedOut > 0;
+
+            if (inspection.Violations.Count > 0)
+            {
+                triggered.Add(($"Retrieved chunk contains prompt injection pattern: {inspection.Violations[0].Description}", InjectionFilter));
+            }
+
+            // sanitized, or only cleared of the invisible characters used to break up keywords
+            content = inspection.Cleaned ?? content;
         }
 
-        // Check for secrets
-        if (_options.DetectSecrets && ContainsSecretPatterns(content))
+        if (_options.DetectSecrets && Find(SecretPatterns, content, ref incomplete))
         {
-            triggered.Add(("Retrieved chunk contains secret/credential", "secrets"));
+            triggered.Add(("Retrieved chunk contains secret/credential", SecretsFilter));
+            if (sanitize)
+                content = Replace(SecretPatterns, content);
         }
 
-        // Check for PII
-        if (_options.DetectPII && ContainsPiiPatterns(content))
+        if (_options.DetectPII && Find(PiiPatterns, content, ref incomplete))
         {
-            triggered.Add(("Retrieved chunk contains PII", "pii"));
+            triggered.Add(("Retrieved chunk contains PII", PiiFilter));
+            if (sanitize)
+                content = Replace(PiiPatterns, content);
         }
 
-        // Custom filters
         foreach (var (name, predicate) in _options.CustomFilters)
         {
             if (predicate(content))
+            {
                 triggered.Add(($"Retrieved chunk flagged by custom filter: {name}", name));
+
+                // a predicate says nothing about where the problem is, so nothing of the chunk is kept
+                if (sanitize)
+                    content = _options.SanitizationReplacement;
+            }
         }
 
-        return triggered;
-    }
-
-    private string SanitizeContent(string content, string filter)
-    {
-        return filter switch
+        // what was not scanned to the end can be neither passed nor sanitized
+        if (incomplete)
         {
-            "prompt-injection" => SanitizeInjection(content),
-            "secrets" => SanitizeSecrets(content),
-            "pii" => SanitizePii(content),
-            _ => _options.SanitizationReplacement
+            return new ChunkEvaluationResult
+            {
+                Chunk = chunk,
+                IsFiltered = true,
+                Reason = $"Retrieved chunk could not be scanned within the {RegexTimeout.TotalMilliseconds:F0} ms pattern time budget",
+                TriggeredFilter = IncompleteFilter
+            };
+        }
+
+        var changed = !string.Equals(content, chunk.Content, StringComparison.Ordinal);
+        if (triggered.Count == 0)
+        {
+            return changed
+                ? new ChunkEvaluationResult
+                {
+                    Chunk = chunk,
+                    SanitizedContent = content,
+                    Reason = "Invisible characters removed from retrieved chunk"
+                }
+                : new ChunkEvaluationResult { Chunk = chunk };
+        }
+
+        return new ChunkEvaluationResult
+        {
+            Chunk = chunk,
+            IsFiltered = !sanitize,
+            SanitizedContent = sanitize ? content : null,
+            Reason = string.Join("; ", triggered.Select(t => t.Reason)),
+            TriggeredFilter = string.Join(", ", triggered.Select(t => t.Filter))
         };
     }
 
-    private string SanitizeInjection(string content)
+    private static bool Find(Regex[] patterns, string text, ref bool incomplete)
     {
-        var result = content;
-        foreach (var pattern in _injectionPatterns)
+        var found = false;
+        foreach (var pattern in patterns)
         {
-            result = pattern.ReplaceOrOriginal(result, _options.SanitizationReplacement);
+            try
+            {
+                found |= pattern.IsMatch(text);
+            }
+            catch (RegexMatchTimeoutException)
+            {
+                incomplete = true;
+            }
         }
+
+        return found;
+    }
+
+    private string Replace(Regex[] patterns, string text)
+    {
+        var result = text;
+        foreach (var pattern in patterns)
+        {
+            try
+            {
+                // a MatchEvaluator, not the string overload: "$" sequences in the replacement are
+                // not substitutions
+                result = pattern.Replace(result, _ => _options.SanitizationReplacement);
+            }
+            catch (RegexMatchTimeoutException)
+            {
+                // where the match ends cannot be known, so nothing of the chunk is kept
+                return _options.SanitizationReplacement;
+            }
+        }
+
         return result;
     }
 
     private static readonly Regex[] SecretPatterns =
     [
-        new(@"(?<![A-Za-z0-9/+=])AKIA[0-9A-Z]{16}(?![A-Za-z0-9/+=])", PatternOptions, RegexTimeout),
+        // only a character an access key id could continue from rules a match out: "KEY=AKIA..." is
+        // the usual way one is written down
+        new(@"(?<![A-Za-z0-9/+])AKIA[0-9A-Z]{16}(?![A-Za-z0-9/+=])", PatternOptions, RegexTimeout),
         new(@"(?<![A-Za-z0-9_])gh[pousr]_[A-Za-z0-9_]{36,255}(?![A-Za-z0-9_])", PatternOptions, RegexTimeout),
         // the whole PEM block, so sanitizing removes the key body and not just its header line
         new(RegexPatterns.PemPrivateKeyBlock, PatternOptions, RegexTimeout),
@@ -362,70 +446,10 @@ public sealed class RetrievalGuardrailRule : IGuardrailRule
         new(@"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}", PatternOptions, RegexTimeout),
     ];
 
-    private static bool ContainsSecretPatterns(string text)
-    {
-        foreach (var pattern in SecretPatterns)
-        {
-            if (pattern.IsMatchOrFalse(text)) return true;
-        }
-        return false;
-    }
-
-    private string SanitizeSecrets(string content)
-    {
-        var result = content;
-        foreach (var pattern in SecretPatterns)
-        {
-            result = pattern.ReplaceOrOriginal(result, _options.SanitizationReplacement);
-        }
-        return result;
-    }
-
     private static readonly Regex[] PiiPatterns =
     [
         new(@"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", PatternOptions, RegexTimeout),
         new(@"(?<!\d)(\+?1[\s\-.]?)?\(?\d{3}\)?[\s\-.]?\d{3}[\s\-.]?\d{4}(?!\d)", PatternOptions, RegexTimeout),
         new(@"(?<!\d)\d{3}[\s\-]?\d{2}[\s\-]?\d{4}(?!\d)", PatternOptions, RegexTimeout),
     ];
-
-    private static bool ContainsPiiPatterns(string text)
-    {
-        foreach (var pattern in PiiPatterns)
-        {
-            if (pattern.IsMatchOrFalse(text)) return true;
-        }
-        return false;
-    }
-
-    private string SanitizePii(string content)
-    {
-        var result = content;
-        foreach (var pattern in PiiPatterns)
-        {
-            result = pattern.ReplaceOrOriginal(result, _options.SanitizationReplacement);
-        }
-        return result;
-    }
-
-    private static List<Regex> BuildInjectionPatterns()
-    {
-        return
-        [
-            // Indirect injection: instructions hidden in retrieved content
-            new(@"(?i)(?:ignore|disregard|forget|override)\s+(?:all\s+)?(?:previous|prior|above|earlier)\s+(?:instructions|rules|guidelines|prompts)", PatternOptions, RegexTimeout),
-            new(@"(?i)(?:you\s+(?:are|must|should)\s+now|new\s+instructions?|system\s+(?:prompt|override))\s*:", PatternOptions, RegexTimeout),
-            new(@"(?i)(?:act|behave|respond)\s+as\s+(?:if\s+)?(?:you\s+are|a\s+)", PatternOptions, RegexTimeout),
-
-            // End sequence / role hijacking in documents
-            new(@"<\|(?:system|user|assistant|im_start|im_end|eot_id|endoftext)\|>", PatternOptions, RegexTimeout),
-            new(@"(?i)\[(?:INST|/INST|SYSTEM|/SYSTEM)\]", PatternOptions, RegexTimeout),
-            new(@"(?i)<<\s*SYS\s*>>", PatternOptions, RegexTimeout),
-
-            // Hidden instructions in HTML/markdown comments
-            new(@"<!--\s*(?:ignore|system|instructions?|prompt)\b", PatternOptions | RegexOptions.IgnoreCase, RegexTimeout),
-
-            // Data exfiltration via injected URLs
-            new(@"(?i)(?:fetch|load|visit|navigate|request|open)\s+(?:this\s+)?(?:url|link|page)\s*:", PatternOptions, RegexTimeout),
-        ];
-    }
 }

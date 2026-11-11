@@ -571,6 +571,248 @@ public class HashChainLedgerTests
             if (File.Exists(path)) File.Delete(path);
         }
     }
+
+    // a keyed chain cannot be recomputed by someone who edits the file
+
+    private static readonly byte[] Key = Enumerable.Range(1, 32).Select(i => (byte)i).ToArray();
+
+    // what an editor with write access to the file can do: change an entry, then recompute every hash
+    // from there on with the public, unkeyed algorithm
+    private static void RewriteAsBlockedAndRechain(string path, int index)
+    {
+        var entries = HashChainLedger.Load(path).Entries;
+        using var forged = new HashChainLedger();
+        for (var i = 0; i < entries.Count; i++)
+        {
+            var d = entries[i].Decision;
+            forged.Append(i == index
+                ? new GuardrailDecision
+                {
+                    PolicyName = d.PolicyName, Phase = d.Phase, Outcome = "passed",
+                    InputHash = d.InputHash, OutputHash = d.OutputHash, Timestamp = d.Timestamp
+                }
+                : d);
+        }
+
+        File.WriteAllLines(path, forged.Entries.Select(e => System.Text.Json.JsonSerializer.Serialize(e, LineJson)));
+    }
+
+    private static readonly System.Text.Json.JsonSerializerOptions LineJson = new()
+    {
+        PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase
+    };
+
+    [Fact]
+    public void ShouldAcceptARecomputedChain_WhenTheLedgerHasNoKey()
+    {
+        var path = TempLedgerPath();
+        try
+        {
+            using (var ledger = new HashChainLedger(path))
+            {
+                ledger.Append(Decision("passed"));
+                ledger.Append(Decision("blocked"));
+                ledger.Append(Decision("passed"));
+            }
+
+            RewriteAsBlockedAndRechain(path, index: 1);
+
+            // the limit of an unkeyed chain, pinned so the documentation stays honest about it
+            HashChainLedger.Load(path).Verify().Should().BeTrue();
+        }
+        finally
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void ShouldRejectARecomputedChain_WhenTheLedgerIsKeyed()
+    {
+        var path = TempLedgerPath();
+        try
+        {
+            using (var ledger = new HashChainLedger(Key, path))
+            {
+                ledger.Append(Decision("passed"));
+                ledger.Append(Decision("blocked"));
+                ledger.Append(Decision("passed"));
+            }
+
+            HashChainLedger.Load(path, Key).Verify().Should().BeTrue();
+
+            RewriteAsBlockedAndRechain(path, index: 1);
+
+            HashChainLedger.Load(path, Key).Verify(out var brokenAtSeq).Should().BeFalse();
+            brokenAtSeq.Should().Be(0);
+        }
+        finally
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void ShouldVerifyOnlyUnderItsOwnKey_WhenTheLedgerIsKeyed()
+    {
+        using var ledger = new HashChainLedger(Key);
+        ledger.Append(Decision());
+        ledger.Append(Decision());
+        var otherKey = Key.Select(b => (byte)(b ^ 0xFF)).ToArray();
+
+        ledger.Verify().Should().BeTrue();
+        HashChainLedger.Verify(ledger.Entries, Key, out _).Should().BeTrue();
+        HashChainLedger.Verify(ledger.Entries, otherKey, out _).Should().BeFalse();
+        HashChainLedger.Verify(ledger.Entries, out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public void ShouldContinueAKeyedChain_WhenReopenedWithTheSameKey()
+    {
+        var path = TempLedgerPath();
+        try
+        {
+            using (var first = new HashChainLedger(Key, path))
+            {
+                first.Append(Decision());
+                first.Append(Decision());
+            }
+
+            using (var second = new HashChainLedger(Key, path))
+            {
+                second.Append(Decision());
+            }
+
+            var loaded = HashChainLedger.Load(path, Key);
+            loaded.Entries.Select(e => e.Seq).Should().Equal(0, 1, 2);
+            loaded.Verify().Should().BeTrue();
+        }
+        finally
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void ShouldRefuseToContinueAChain_WhenTheKeyIsNotTheOneItWasWrittenWith()
+    {
+        var path = TempLedgerPath();
+        try
+        {
+            using (var first = new HashChainLedger(path))
+            {
+                first.Append(Decision());
+            }
+
+            var act = () => new HashChainLedger(Key, path);
+
+            act.Should().Throw<InvalidDataException>().WithMessage("*different key*");
+        }
+        finally
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void ShouldRejectAShortKey()
+    {
+        var act = () => new HashChainLedger(new byte[HashChainLedger.MinKeyLength - 1]);
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void ShouldNotFollowLaterChangesToTheCallersKeyArray()
+    {
+        var key = (byte[])Key.Clone();
+        using var ledger = new HashChainLedger(key);
+        ledger.Append(Decision());
+
+        Array.Clear(key);
+        ledger.Append(Decision());
+
+        HashChainLedger.Verify(ledger.Entries, Key, out _).Should().BeTrue();
+    }
+
+    // a write that fails must not leave the file a broken chain
+
+    private sealed class FlakyStream : MemoryStream
+    {
+        public int FailNextWrites { get; set; }
+
+        // how much of a failing write still reaches the stream, as a disk that fills up mid-write does
+        public int PartialBytes { get; set; }
+
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            if (FailNextWrites > 0)
+            {
+                FailNextWrites--;
+                base.Write(buffer, offset, Math.Min(PartialBytes, count));
+                throw new IOException("disk full");
+            }
+
+            base.Write(buffer, offset, count);
+        }
+
+        public override void Write(ReadOnlySpan<byte> buffer) => Write(buffer.ToArray(), 0, buffer.Length);
+    }
+
+    private static HashChainLedger LoadFrom(MemoryStream stream)
+    {
+        var path = TempLedgerPath();
+        try
+        {
+            File.WriteAllBytes(path, stream.ToArray());
+            return HashChainLedger.Load(path);
+        }
+        finally
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(25)]
+    public void ShouldLeaveTheFileOneIntactChain_WhenAWriteFailsAndLaterOnesSucceed(int partialBytes)
+    {
+        var stream = new FlakyStream { PartialBytes = partialBytes };
+        var ledger = new HashChainLedger(stream);
+        ledger.Append(Decision());
+
+        stream.FailNextWrites = 1;
+        var failed = () => ledger.Append(Decision("blocked"));
+        failed.Should().Throw<IOException>();
+
+        ledger.Append(Decision());
+
+        // the entry whose write failed is in memory, and reached the file ahead of the one after it
+        ledger.Entries.Should().HaveCount(3);
+        ledger.Verify().Should().BeTrue();
+        var persisted = LoadFrom(stream);
+        persisted.Entries.Select(e => e.Seq).Should().Equal(0, 1, 2);
+        persisted.Entries[1].Decision.Outcome.Should().Be("blocked");
+        persisted.Verify().Should().BeTrue();
+    }
+
+    [Fact]
+    public void ShouldWriteWhatIsStillWaiting_WhenDisposed()
+    {
+        var stream = new FlakyStream();
+        var ledger = new HashChainLedger(stream);
+        ledger.Append(Decision());
+        stream.FailNextWrites = 1;
+        try { ledger.Append(Decision()); } catch (IOException) { }
+        var contents = new MemoryStream();
+
+        // MemoryStream.ToArray still works after disposal
+        ledger.Dispose();
+        contents.Write(stream.ToArray());
+
+        LoadFrom(contents).Entries.Should().HaveCount(2);
+    }
 }
 
 public class LedgerPipelineTests

@@ -20,4 +20,23 @@ public sealed class PiiRuleOptions
     /// </summary>
     public bool RedactOutput { get; init; } = true;
 
+    /// <summary>
+    /// What to do when a recognizer could not analyze the text - an out-of-process or cloud detector
+    /// that is unreachable, times out or rejects the request. Default: <see cref="ErrorBehavior.FailOpen"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Under <see cref="ErrorBehavior.FailOpen"/> and <see cref="ErrorBehavior.Warn"/> the text
+    /// continues with whatever the recognizers that did work found redacted, and the result has
+    /// <see cref="GuardrailResult.IsError"/> set so the gap is logged, counted and recorded rather than
+    /// passing for clean text. Under <see cref="ErrorBehavior.FailClosed"/> the text is blocked.
+    /// </para>
+    /// <para>
+    /// A recognizer that swallows its own failure reports it through
+    /// <see cref="PiiRule.ReportRecognizerFailure"/>. One that throws instead leaves nothing to redact
+    /// with: the exception becomes a blocking error result under <see cref="ErrorBehavior.FailClosed"/>
+    /// and propagates to the caller otherwise.
+    /// </para>
+    /// </remarks>
+    public ErrorBehavior OnError { get; init; } = ErrorBehavior.FailOpen;
 }

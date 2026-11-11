@@ -22,10 +22,26 @@ namespace AgentGuard.Hosting.Configuration;
 /// <summary>
 /// Maps <see cref="PolicyConfiguration"/> to <see cref="GuardrailPolicyBuilder"/> calls.
 /// LLM-based and ContentSafety rules resolve their dependencies from <see cref="IServiceProvider"/>.
-/// Out-of-range settings throw <see cref="InvalidOperationException"/> naming the rule type and setting.
+/// Out-of-range settings, and settings the rule type does not read, throw
+/// <see cref="InvalidOperationException"/> naming the rule type and setting.
 /// </summary>
 internal static class ConfigurationMapper
 {
+    private static readonly string[] DefenderSettings =
+    [
+        nameof(RuleConfiguration.Threshold),
+        nameof(RuleConfiguration.WindowSize),
+        nameof(RuleConfiguration.WindowOverlap),
+        nameof(RuleConfiguration.MaxWindows),
+    ];
+
+    private static readonly string[] DebertaSettings =
+    [
+        .. DefenderSettings,
+        nameof(RuleConfiguration.ModelPath),
+        nameof(RuleConfiguration.TokenizerPath),
+    ];
+
     public static void ApplyConfiguration(
         GuardrailPolicyBuilder builder,
         PolicyConfiguration config,
@@ -48,6 +64,12 @@ internal static class ConfigurationMapper
         switch (rule.Type.ToLowerInvariant())
         {
             case "inputnormalization":
+                RuleSettings.EnsureOnly(
+                    rule,
+                    nameof(RuleConfiguration.DecodeBase64),
+                    nameof(RuleConfiguration.DecodeHex),
+                    nameof(RuleConfiguration.DetectReversedText),
+                    nameof(RuleConfiguration.NormalizeUnicode));
                 builder.NormalizeInput(new InputNormalizationOptions
                 {
                     DecodeBase64 = rule.DecodeBase64 ?? true,
@@ -58,34 +80,66 @@ internal static class ConfigurationMapper
                 break;
 
             case "promptinjection":
+                RuleSettings.EnsureOnly(rule, nameof(RuleConfiguration.Sensitivity));
                 var sensitivity = ParseEnum<Sensitivity>(rule.Sensitivity, Sensitivity.Medium);
                 builder.BlockPromptInjection(sensitivity);
                 break;
 
             case "piiredaction":
-                // an unset Replacement leaves each entity replaced with its <ENTITY_TYPE> tag, the same
-                // default as the code-based RedactPii()
-                builder.RedactPii(new PiiOptions
+                RuleSettings.EnsureOnly(
+                    rule,
+                    nameof(RuleConfiguration.Entities),
+                    nameof(RuleConfiguration.Replacement),
+                    nameof(RuleConfiguration.Countries));
+
+                try
                 {
-                    Entities = rule.Entities is { Count: > 0 } ? rule.Entities : null,
-                    Replacement = rule.Replacement,
-                    Countries = rule.Countries is { Count: > 0 } ? rule.Countries : null,
-                });
+                    // an unset Replacement leaves each entity replaced with its <ENTITY_TYPE> tag, the same
+                    // default as the code-based RedactPii()
+                    builder.RedactPii(new PiiOptions
+                    {
+                        Entities = rule.Entities is { Count: > 0 } ? rule.Entities : null,
+                        Replacement = rule.Replacement,
+                        Countries = rule.Countries is { Count: > 0 } ? rule.Countries : null,
+                    });
+                }
+                catch (ArgumentException ex)
+                {
+                    // an entity name no recognizer detects is a configuration error like the others here
+                    var message = ex.ParamName is null
+                        ? ex.Message
+                        : ex.Message.Replace($" (Parameter '{ex.ParamName}')", "", StringComparison.Ordinal);
+                    throw new InvalidOperationException($"{rule.Type}: {message}", ex);
+                }
+
                 break;
 
             case "tokenlimit":
+                RuleSettings.EnsureOnly(
+                    rule,
+                    nameof(RuleConfiguration.MaxTokens),
+                    nameof(RuleConfiguration.Phase),
+                    nameof(RuleConfiguration.OverflowStrategy));
+
                 var maxTokens = AtLeast(rule, rule.MaxTokens, nameof(RuleConfiguration.MaxTokens), minimum: 1) ?? 4000;
                 var phase = ParseEnum<GuardrailPhase>(rule.Phase, GuardrailPhase.Input);
-                var strategy = ParseEnum<TokenOverflowStrategy>(rule.OverflowStrategy,
-                    phase == GuardrailPhase.Input ? TokenOverflowStrategy.Reject : TokenOverflowStrategy.Truncate);
 
-                if (phase == GuardrailPhase.Output)
-                    builder.LimitOutputTokens(maxTokens, strategy);
-                else
-                    builder.LimitInputTokens(maxTokens, strategy);
+                // Both is two limits, one per direction; each keeps its own default strategy unless one
+                // is configured, which then applies to both
+                if (phase.HasFlag(GuardrailPhase.Input))
+                    builder.LimitInputTokens(maxTokens, ParseEnum(rule.OverflowStrategy, TokenOverflowStrategy.Reject));
+
+                if (phase.HasFlag(GuardrailPhase.Output))
+                    builder.LimitOutputTokens(maxTokens, ParseEnum(rule.OverflowStrategy, TokenOverflowStrategy.Truncate));
+
                 break;
 
             case "contentsafety":
+                RuleSettings.EnsureOnly(
+                    rule,
+                    nameof(RuleConfiguration.MaxAllowedSeverity),
+                    nameof(RuleConfiguration.BlocklistNames),
+                    nameof(RuleConfiguration.HaltOnBlocklistHit));
                 var classifier = ResolveService<IContentSafetyClassifier>(serviceProvider, "ContentSafety");
                 var maxSeverity = ParseEnum<ContentSafetySeverity>(rule.MaxAllowedSeverity, ContentSafetySeverity.Low);
                 builder.BlockHarmfulContent(classifier, new ContentSafetyOptions
@@ -100,16 +154,30 @@ internal static class ConfigurationMapper
                 // a ModelPath selects the generic DeBERTa rule; without one the bundled Defender model is used
                 goto case "debertapromptinjection";
 
+            case "onnxpromptinjection" when rule.TokenizerPath is not null:
+                throw new InvalidOperationException(
+                    $"{rule.Type}: TokenizerPath is set without ModelPath. Set both to use your own model, " +
+                    "or neither to use the bundled Defender model.");
+
             case "onnxpromptinjection":
+                // ModelPath and TokenizerPath are unset on this path; they are named so that the error
+                // for a stray setting lists them
+                RuleSettings.EnsureOnly(rule, DebertaSettings);
+                builder.BlockPromptInjectionWithDefender(CreateDefenderOptions(rule));
+                break;
+
             case "defenderpromptinjection":
+                RuleSettings.EnsureOnly(rule, DefenderSettings);
                 builder.BlockPromptInjectionWithDefender(CreateDefenderOptions(rule));
                 break;
 
             case "debertapromptinjection":
+                RuleSettings.EnsureOnly(rule, DebertaSettings);
                 builder.BlockPromptInjectionWithDeberta(CreateDebertaOptions(rule));
                 break;
 
             case "secrets":
+                RuleSettings.EnsureOnly(rule, nameof(RuleConfiguration.SecretAction));
                 builder.DetectSecrets(new SecretsDetectionOptions
                 {
                     Action = ParseEnum<SecretAction>(rule.SecretAction, SecretAction.Block),
@@ -117,6 +185,7 @@ internal static class ConfigurationMapper
                 break;
 
             case "toolcallguardrail":
+                RuleSettings.EnsureOnly(rule, nameof(RuleConfiguration.Categories));
                 builder.GuardToolCalls(new ToolCallGuardrailOptions
                 {
                     Categories = ParseEnum<ToolCallInjectionCategory>(rule.Categories, ToolCallInjectionCategory.Default),
@@ -124,6 +193,10 @@ internal static class ConfigurationMapper
                 break;
 
             case "toolresultguardrail":
+                RuleSettings.EnsureOnly(
+                    rule,
+                    nameof(RuleConfiguration.Action),
+                    nameof(RuleConfiguration.StripUnicodeControl));
                 builder.GuardToolResults(new ToolResultGuardrailOptions
                 {
                     Action = ParseEnum<ToolResultAction>(rule.Action, ToolResultAction.Block),
@@ -132,6 +205,12 @@ internal static class ConfigurationMapper
                 break;
 
             case "retrieval":
+                RuleSettings.EnsureOnly(
+                    rule,
+                    nameof(RuleConfiguration.DetectPromptInjection),
+                    nameof(RuleConfiguration.DetectSecrets),
+                    nameof(RuleConfiguration.DetectPii),
+                    nameof(RuleConfiguration.RetrievalAction));
                 builder.GuardRetrieval(new RetrievalGuardrailOptions
                 {
                     DetectPromptInjection = rule.DetectPromptInjection ?? true,
@@ -142,6 +221,10 @@ internal static class ConfigurationMapper
                 break;
 
             case "llmpromptinjection":
+                RuleSettings.EnsureOnly(
+                    rule,
+                    nameof(RuleConfiguration.SystemPrompt),
+                    nameof(RuleConfiguration.IncludeClassification));
                 var injectionClient = ResolveService<IChatClient>(serviceProvider, "LlmPromptInjection");
                 builder.BlockPromptInjectionWithLlm(injectionClient, new LlmPromptInjectionOptions
                 {
@@ -151,6 +234,10 @@ internal static class ConfigurationMapper
                 break;
 
             case "llmpiidetection":
+                RuleSettings.EnsureOnly(
+                    rule,
+                    nameof(RuleConfiguration.PiiAction),
+                    nameof(RuleConfiguration.SystemPrompt));
                 var piiClient = ResolveService<IChatClient>(serviceProvider, "LlmPiiDetection");
                 var piiAction = ParseEnum<PiiAction>(rule.PiiAction, PiiAction.Redact);
                 builder.DetectPIIWithLlm(piiClient, new LlmPiiDetectionOptions
@@ -161,6 +248,10 @@ internal static class ConfigurationMapper
                 break;
 
             case "llmtopicboundary":
+                RuleSettings.EnsureOnly(
+                    rule,
+                    nameof(RuleConfiguration.AllowedTopics),
+                    nameof(RuleConfiguration.SystemPrompt));
                 var topicClient = ResolveService<IChatClient>(serviceProvider, "LlmTopicBoundary");
                 builder.EnforceTopicBoundaryWithLlm(topicClient, new LlmTopicGuardrailOptions
                 {
@@ -174,6 +265,11 @@ internal static class ConfigurationMapper
                 break;
 
             case "llmoutputpolicy":
+                RuleSettings.EnsureOnly(
+                    rule,
+                    nameof(RuleConfiguration.PolicyDescription),
+                    nameof(RuleConfiguration.OutputPolicyAction),
+                    nameof(RuleConfiguration.SystemPrompt));
                 var outputPolicyClient = ResolveService<IChatClient>(serviceProvider, "LlmOutputPolicy");
                 builder.EnforceOutputPolicyWithLlm(outputPolicyClient, new LlmOutputPolicyOptions
                 {
@@ -185,6 +281,10 @@ internal static class ConfigurationMapper
                 break;
 
             case "llmgroundedness":
+                RuleSettings.EnsureOnly(
+                    rule,
+                    nameof(RuleConfiguration.GroundednessAction),
+                    nameof(RuleConfiguration.SystemPrompt));
                 var groundednessClient = ResolveService<IChatClient>(serviceProvider, "LlmGroundedness");
                 builder.CheckGroundedness(groundednessClient, new LlmGroundednessOptions
                 {
@@ -194,6 +294,10 @@ internal static class ConfigurationMapper
                 break;
 
             case "llmcopyright":
+                RuleSettings.EnsureOnly(
+                    rule,
+                    nameof(RuleConfiguration.CopyrightAction),
+                    nameof(RuleConfiguration.SystemPrompt));
                 var copyrightClient = ResolveService<IChatClient>(serviceProvider, "LlmCopyright");
                 builder.CheckCopyright(copyrightClient, new LlmCopyrightOptions
                 {
@@ -205,7 +309,8 @@ internal static class ConfigurationMapper
             default:
                 // rules that live outside the core engine - the Azure and out-of-process PII
                 // adapters, and anything a consumer adds - arrive as registered factories, so this
-                // package does not have to reference the assemblies they live in.
+                // package does not have to reference the assemblies they live in. A factory knows
+                // which settings its rule reads, so rejecting the others is the factory's job.
                 if (TryApplyFactory(builder, rule, serviceProvider))
                     break;
 

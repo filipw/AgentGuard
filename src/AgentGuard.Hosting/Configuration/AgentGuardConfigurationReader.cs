@@ -31,6 +31,8 @@ internal static class AgentGuardConfigurationReader
         }
         catch (InvalidOperationException ex)
         {
+            ThrowIfThereAreKeysThatAreNotSettings(configuration, ex);
+
             // the binder's own message names neither the policy nor the rule; find the rule that fails
             foreach (var (section, name) in PolicySections(configuration))
                 ThrowIfARuleCannotBeRead(section, name);
@@ -49,6 +51,31 @@ internal static class AgentGuardConfigurationReader
     }
 
     private const string DefaultPolicyName = "default policy";
+
+    // the usual cause is the whole application configuration being passed in where the AgentGuard
+    // section was meant, so the message says what belongs here and how to pass a section
+    private static void ThrowIfThereAreKeysThatAreNotSettings(IConfiguration configuration, Exception inner)
+    {
+        string[] settings = [nameof(AgentGuardConfiguration.DefaultPolicy), nameof(AgentGuardConfiguration.Policies)];
+
+        var others = configuration.GetChildren()
+            .Select(child => child.Key)
+            .Where(key => !settings.Contains(key, StringComparer.OrdinalIgnoreCase))
+            .Order(StringComparer.Ordinal)
+            .ToList();
+
+        if (others.Count == 0)
+            return;
+
+        var where = configuration is IConfigurationSection section ? $"section '{section.Path}'" : "root";
+
+        throw new InvalidOperationException(
+            $"AgentGuard configuration could not be read: the configuration {where} holds keys that are not " +
+            $"AgentGuard settings: {string.Join(", ", others.Select(key => $"'{key}'"))}. " +
+            $"The settings are {string.Join(" and ", settings)}. If they live in a section of the application " +
+            "configuration, pass that section: AddAgentGuard(configuration.GetSection(\"AgentGuard\")).",
+            inner);
+    }
 
     private static IConfigurationSection DefaultPolicySection(IConfiguration configuration) =>
         configuration.GetSection(nameof(AgentGuardConfiguration.DefaultPolicy));

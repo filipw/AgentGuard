@@ -10,7 +10,8 @@ namespace AgentGuard.AgentFramework.Workflows;
 /// Default text extractor that handles common MAF and .NET types: a <see cref="string"/> is its own text, a
 /// <see cref="ChatMessage"/> its <see cref="ChatMessage.Text"/>, a chat message collection or an
 /// <see cref="AgentResponse"/> the text of each of its messages, one per line, and any other object its public
-/// <c>Text</c> property, falling back to <see cref="object.ToString"/>.
+/// <c>Text</c> property, falling back to <see cref="object.ToString"/> for a type that overrides it. A
+/// message with neither has no text, and passes unchecked.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -58,7 +59,9 @@ public sealed class DefaultTextExtractor : ITextExtractor
         if (textProp is not null && textProp.PropertyType == typeof(string))
             return textProp.GetValue(message) as string;
 
-        return message.ToString();
+        // a type that doesn't override ToString has no text of its own, only its type name
+        var described = message.ToString();
+        return string.Equals(described, message.GetType().ToString(), StringComparison.Ordinal) ? null : described;
     }
 
     /// <inheritdoc />

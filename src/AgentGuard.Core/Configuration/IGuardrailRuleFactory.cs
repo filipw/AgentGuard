@@ -20,6 +20,10 @@ namespace AgentGuard.Core.Configuration;
 /// services.AddAgentGuard(builder.Configuration.GetSection("AgentGuard"));
 /// </code>
 /// </para>
+/// <para>
+/// <see cref="RuleConfiguration"/> carries the settings of every rule type, so a factory should reject the
+/// ones its rule does not read with <see cref="RuleSettings.EnsureOnly"/> rather than ignore them.
+/// </para>
 /// </remarks>
 public interface IGuardrailRuleFactory
 {

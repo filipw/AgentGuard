@@ -56,6 +56,68 @@ public class RemotePiiRuleFactoryTests
     }
 
     [Theory]
+    [InlineData("PERSON")]
+    [InlineData("person")]
+    public void ShouldAcceptAnEntity_WhateverItsCase(string entity)
+    {
+        var configuration = Configuration();
+        configuration.Entities = [entity];
+        var builder = new GuardrailPolicyBuilder();
+
+        new RemotePiiRuleFactory().Configure(builder, configuration);
+
+        using var policy = (GuardrailPolicy)builder.Build();
+        policy.Rules.Should().ContainSingle().Which.Name.Should().Be("pii");
+    }
+
+    [Theory]
+    [InlineData("EMAIL_ADRESS")]
+    [InlineData("Persn")]
+    public void ShouldRejectAnEntity_WhenItIsNotAKnownEntityType(string entity)
+    {
+        var configuration = Configuration();
+        configuration.Entities = ["PERSON", entity];
+
+        var act = () => new RemotePiiRuleFactory().Configure(new GuardrailPolicyBuilder(), configuration);
+
+        act.Should().Throw<InvalidOperationException>().WithMessage($"RemotePii: '{entity}' is not a PII entity type the detector finds*PERSON*");
+    }
+
+    [Fact]
+    public void ShouldRejectASetting_WhenTheRuleTypeDoesNotReadIt()
+    {
+        var configuration = Configuration();
+        configuration.SubscriptionKey = "key";
+
+        var act = () => new RemotePiiRuleFactory().Configure(new GuardrailPolicyBuilder(), configuration);
+
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("RemotePii: SubscriptionKey is not a setting of this rule type.*AuthHeaderValue*");
+    }
+
+    [Fact]
+    public async Task ShouldReportAnError_WhenTheRemoteDetectorCannotBeReached()
+    {
+        var result = await EvaluateAsync(Configuration(), "email john@example.com today");
+
+        result.IsError.Should().BeTrue();
+        result.IsBlocked.Should().BeFalse();
+        result.ModifiedText.Should().Be("email <EMAIL_ADDRESS> today");
+    }
+
+    [Fact]
+    public async Task ShouldBlockWithAnError_WhenTheRemoteDetectorCannotBeReachedAndFailOpenIsOff()
+    {
+        var configuration = Configuration();
+        configuration.FailOpen = false;
+
+        var result = await EvaluateAsync(configuration, "email john@example.com today");
+
+        result.IsError.Should().BeTrue();
+        result.IsBlocked.Should().BeTrue();
+    }
+
+    [Theory]
     [InlineData(0)]
     [InlineData(-5)]
     public void ShouldRejectTheTimeout_WhenBelowOneSecond(int timeoutSeconds)

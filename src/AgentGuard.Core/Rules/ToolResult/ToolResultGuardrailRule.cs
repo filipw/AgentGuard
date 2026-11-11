@@ -149,6 +149,14 @@ public sealed class ToolResultGuardrailOptions
     /// </summary>
     public IReadOnlyList<(string Category, string Description, Regex Pattern)> CustomPatterns { get; init; } =
         Array.Empty<(string, string, Regex)>();
+
+    /// <summary>
+    /// What to do when a pattern cannot finish scanning a result within its time budget and nothing
+    /// else was found. Default: <see cref="ErrorBehavior.FailOpen"/>, matching the other detection
+    /// rules. The result has <see cref="GuardrailResult.IsError"/> set under every behavior, so an
+    /// incomplete scan is never reported as a clean one.
+    /// </summary>
+    public ErrorBehavior OnError { get; init; } = ErrorBehavior.FailOpen;
 }
 
 /// <summary>
@@ -506,6 +514,7 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
         }
 
         var violations = new List<ToolResultViolation>();
+        var timedOut = 0;
 
         // cleaned results are produced whenever there is anything to hand back - a sanitized
         // violation, or an entry that only needed its hidden characters removed - so a caller that
@@ -521,59 +530,21 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
                 continue;
             }
 
-            var riskLevel = GetRiskLevel(result);
-            var raw = result.Content;
+            var inspection = Inspect(result.ToolName, result.Content, GetRiskLevel(result));
+            violations.AddRange(inspection.Violations);
+            timedOut += inspection.TimedOut;
 
-            // Stripping invisible characters is what lets a keyword broken up by zero-width joiners
-            // match. It must not be the only text the patterns see, though: the hidden-character
-            // patterns below are looking for exactly the characters it removes, so both forms are
-            // scanned and each pattern reports at most once.
-            var stripped = _options.StripUnicodeControl ? StripControlCharacters(raw) : raw;
-            var wasStripped = !string.Equals(raw, stripped, StringComparison.Ordinal);
-            var secondary = wasStripped ? stripped : null;
-
-            // encoded runs are found in the stripped text, which is also what Sanitize rewrites, and
-            // their decoded text is scanned as it is and stripped, like the text itself
-            var decoded = _options.DetectEncodedPayloads ? DecodeRuns(stripped) : [];
-            var injectedRuns = new bool[decoded.Count];
-
-            var resultViolations = new List<ToolResultViolation>();
-
-            // Always check core patterns
-            CheckPatterns(result.ToolName, raw, secondary, decoded, injectedRuns, CorePatterns, resultViolations);
-
-            // Check medium-risk patterns for medium and high risk tools
-            if (riskLevel >= ToolRiskLevel.Medium)
-            {
-                CheckPatterns(result.ToolName, raw, secondary, decoded, injectedRuns, MediumRiskPatterns, resultViolations);
-            }
-
-            // Check high-risk patterns for high risk tools
-            if (riskLevel >= ToolRiskLevel.High)
-            {
-                CheckPatterns(result.ToolName, raw, secondary, decoded, injectedRuns, HighRiskPatterns, resultViolations);
-            }
-
-            // Check custom patterns
-            CheckPatterns(result.ToolName, raw, secondary, decoded, injectedRuns, _options.CustomPatterns, resultViolations);
-
-            violations.AddRange(resultViolations);
-
-            // Sanitize mode rewrites violating content; either mode still hands back the
-            // hidden-character-free text, which is the whole point of StripUnicodeControl.
-            var shouldSanitize = _options.Action == ToolResultAction.Sanitize && resultViolations.Count > 0;
-            if (!shouldSanitize && !wasStripped)
+            if (inspection.Cleaned is null)
             {
                 cleanedResults.Add(result);
                 continue;
             }
 
-            var cleaned = shouldSanitize ? SanitizeContent(stripped, riskLevel, InjectedSpans(decoded, injectedRuns)) : stripped;
             anyCleaned = true;
             cleanedResults.Add(new ToolResultEntry
             {
                 ToolName = result.ToolName,
-                Content = cleaned,
+                Content = inspection.Cleaned,
                 RiskLevel = result.RiskLevel,
                 Metadata = result.Metadata
             });
@@ -609,9 +580,17 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
         // no violation, but hidden characters were removed: hand the cleaned results back so they,
         // not the originals, are what reaches the model.
         if (anyCleaned)
-        {
             context.Properties[SanitizedResultsKey] = cleanedResults;
 
+        // a scan that could not finish is not a clean one
+        if (timedOut > 0)
+        {
+            return ValueTask.FromResult(GuardrailResult.Error(Name, _options.OnError,
+                $"{timedOut} pattern(s) exceeded the {RegexTimeout.TotalMilliseconds:F0} ms match timeout and no other pattern matched"));
+        }
+
+        if (anyCleaned)
+        {
             return ValueTask.FromResult(new GuardrailResult
             {
                 IsModified = true,
@@ -621,6 +600,66 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
         }
 
         return ValueTask.FromResult(GuardrailResult.Passed());
+    }
+
+    /// <summary>What inspecting one piece of returned content found.</summary>
+    /// <param name="Violations">The injections found, at most one per pattern.</param>
+    /// <param name="Cleaned">
+    /// The content to hand on in place of the original - sanitized, or with its hidden characters
+    /// removed - or <c>null</c> when the original stands.
+    /// </param>
+    /// <param name="TimedOut">How many pattern matches ran out of time, leaving the scan incomplete.</param>
+    internal readonly record struct Inspection(List<ToolResultViolation> Violations, string? Cleaned, int TimedOut);
+
+    /// <summary>
+    /// Checks one piece of content against the patterns for <paramref name="riskLevel"/> and, per the
+    /// options, strips its hidden characters and sanitizes what was found.
+    /// </summary>
+    internal Inspection Inspect(string toolName, string raw, ToolRiskLevel riskLevel)
+    {
+        var timedOut = 0;
+
+        // Stripping invisible characters is what lets a keyword broken up by zero-width joiners
+        // match. It must not be the only text the patterns see, though: the hidden-character
+        // patterns below are looking for exactly the characters it removes, so both forms are
+        // scanned and each pattern reports at most once.
+        var stripped = _options.StripUnicodeControl ? StripControlCharacters(raw) : raw;
+        var wasStripped = !string.Equals(raw, stripped, StringComparison.Ordinal);
+        var secondary = wasStripped ? stripped : null;
+
+        // encoded runs are found in the stripped text, which is also what Sanitize rewrites, and
+        // their decoded text is scanned as it is and stripped, like the text itself
+        var decoded = _options.DetectEncodedPayloads ? DecodeRuns(stripped) : [];
+        var injectedRuns = new bool[decoded.Count];
+
+        var violations = new List<ToolResultViolation>();
+
+        // Always check core patterns
+        CheckPatterns(toolName, raw, secondary, decoded, injectedRuns, CorePatterns, violations, ref timedOut);
+
+        // Check medium-risk patterns for medium and high risk tools
+        if (riskLevel >= ToolRiskLevel.Medium)
+        {
+            CheckPatterns(toolName, raw, secondary, decoded, injectedRuns, MediumRiskPatterns, violations, ref timedOut);
+        }
+
+        // Check high-risk patterns for high risk tools
+        if (riskLevel >= ToolRiskLevel.High)
+        {
+            CheckPatterns(toolName, raw, secondary, decoded, injectedRuns, HighRiskPatterns, violations, ref timedOut);
+        }
+
+        // Check custom patterns
+        CheckPatterns(toolName, raw, secondary, decoded, injectedRuns, _options.CustomPatterns, violations, ref timedOut);
+
+        // Sanitize mode rewrites violating content; either mode still hands back the
+        // hidden-character-free text, which is the whole point of StripUnicodeControl.
+        var shouldSanitize = _options.Action == ToolResultAction.Sanitize && violations.Count > 0;
+        if (!shouldSanitize && !wasStripped)
+            return new Inspection(violations, null, timedOut);
+
+        var cleaned = shouldSanitize ? SanitizeContent(stripped, riskLevel, InjectedSpans(decoded, injectedRuns)) : stripped;
+        return new Inspection(violations, cleaned, timedOut);
     }
 
     private ToolRiskLevel GetRiskLevel(ToolResultEntry result)
@@ -670,14 +709,15 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
         IReadOnlyList<DecodedRun> decoded,
         bool[] injectedRuns,
         IReadOnlyList<(string Category, string Description, Regex Pattern)> patterns,
-        List<ToolResultViolation> violations)
+        List<ToolResultViolation> violations,
+        ref int timedOut)
     {
         foreach (var (category, description, pattern) in patterns)
         {
-            var match = TryMatch(pattern, primary);
+            var match = TryMatch(pattern, primary, ref timedOut);
             if (match is null && secondary is not null)
             {
-                match = TryMatch(pattern, secondary);
+                match = TryMatch(pattern, secondary, ref timedOut);
             }
 
             if (match is not null)
@@ -698,7 +738,8 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
                     continue;
 
                 var run = decoded[i];
-                var decodedMatch = TryMatch(pattern, run.Run.Decoded) ?? (run.StrippedText is null ? null : TryMatch(pattern, run.StrippedText));
+                var decodedMatch = TryMatch(pattern, run.Run.Decoded, ref timedOut)
+                    ?? (run.StrippedText is null ? null : TryMatch(pattern, run.StrippedText, ref timedOut));
                 if (decodedMatch is null)
                     continue;
 
@@ -752,7 +793,7 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
     /// <summary>An encoded run, and its decoded text with invisible characters stripped when that changes it.</summary>
     private sealed record DecodedRun(EncodedRun Run, string? StrippedText);
 
-    private static Match? TryMatch(Regex pattern, string text)
+    private static Match? TryMatch(Regex pattern, string text, ref int timedOut)
     {
         try
         {
@@ -761,7 +802,8 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
         }
         catch (RegexMatchTimeoutException)
         {
-            // Pattern timed out - skip it rather than blocking legitimate content
+            // the remaining patterns still run; the caller reports that this one could not finish
+            timedOut++;
             return null;
         }
     }

@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using AgentGuard.Core.Abstractions;
+using AgentGuard.Core.Telemetry;
 using Microsoft.Extensions.AI;
 
 namespace AgentGuard.Core.Rules.LLM;
@@ -18,6 +19,28 @@ public sealed class LlmPiiDetectionOptions
     /// Optional custom system prompt override. If null, the built-in prompt template is used.
     /// </summary>
     public string? SystemPrompt { get; init; }
+
+    /// <summary>
+    /// Whether a redacted message returned by the judge is checked against the message it was
+    /// given before it is used. Default: true.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// With the check on, the judge's reply only says where the personal data is. It is accepted
+    /// when it is the original with stretches replaced by placeholders - <c>[REDACTED]</c>, any
+    /// other bracketed label, <c>&lt;EMAIL_ADDRESS&gt;</c>, <c>***</c> - and the redacted message is
+    /// then built from the original, so the text that is kept is exactly what was written. A reply
+    /// that changes other text, stops early, returns the message unchanged, or replaces more than
+    /// 256 characters with one placeholder is treated as a failed judgment and handled by the
+    /// rule's <see cref="ErrorBehavior"/>.
+    /// </para>
+    /// <para>
+    /// Turn it off only for a custom <see cref="SystemPrompt"/> that redacts in some other way
+    /// (removing the data, or substituting made-up values). The judge's reply then replaces the
+    /// message as it is.
+    /// </para>
+    /// </remarks>
+    public bool ValidateRedaction { get; init; } = true;
 }
 
 /// <summary>
@@ -121,10 +144,13 @@ public sealed partial class LlmPiiDetectionRule : LlmGuardrailRule
                 if (!IsFenced(context.Text))
                     redacted = UnwrapFence(redacted);
 
-                if (redacted.Length > 0)
+                if (redacted.Length == 0)
+                    return UnparseableVerdict(responseText);
+
+                if (!_options.ValidateRedaction)
                     return GuardrailResult.Modified(redacted, "LLM classifier redacted personally identifiable information.");
 
-                return UnparseableVerdict(responseText);
+                return ApplyRedaction(context.Text, redacted, responseText);
             }
 
             if (ClassifyVerdict(responseText, "PII", "CLEAN", out _) == LlmVerdict.Negative)
@@ -144,6 +170,37 @@ public sealed partial class LlmPiiDetectionRule : LlmGuardrailRule
             _ => GuardrailResult.Blocked(
                 "LLM classifier detected personally identifiable information.", GuardrailSeverity.High)
         };
+    }
+
+    /// <summary>
+    /// Turns the judge's rewrite into a result: the original with the judge's placeholders applied
+    /// to it, or an error when the rewrite is not a redaction of the original.
+    /// </summary>
+    private GuardrailResult ApplyRedaction(string original, string redacted, string responseText)
+    {
+        if (RedactionAlignment.Apply(original, redacted) is { } applied)
+        {
+            if (!string.Equals(applied, original, StringComparison.Ordinal))
+                return GuardrailResult.Modified(applied, "LLM classifier redacted personally identifiable information.");
+
+            // nothing left to replace: the message was redacted before it got here (an earlier
+            // turn, seen again as history) and its placeholders are all the judge is pointing at
+            return GuardrailResult.Passed();
+        }
+
+        var detail = RedactionAlignment.AreEquivalent(original, redacted)
+            ? "the judge reported personal data but returned the message unchanged"
+            : "the judge's redacted message is not the original with personal data replaced";
+
+        // the reply can quote the message, personal data included, so it only goes into the detail
+        // (and from there into logs and spans) when sensitive data is allowed there
+        if (AgentGuardTelemetry.EnableSensitiveData)
+        {
+            var reply = responseText.Trim().ReplaceLineEndings(" ");
+            detail += $": '{(reply.Length <= 200 ? reply : reply[..200] + "...")}'";
+        }
+
+        return GuardrailResult.Error(Name, ErrorBehavior, detail);
     }
 
     private const string RedactedMarker = "REDACTED";

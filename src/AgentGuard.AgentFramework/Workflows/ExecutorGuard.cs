@@ -15,14 +15,24 @@ namespace AgentGuard.AgentFramework.Workflows;
 /// <c>GuardedExecutor</c> variants.
 /// </summary>
 /// <remarks>
+/// <para>
+/// Messages are guarded on the way in. On the way out the guard covers a handler's result and, through the
+/// context it hands the inner executor (<see cref="GuardEmissions"/>), every message the inner executor
+/// sends or yields.
+/// </para>
+/// <para>
 /// Chat payloads are guarded without the <see cref="ITextExtractor"/>. A <see cref="ChatMessage"/> has its
 /// text checked and rewritten in place. A message collection or an <see cref="AgentResponse"/> goes
 /// through the <see cref="ChatMessageGuard"/> the way the agent middleware guards a request (on the way in)
 /// or a response (on the way out), and the newest message with text is checked whatever its role. Every
 /// other message goes through the extractor.
+/// </para>
 /// </remarks>
 internal sealed class ExecutorGuard
 {
+    /// <summary>The name of the span that records the verdict on a result or on a sent or yielded message.</summary>
+    public const string EmissionSpan = AgentGuardTelemetry.Spans.ExecutorGuard + " output";
+
     private readonly string _executorId;
     private readonly ChatMessageGuard _chatGuard;
     private readonly ITextExtractor _textExtractor;
@@ -40,6 +50,9 @@ internal sealed class ExecutorGuard
         // verdicts reached for the earlier messages of a conversation
         _chatGuard = new ChatMessageGuard(policy, _log is null ? null : new LoggerWrapper(_log), options?.Ledger);
     }
+
+    /// <summary>The id of the inner executor, which violations and spans are reported under.</summary>
+    public string ExecutorId => _executorId;
 
     /// <summary>
     /// Guards a message and returns the one to continue with: the original, or a copy with the policy's
@@ -89,8 +102,45 @@ internal sealed class ExecutorGuard
     }
 
     /// <summary>
+    /// Wraps the workflow's context for the inner executor, so that what the inner executor sends and yields
+    /// through it is output-guarded (see <see cref="GuardedWorkflowContext"/>).
+    /// </summary>
+    /// <param name="context">The context the workflow runtime handed to the guarded executor.</param>
+    /// <returns>The context to hand to the inner executor.</returns>
+    public IWorkflowContext GuardEmissions(IWorkflowContext context) => new GuardedWorkflowContext(context, this);
+
+    /// <summary>
+    /// Guards a message the inner executor sends or yields and returns the one to forward: the original, or a
+    /// copy with the policy's rewrite applied. It is guarded as a handler's result is, the handling of a
+    /// rewrite that can't be applied included.
+    /// </summary>
+    /// <param name="message">The message, possibly wrapped in a <see cref="PortableValue"/> the executor relays.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The message to forward.</returns>
+    /// <exception cref="GuardrailViolationException">The policy blocked the message.</exception>
+    public async ValueTask<object> GuardEmissionAsync(object message, CancellationToken cancellationToken)
+    {
+        // a missing message is the workflow runtime's to reject
+        if (message is null)
+            return message!;
+
+        var portable = message as PortableValue;
+        var subject = portable?.As<object>() ?? message;
+
+        // the runtime routes a message by its own type, so that is the type a rewrite has to be rebuilt as
+        var guarded = await GuardAsync(subject, subject.GetType(), GuardrailPhase.Output, EmissionSpan, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (ReferenceEquals(guarded, subject))
+            return message;
+
+        return portable is null ? guarded! : new PortableValue(guarded!);
+    }
+
+    /// <summary>
     /// Guards a message of one of the inner executor's other handled types on its way in, then hands it to the
-    /// inner executor, which routes it to its own handler.
+    /// inner executor, which routes it to its own handler. What the handler sends, yields and returns is
+    /// output-guarded.
     /// </summary>
     /// <param name="inner">The inner executor.</param>
     /// <param name="message">The message, wrapped in a <see cref="PortableValue"/> when it came through a catch-all route.</param>
@@ -111,8 +161,8 @@ internal sealed class ExecutorGuard
         var guarded = await GuardAsync(subject, handledType ?? subject.GetType(), GuardrailPhase.Input, spanName, cancellationToken)
             .ConfigureAwait(false);
 
-        await InnerExecutor.ExecuteAsync(inner, ReferenceEquals(guarded, subject) ? message : guarded!, context, cancellationToken)
-            .ConfigureAwait(false);
+        await InnerExecutor.ExecuteAsync(
+            inner, ReferenceEquals(guarded, subject) ? message : guarded!, GuardEmissions(context), cancellationToken).ConfigureAwait(false);
     }
 
     private ValueTask<Verdict> EvaluateAsync(

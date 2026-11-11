@@ -9,14 +9,14 @@ public sealed class AzurePromptShieldOptions
 {
     /// <summary>
     /// When true, also analyzes documents passed via <see cref="GuardrailContext.Properties"/>
-    /// under the key "Documents" (List&lt;string&gt;). Detects indirect injection in grounded content.
-    /// Default: false.
+    /// under <see cref="AzurePromptShieldRule.DocumentsKey"/>: any sequence of strings, or a single
+    /// string. Detects indirect injection in grounded content. Default: false.
     /// </summary>
     public bool AnalyzeDocuments { get; init; }
 
     /// <summary>
-    /// What to do when the Azure API call fails (timeout, 429 exhaustion, HTTP error).
-    /// Default: <see cref="ErrorBehavior.FailOpen"/>.
+    /// What to do when the Azure API call fails (timeout, 429 exhaustion, HTTP error, or a success
+    /// response without the analysis). Default: <see cref="ErrorBehavior.FailOpen"/>.
     /// </summary>
     public ErrorBehavior OnError { get; init; } = ErrorBehavior.FailOpen;
 }
@@ -29,6 +29,14 @@ public sealed class AzurePromptShieldOptions
 /// </summary>
 public sealed class AzurePromptShieldRule : IGuardrailRule
 {
+    /// <summary>
+    /// The <see cref="GuardrailContext.Properties"/> key under which the host passes the documents
+    /// that accompany the prompt (retrieved chunks, tool output, attachments), analyzed when
+    /// <see cref="AzurePromptShieldOptions.AnalyzeDocuments"/> is on. The value is any
+    /// <see cref="IEnumerable{T}"/> of <see cref="string"/>, or a single <see cref="string"/>.
+    /// </summary>
+    public const string DocumentsKey = "Documents";
+
     private readonly AzurePromptShieldClient _client;
     private readonly AzurePromptShieldOptions _options;
 
@@ -57,13 +65,9 @@ public sealed class AzurePromptShieldRule : IGuardrailRule
         if (string.IsNullOrWhiteSpace(context.Text))
             return GuardrailResult.Passed();
 
-        IReadOnlyList<string>? documents = null;
-        if (_options.AnalyzeDocuments &&
-            context.Properties.TryGetValue("Documents", out var docs) &&
-            docs is IReadOnlyList<string> docList)
-        {
-            documents = docList;
-        }
+        var documents = _options.AnalyzeDocuments && context.Properties.TryGetValue(DocumentsKey, out var value)
+            ? ReadDocuments(value)
+            : null;
 
         var result = documents is { Count: > 0 }
             ? await _client.AnalyzeAsync(context.Text, documents, cancellationToken)
@@ -106,4 +110,14 @@ public sealed class AzurePromptShieldRule : IGuardrailRule
 
         return GuardrailResult.Passed();
     }
+
+    // hosts hand the documents over in whatever collection they have, so any sequence of strings
+    // counts, and a lone string is one document. A null entry keeps its place as an empty document,
+    // so the reported document index still matches the host's collection.
+    private static List<string>? ReadDocuments(object? value) => value switch
+    {
+        string single => [single],
+        IEnumerable<string?> many => many.Select(document => document ?? "").ToList(),
+        _ => null
+    };
 }

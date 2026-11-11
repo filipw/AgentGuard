@@ -173,6 +173,38 @@ public class HostingIntegrationTests
     }
 
     [Fact]
+    public async Task ShouldWriteAKeyedLedger_WhenTheLedgerIsEnabledWithAKey()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"agentguard-hosting-ledger-{Guid.NewGuid():N}.jsonl");
+        var key = Enumerable.Range(1, 32).Select(i => (byte)i).ToArray();
+        try
+        {
+            var services = new ServiceCollection();
+            services.AddLogging();
+            services.AddAgentGuard(options =>
+            {
+                options.DefaultPolicy(b => b.BlockPromptInjection());
+                options.UseDecisionLedger(key, path);
+            });
+
+            using (var provider = services.BuildServiceProvider())
+            {
+                await provider.GetRequiredService<GuardrailPipeline>()
+                    .RunAsync(new GuardrailContext { Text = "hello", Phase = GuardrailPhase.Input });
+
+                ((HashChainLedger)provider.GetRequiredService<IGuardrailLedger>()).Dispose();
+            }
+
+            HashChainLedger.Load(path, key).Verify().Should().BeTrue();
+            HashChainLedger.Load(path).Verify().Should().BeFalse("the chain only verifies under the key it was written with");
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
     public void ShouldSupportMultipleNamedPolicies()
     {
         var services = new ServiceCollection();

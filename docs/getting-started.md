@@ -77,7 +77,7 @@ To have tool-call guardrails vet each model turn before its tool calls run, plac
 
 ### 3. Microsoft Agent Framework Middleware
 
-Deepest integration. Add as a pipeline stage via `UseAgentGuard()` on `AIAgentBuilder`. Conversation history flows from the MAF `messages` parameter automatically.
+Deepest integration. Add as a pipeline stage via `UseAgentGuard()` on `AIAgentBuilder`. Conversation history flows from the MAF `messages` parameter automatically; in a run with a session that uses the default in-memory history provider, output rules and re-ask also get the session's earlier turns as context.
 
 ```csharp
 using AgentGuard.AgentFramework;
@@ -98,7 +98,7 @@ var response = await guardedAgent.RunAsync(messages, session, options);
 
 Supports both `RunAsync` and `RunStreamingAsync`, including progressive streaming with retraction events. Messages are guarded the same way as in the `IChatClient` decorator: every user message of the request, and each assistant message of the response.
 
-`ChatClientAgent` saves its response to the session's chat history before this middleware sees it. With the default in-memory history provider, an output block or rewrite is applied to the stored response too, so the next turn doesn't replay what was blocked or redacted. Other history providers and service-side conversations keep the raw response; if that matters, also add `UseAgentGuard()` to the agent's `IChatClient`, which guards the response before the agent saves it.
+`ChatClientAgent` saves its response to the session's chat history before this middleware sees it. With the default in-memory history provider, an output block or rewrite is applied to the stored response too, so the next turn doesn't replay what was blocked or redacted. Other history providers and service-side conversations keep the raw response; if that matters, also add `UseAgentGuard()` to the agent's `IChatClient`, which guards the response before the agent saves it. The same goes for conversation context: with those providers output rules see only the current run's messages, while the `IChatClient` decorator sees every request as the model does.
 
 When the agent invokes functions through a `FunctionInvokingChatClient` (`ChatClientAgent` has one), `GuardToolCalls()` checks each call's arguments before the tool runs - a blocked call is never executed and the model receives `ToolResultMiddlewareOptions.BlockedToolCallPlaceholder` instead - and `GuardToolResults()` checks each tool result before the model sees it.
 

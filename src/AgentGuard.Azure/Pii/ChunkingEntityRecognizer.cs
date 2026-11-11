@@ -20,7 +20,9 @@ namespace AgentGuard.Azure.Pii;
 /// <para>
 /// Each window is a separate call to the inner recognizer, subject to its own timeout and failure
 /// handling: with a fail-open inner recognizer a failed window contributes nothing and the other
-/// windows still count. Whitespace-only windows are not analyzed. The wrapper takes on the inner
+/// windows still count. That is a partial answer, not a clean one - the inner recognizer reports the
+/// failed window through its error callback, which is how the rule learns the text was not fully
+/// analyzed. Whitespace-only windows are not analyzed. The wrapper takes on the inner
 /// recognizer's entities, language, name and context words, but not its lifetime - whoever owns the
 /// inner recognizer still disposes it.
 /// </para>

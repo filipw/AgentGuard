@@ -100,6 +100,16 @@ public sealed class DefenderPromptInjectionOptions
     public int MaxWindows { get; init; } = 512;
 
     /// <summary>
+    /// What to do when an input cannot be classified because the tokenizer or the model fails on it.
+    /// Default: <see cref="ErrorBehavior.FailClosed"/>, which blocks the input. The model runs
+    /// locally, so such a failure is caused by the input itself rather than by an outage, and failing
+    /// open would let a crafted input switch the classifier off. Cancellation
+    /// (<see cref="OperationCanceledException"/>) and use after disposal
+    /// (<see cref="ObjectDisposedException"/>) are not errors in this sense and are still thrown.
+    /// </summary>
+    public ErrorBehavior OnError { get; init; } = ErrorBehavior.FailClosed;
+
+    /// <summary>
     /// Whether to include the main/aux scores in result metadata. For input split into windows the
     /// metadata also carries <c>windowIndex</c> (zero-based), <c>windowCount</c>, <c>windowStart</c> and
     /// <c>windowLength</c> (the character range of the reported window).

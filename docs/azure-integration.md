@@ -54,7 +54,7 @@ var policy = new GuardrailPolicyBuilder("rag-agent")
 
 // Pass documents via context properties
 var ctx = new GuardrailContext { Text = userQuery, Phase = GuardrailPhase.Input };
-ctx.Properties["Documents"] = (IReadOnlyList<string>)new[] { emailBody, ragChunk };
+ctx.Properties[AzurePromptShieldRule.DocumentsKey] = new[] { emailBody, ragChunk };   // any IEnumerable<string>, or one string
 var result = await pipeline.RunAsync(ctx);
 ```
 
@@ -222,6 +222,8 @@ Requests are sent one at a time. Each window is a billable call, so latency and 
 ## Fail-Open Behavior
 
 All Azure clients (Prompt Shield, Content Safety, Protected Material) fail open on errors by default - they return non-blocking results so the agent continues. Error results include `IsError = true` so callers can distinguish "checked and clean" from "failed to check"; set `OnError = ErrorBehavior.FailClosed` on the rule options to block instead. When input is split and a request fails, the remaining requests are skipped: the result is an error unless an earlier request already found an attack, a violation or a match, which then decides the verdict. Cancelling the caller's token always propagates instead of becoming an error result.
+
+A successful response that lacks the analysis it was asked for is an error too, not a clean result: a Prompt Shields 200 without `userPromptAnalysis.attackDetected` or with fewer analysed documents than were sent, a Protected Material 200 without `protectedMaterialAnalysis.detected`, and a Content Safety response with no category severities and no blocklist match. An attack reported in the same response still blocks. Azure PII failures are reported the same way - see [Remote PII Detection](remote-pii.md#fail-open-behavior-both-detectors).
 
 The Prompt Shields and Protected Material clients send a request that is answered with HTTP 429 up to three times, waiting for the service's `Retry-After` in between (1 second when it gives none, capped at 10 seconds); after that the request counts as failed. The Content Safety classifier goes through the Azure SDK's `ContentSafetyClient`, which applies the SDK's retry policy (configurable through its client options).
 

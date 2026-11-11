@@ -318,6 +318,43 @@ public class AzureContentSafetyClassifierChunkingTests
         result.IsBlocked.Should().Be(expectBlocked);
     }
 
+    // a success status says the request was accepted, not that the text was analyzed
+
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("""{"error": {"code": "InternalServerError", "message": "The service is unavailable."}}""")]
+    [InlineData("""{"blocklistsMatch": [], "categoriesAnalysis": []}""")]
+    [InlineData("""{"categoriesAnalysis": [{"category": "Hate"}]}""")]
+    public async Task ShouldApplyOnError_WhenASuccessResponseLacksTheCategoryAnalysis(string body)
+    {
+        var handler = new LambdaHttpHandler((_, _) => Task.FromResult(LambdaHttpHandler.Json(body)));
+        ContentSafetyRule Rule(ErrorBehavior onError) => new(new ContentSafetyOptions { OnError = onError }, CreateClassifier(handler));
+
+        var failClosed = await Rule(ErrorBehavior.FailClosed).EvaluateAsync(Context(FakeContentSafetyHandler.Hateful));
+        var failOpen = await Rule(ErrorBehavior.FailOpen).EvaluateAsync(Context(FakeContentSafetyHandler.Hateful));
+
+        failClosed.IsError.Should().BeTrue();
+        failClosed.IsBlocked.Should().BeTrue();
+        failOpen.IsError.Should().BeTrue();
+        failOpen.IsBlocked.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ShouldBlockOnABlocklistMatch_WhenTheServiceHaltedBeforeAnalyzingCategories()
+    {
+        // with HaltOnBlocklistHit the service answers a blocklist hit without any category analysis
+        var handler = new LambdaHttpHandler((_, _) => Task.FromResult(LambdaHttpHandler.Json(
+            """{"blocklistsMatch": [{"blocklistName": "banned", "blocklistItemId": "item-1", "blocklistItemText": "forbidden-term"}], "categoriesAnalysis": []}""")));
+        var rule = new ContentSafetyRule(
+            new ContentSafetyOptions { BlocklistNames = ["banned"], HaltOnBlocklistHit = true, OnError = ErrorBehavior.FailOpen },
+            CreateClassifier(handler));
+
+        var result = await rule.EvaluateAsync(Context("some forbidden-term here"));
+
+        result.IsBlocked.Should().BeTrue();
+        result.IsError.Should().BeFalse();
+    }
+
     /// <summary>
     /// Emulates <c>text:analyze</c>, including its documented limit: text over 10,000 characters is
     /// rejected with a 400, as the service does.

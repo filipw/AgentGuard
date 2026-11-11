@@ -291,14 +291,14 @@ public class LlmJudgeVerdictParsingTests
     }
 
     [Theory]
-    [InlineData("REDACTED: *Note*: call [REDACTED] tomorrow.", "*Note*: call [REDACTED] tomorrow.")]
-    [InlineData("REDACTED: explain the </think> tag to [REDACTED]", "explain the </think> tag to [REDACTED]")]
-    [InlineData("I will redact the name.</think>\nREDACTED: keep </think> as written for [REDACTED]", "keep </think> as written for [REDACTED]")]
-    public async Task ShouldReturnTheMessageAsWritten_WhenItFollowsTheMarker(string response, string expected)
+    [InlineData("*Note*: call John tomorrow.", "REDACTED: *Note*: call [REDACTED] tomorrow.", "*Note*: call [REDACTED] tomorrow.")]
+    [InlineData("explain the </think> tag to John", "REDACTED: explain the </think> tag to [REDACTED]", "explain the </think> tag to [REDACTED]")]
+    [InlineData("keep </think> as written for John", "I will redact the name.</think>\nREDACTED: keep </think> as written for [REDACTED]", "keep </think> as written for [REDACTED]")]
+    public async Task ShouldReturnTheMessageAsWritten_WhenItFollowsTheMarker(string message, string response, string expected)
     {
         var rule = new LlmPiiDetectionRule(Judge(response));
 
-        var result = await rule.EvaluateAsync(Ctx("some text", GuardrailPhase.Input));
+        var result = await rule.EvaluateAsync(Ctx(message, GuardrailPhase.Input));
 
         result.ModifiedText.Should().Be(expected);
     }

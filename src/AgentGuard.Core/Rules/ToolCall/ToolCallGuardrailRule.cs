@@ -189,7 +189,7 @@ public sealed class ToolCallGuardrailRule : IGuardrailRule
 
         // compiled patterns generate IL on first use; pay it here, not on the first request
         RegexPatterns.Warm(_checks.Where(c => c.Pattern is not null).Select(c => c.Pattern!));
-        RegexPatterns.Warm(SsrfDetector.Patterns.Concat(PathTraversalDetector.Patterns));
+        RegexPatterns.Warm(SsrfDetector.Patterns.Concat(PathTraversalDetector.Patterns).Append(SqlComments.Pattern));
     }
 
     /// <inheritdoc />
@@ -274,8 +274,25 @@ public sealed class ToolCallGuardrailRule : IGuardrailRule
         return ValueTask.FromResult(GuardrailResult.Passed());
     }
 
-    /// <summary>Runs the checks in order and returns the first one that fires.</summary>
+    /// <summary>
+    /// Runs the checks in order and returns the first one that fires - on the value, and when the
+    /// value is a JSON object or array, on each string inside it.
+    /// </summary>
     private (ToolCallInjectionCategory Category, string Description)? FindViolation(string value)
+    {
+        if (FindInText(value) is { } found)
+            return found;
+
+        foreach (var nested in JsonArgumentValues.Find(value))
+        {
+            if (FindInText(nested) is { } nestedFound)
+                return nestedFound;
+        }
+
+        return null;
+    }
+
+    private (ToolCallInjectionCategory Category, string Description)? FindInText(string value)
     {
         var argument = new ArgumentText(value);
 
@@ -306,32 +323,33 @@ public sealed class ToolCallGuardrailRule : IGuardrailRule
         if (c.HasFlag(ToolCallInjectionCategory.SqlInjection))
         {
             const ToolCallInjectionCategory sql = ToolCallInjectionCategory.SqlInjection;
-            AddPattern(checks, sql, "SQL UNION injection", @"\bUNION\s+(?:ALL\s+)?SELECT\b");
-            AddPattern(checks, sql, "SQL DROP injection", @"\bDROP\s+(?:TABLE|DATABASE|INDEX|VIEW|SCHEMA)\b");
+            AddSqlPattern(checks, "SQL UNION injection", @"\bUNION\s+(?:(?:ALL|DISTINCT)\s+)?\(?\s*SELECT\b");
+            AddSqlPattern(checks, "SQL DROP injection", @"\bDROP\s+(?:TABLE|DATABASE|INDEX|VIEW|SCHEMA)\b");
             // quoted: ' OR 'x'='x, ' OR 1=1, ' OR TRUE. The operand is bounded, which keeps the scan linear.
-            AddPattern(checks, sql, "SQL tautology injection",
+            AddSqlPattern(checks, "SQL tautology injection",
                 @"'\s*OR\s+['""]?[^'""\r\n]{1,64}'?\s*=\s*['""]?|'\s*OR\s+TRUE\b");
             // equal operands without a quote in front: 1 OR 1=1, x OR 'a'='a (the query supplies the
-            // closing quote)
-            AddPattern(checks, sql, "SQL tautology injection",
-                @"\bOR\s+(?:(?<n>\d{1,10})\s*=\s*\k<n>(?!\d)|(?<q>['""])(?<v>[^'""\r\n]{0,32})\k<q>\s*=\s*\k<q>\k<v>(?:\k<q>|(?![^\s)#;\-])))");
+            // closing quote). With AND the same comparison is the probe of a blind injection.
+            AddSqlPattern(checks, "SQL tautology injection",
+                @"\b(?:OR|AND)\s+(?:(?<n>\d{1,10})\s*=\s*\k<n>(?!\d)|(?<q>['""])(?<v>[^'""\r\n]{0,32})\k<q>\s*=\s*\k<q>\k<v>(?:\k<q>|(?![^\s)#;\-])))");
             // a value followed by an operand that is always true: 1 OR TRUE, ') OR NOT FALSE, 1 OR 1 --
-            AddPattern(checks, sql, "SQL tautology injection",
+            AddSqlPattern(checks, "SQL tautology injection",
                 @"(?:\d|['"")])\s*\bOR\s+(?:TRUE\b|NOT\s+FALSE\b|\d{1,10}\s*(?:--|#|/\*))");
             // a comment that ends the statement right after a closing quote: admin'--, admin' #,
             // admin'/*. A comment marker on its own is left alone - "C#", or "-- " opening an email
-            // signature, is not SQL.
-            AddPattern(checks, sql, "SQL comment injection", @"['""][ \t]*(?:--|#|/\*)[ \t\r\-]*$", RegexOptions.Multiline);
+            // signature, is not SQL. A "--" written straight onto the quote comments out whatever
+            // follows it too: admin'-- and the rest.
+            AddPattern(checks, sql, "SQL comment injection", @"['""][ \t]*(?:--|#|/\*)[ \t\r\-]*$|\w['""]--[ \t]", RegexOptions.Multiline);
             // a table name follows INTO and FROM; in a sentence it is "my", "the" or the like
             // ("delete from my calendar the 3pm meeting")
-            AddPattern(checks, sql, "SQL INSERT/UPDATE injection",
+            AddSqlPattern(checks, "SQL INSERT/UPDATE injection",
                 @"\b(?:INSERT\s+INTO|DELETE\s+FROM)\s+(?!(?:my|the|your|our|this|that|these|those|his|her|their|its|a|an|all|each|every)\b)[\w.\[\]""`]|\bUPDATE\s+\w+\s+SET\b");
             // EXEC or EXECUTE only with what can only be a call - the bare verb is ordinary English
-            AddPattern(checks, sql, "SQL EXEC injection",
+            AddSqlPattern(checks, "SQL EXEC injection",
                 @"\bEXEC(?:UTE)?\s*\(|\bEXEC(?:UTE)?\s+(?:@|(?:sp|xp)_\w|master\.|msdb\.)|\b(?:xp_cmdshell|sp_executesql|sp_oacreate|sp_configure)\b");
             // a second statement after a ';'. The keyword has to open a statement, not a clause of a
             // sentence ("I fixed the bug; update the ticket", "milk is out; select the organic one").
-            AddPattern(checks, sql, "SQL batch terminator",
+            AddSqlPattern(checks, "SQL batch terminator",
                 @";\s*(?:SELECT\b(?=[^;\r\n]{0,200}\bFROM\b|\s+(?:\*|@@|\d|'|NULL\b|CASE\b|pg_sleep|sleep\s*\(|version\s*\(|current_user|user\s*\(|load_file))"
                 + @"|DROP\s+(?:TABLE|DATABASE|INDEX|VIEW|SCHEMA|USER|ROLE|FUNCTION|PROCEDURE|TRIGGER)\b"
                 + @"|INSERT\s+INTO\b|UPDATE\s+[\w.\[\]""`]+\s+SET\b|DELETE\s+FROM\b|TRUNCATE\s+TABLE\b"
@@ -433,6 +451,20 @@ public sealed class ToolCallGuardrailRule : IGuardrailRule
     {
         var regex = new Regex(pattern, PatternOptions | extraOptions, RegexTimeout);
         checks.Add(new(category, a => a.AnyForm(regex.IsMatchOrFalse) ? description : null, regex));
+    }
+
+    // SQL reads a comment as white space, so "UNION/**/SELECT" is "UNION SELECT"; each pattern is
+    // also tried on the text with its comments opened up
+    private static void AddSqlPattern(List<ArgumentCheck> checks, string description, string pattern)
+    {
+        var regex = new Regex(pattern, PatternOptions, RegexTimeout);
+        checks.Add(new(
+            ToolCallInjectionCategory.SqlInjection,
+            a => a.AnyForm(text => regex.IsMatchOrFalse(text)
+                || (SqlComments.Strip(text) is { } uncommented && regex.IsMatchOrFalse(uncommented)))
+                ? description
+                : null,
+            regex));
     }
 
     /// <summary>

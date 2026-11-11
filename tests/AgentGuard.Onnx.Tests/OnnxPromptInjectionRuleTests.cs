@@ -361,6 +361,81 @@ public class OnnxPromptInjectionRuleTests
         await act.Should().ThrowAsync<ObjectDisposedException>();
     }
 
+    [Fact]
+    public async Task ShouldFinishTheEvaluationInFlight_WhenDisposedDuringClassification()
+    {
+        var outcome = await InFlightDisposal.RunAsync((session, insideClassifier) => new OnnxPromptInjectionRule(
+            _ =>
+            {
+                insideClassifier();
+                return 0.05f;
+            },
+            WindowingTestHelpers.CountWords,
+            new OnnxPromptInjectionOptions { ModelPath = "m", TokenizerPath = "t" },
+            session));
+
+        outcome.ReleasesDuringEvaluation.Should().Be(0, "the session must not be released under a running evaluation");
+        outcome.ThrowsObjectDisposedAfterwards.Should().BeTrue("no evaluation may start once the rule is disposed");
+        outcome.Result.IsBlocked.Should().BeFalse("the evaluation in flight finishes normally");
+        outcome.Result.IsError.Should().BeFalse();
+        outcome.ReleasesAfterEvaluation.Should().Be(1, "the session is released when the evaluation has finished");
+    }
+
+    // errors: input the tokenizer or the model fails on is handled by OnError
+
+    [Fact]
+    public void ShouldFailClosedOnErrors_WhenOnErrorIsNotSet()
+    {
+        new OnnxPromptInjectionOptions { ModelPath = "m", TokenizerPath = "t" }.OnError.Should().Be(ErrorBehavior.FailClosed);
+    }
+
+    [Fact]
+    public async Task ShouldBlockWithAnErrorResult_WhenTheClassifierFailsOnTheInput()
+    {
+        var rule = new OnnxPromptInjectionRule(
+            _ => throw new InvalidOperationException("model failure"),
+            WindowingTestHelpers.CountWords,
+            new OnnxPromptInjectionOptions { ModelPath = "m", TokenizerPath = "t" });
+
+        var result = await rule.EvaluateAsync(new GuardrailContext { Text = "an input the model cannot take", Phase = GuardrailPhase.Input });
+
+        result.IsBlocked.Should().BeTrue("a crafted input must not switch the classifier off");
+        result.IsError.Should().BeTrue();
+        result.Reason.Should().Contain("onnx-prompt-injection");
+        result.Metadata.Should().Contain("error", true);
+        ((string)result.Metadata!["errorDetail"]).Should().Contain("model failure");
+    }
+
+    [Theory]
+    [InlineData(ErrorBehavior.FailOpen, false)]
+    [InlineData(ErrorBehavior.Warn, true)]
+    public async Task ShouldPassWithAnErrorResult_WhenTheClassifierFailsAndOnErrorLetsInputThrough(ErrorBehavior onError, bool isWarning)
+    {
+        var rule = new OnnxPromptInjectionRule(
+            _ => throw new InvalidOperationException("model failure"),
+            WindowingTestHelpers.CountWords,
+            new OnnxPromptInjectionOptions { ModelPath = "m", TokenizerPath = "t", OnError = onError });
+
+        var result = await rule.EvaluateAsync(new GuardrailContext { Text = "an input the model cannot take", Phase = GuardrailPhase.Input });
+
+        result.IsBlocked.Should().BeFalse();
+        result.IsError.Should().BeTrue();
+        result.IsWarning.Should().Be(isWarning);
+    }
+
+    [Fact]
+    public void ShouldThrow_WhenOnErrorIsNotADefinedValue()
+    {
+        const ErrorBehavior onError = (ErrorBehavior)42;
+
+        var act = () => new OnnxPromptInjectionRule(
+            _ => throw new InvalidOperationException("model failure"),
+            WindowingTestHelpers.CountWords,
+            new OnnxPromptInjectionOptions { ModelPath = "m", TokenizerPath = "t", OnError = onError });
+
+        act.Should().Throw<ArgumentOutOfRangeException>().WithMessage("*OnError*");
+    }
+
     private static OnnxPromptInjectionRule CreateRuleWithSession(IDisposable session) =>
         new(WindowingTestHelpers.NotCalled<float>, WindowingTestHelpers.CountWords,
             new OnnxPromptInjectionOptions { ModelPath = "m", TokenizerPath = "t" }, session);

@@ -81,6 +81,10 @@ public sealed class ChatMessageGuard
     // happen turns this off
     private readonly bool _guardToolContent = true;
 
+    // picks out the request messages the host added itself (see WithSupplementalMessages); null when
+    // every user message is the caller's
+    private readonly Func<ChatMessage, bool>? _isSupplemental;
+
     /// <summary>Initializes a new instance of the <see cref="ChatMessageGuard"/> class.</summary>
     /// <param name="policy">The policy to enforce.</param>
     /// <param name="logger">Optional logger for the pipelines.</param>
@@ -108,10 +112,16 @@ public sealed class ChatMessageGuard
         _requestTools = tools.ChecksResults ? tools : null;
     }
 
-    // a view over an existing guard: same pipelines and verdict cache, its own stage, tool setting and
-    // trusted roles
-    private ChatMessageGuard(ChatMessageGuard source, string? stage, bool guardToolContent, IReadOnlySet<ChatRole> trustedRoles)
+    // a view over an existing guard: same pipelines and verdict cache, its own stage, tool setting,
+    // trusted roles and supplemental-message test
+    private ChatMessageGuard(
+        ChatMessageGuard source,
+        string? stage,
+        bool guardToolContent,
+        IReadOnlySet<ChatRole> trustedRoles,
+        Func<ChatMessage, bool>? isSupplemental = null)
     {
+        _isSupplemental = isSupplemental ?? source._isSupplemental;
         Pipeline = source.Pipeline;
         _checkPipeline = source._checkPipeline;
         _verdicts = source._verdicts;
@@ -177,6 +187,25 @@ public sealed class ChatMessageGuard
     }
 
     /// <summary>
+    /// Returns a guard that shares this guard's pipelines and verdict cache but does not take the
+    /// messages <paramref name="isSupplemental"/> selects for the input a request is about.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="GuardInputAsync"/> blocks the call when the newest user message is blocked and only
+    /// replaces any other message. A host that adds user-role messages of its own to a request -
+    /// retrieved reference material, memories - after the caller's question would otherwise make its
+    /// addition "the newest user message", and an injection in the caller's question would be replaced
+    /// rather than block the call. Supplemental messages are still judged like every other message.
+    /// </remarks>
+    /// <param name="isSupplemental">Returns true for a message the host added to the request itself.</param>
+    /// <returns>The guard.</returns>
+    public ChatMessageGuard WithSupplementalMessages(Func<ChatMessage, bool> isSupplemental)
+    {
+        ArgumentNullException.ThrowIfNull(isSupplemental);
+        return new ChatMessageGuard(this, _stage, _guardToolContent, _trustedRoles, isSupplemental);
+    }
+
+    /// <summary>
     /// Guards the messages of a request. The result carries either the block or the messages to send
     /// on, with any rewrites applied.
     /// </summary>
@@ -210,7 +239,12 @@ public sealed class ChatMessageGuard
 
         List<ChatMessage>? rewritten = null;
 
-        var latest = LastIndexOf(messages, IsGuardedUserMessage);
+        var latest = LastIndexOf(messages, IsCallerInput);
+
+        // a request made up of supplemental messages alone still has an input: its newest user message
+        if (latest < 0 && _isSupplemental is not null)
+            latest = LastIndexOf(messages, IsGuardedUserMessage);
+
         if (latest >= 0)
         {
             // the newest user message is the input this call is about: always evaluate it
@@ -773,6 +807,10 @@ public sealed class ChatMessageGuard
 
     private static bool IsGuardedUserMessage(ChatMessage message) =>
         message.Role == ChatRole.User && !string.IsNullOrWhiteSpace(message.Text);
+
+    // a user message the caller wrote, as opposed to one the host added to the request
+    private bool IsCallerInput(ChatMessage message) =>
+        IsGuardedUserMessage(message) && _isSupplemental?.Invoke(message) != true;
 
     private bool IsGuardedInputMessage(ChatMessage message) =>
         !_trustedRoles.Contains(message.Role) && !string.IsNullOrWhiteSpace(message.Text);

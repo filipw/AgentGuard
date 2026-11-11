@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Collections.Frozen;
 using System.Globalization;
 using System.Text;
@@ -193,8 +194,9 @@ public sealed partial class InputNormalizationRule : IGuardrailRule
     }
 
     /// <summary>
-    /// Finds base64-encoded segments and attempts to decode them.
-    /// Returns the decoded text if valid UTF-8 text was found, null otherwise.
+    /// Finds base64-encoded segments and attempts to decode them. Standard and URL-safe alphabets
+    /// are read, with or without padding. Returns the decoded text if readable text was found, null
+    /// otherwise.
     /// </summary>
     internal string? DecodeBase64Segments(string text)
     {
@@ -205,26 +207,56 @@ public sealed partial class InputNormalizationRule : IGuardrailRule
         var decodedParts = new List<string>();
         foreach (Match match in matches)
         {
-            var candidate = match.Value.Trim();
+            var candidate = match.Value;
             if (candidate.Length < _options.MinBase64Length)
                 continue;
 
-            try
+            if (TryDecodeBase64(candidate) is { } whole)
             {
-                var bytes = Convert.FromBase64String(candidate);
-                var decoded = Encoding.UTF8.GetString(bytes);
-
-                // Only include if the decoded text looks like readable text (mostly printable ASCII)
-                if (IsPrintableText(decoded))
-                    decodedParts.Add(decoded);
+                decodedParts.Add(whole);
+                continue;
             }
-            catch (FormatException)
+
+            // '-' and '_' are base64 only in the URL-safe alphabet; elsewhere they join a payload to
+            // its neighbours (payload-aWdub3Jl..., key_aWdub3Jl...), so the pieces are tried on their own
+            if (candidate.AsSpan().IndexOfAny('-', '_') < 0)
+                continue;
+
+            foreach (var piece in candidate.Split(Base64Joiners, StringSplitOptions.RemoveEmptyEntries))
             {
-                // Not valid base64, skip
+                if (piece.Length >= _options.MinBase64Length && TryDecodeBase64(piece) is { } part)
+                    decodedParts.Add(part);
             }
         }
 
         return decodedParts.Count > 0 ? string.Join(" ", decodedParts) : null;
+    }
+
+    private static readonly char[] Base64Joiners = ['-', '_'];
+
+    private static string? TryDecodeBase64(string candidate)
+    {
+        var body = candidate.TrimEnd('=').Replace('-', '+').Replace('_', '/');
+
+        // a length of 4n+1 is never valid base64: the last character belongs to whatever follows
+        if (body.Length % 4 == 1)
+            body = body[..^1];
+
+        var padded = (body.Length % 4) switch
+        {
+            2 => body + "==",
+            3 => body + "=",
+            _ => body
+        };
+
+        var buffer = new byte[padded.Length / 4 * 3];
+        if (!Convert.TryFromBase64String(padded, buffer, out var written))
+            return null;
+
+        var decoded = Encoding.UTF8.GetString(buffer, 0, written);
+
+        // only readable text counts (mostly printable ASCII); anything else was not an encoded message
+        return IsPrintableText(decoded) ? decoded : null;
     }
 
     /// <summary>
@@ -247,13 +279,17 @@ public sealed partial class InputNormalizationRule : IGuardrailRule
     }
 
     /// <summary>
-    /// Detects text that appears to be reversed and returns the reversed version.
-    /// Uses heuristic: if the reversed text contains more common English words than the original,
-    /// it's likely reversed.
+    /// Detects reversed text and returns it read forwards, or null when nothing was reversed.
     /// </summary>
+    /// <remarks>
+    /// Text counts as reversed when reading it backwards yields clearly more common words than
+    /// reading it forwards, or when at least two of its words are injection vocabulary spelled
+    /// backwards - which also finds a reversed instruction behind a plain-text preamble. Both ways of
+    /// reversing are undone: the whole text read backwards, and each reversed word turned round in
+    /// place.
+    /// </remarks>
     internal static string? DetectAndReverseText(string text)
     {
-        // Only check segments that are at least 10 chars and don't look like normal text
         var words = SplitWords(text);
         if (words.Length < 2)
             return null;
@@ -263,12 +299,88 @@ public sealed partial class InputNormalizationRule : IGuardrailRule
         Array.Reverse(runes);
         var reversed = ToText(runes);
 
-        var originalHits = CountKnownWords(text);
-        var reversedHits = CountKnownWords(reversed);
+        var reversedVocabulary = 0;
+        foreach (var word in words)
+        {
+            var core = TrimWord(word);
+            if (core.Length >= MinVocabularyWordLength
+                && !IsKnownWord(core)
+                && InjectionVocabulary.Contains(ReverseWord(core)))
+            {
+                reversedVocabulary++;
+            }
+        }
 
-        // If the reversed version has significantly more recognizable words, it was likely reversed
-        return reversedHits > originalHits + 2 ? reversed : null;
+        var readsBetterBackwards = CountKnownWords(reversed) > CountKnownWords(text) + 2;
+        if (!readsBetterBackwards && reversedVocabulary < 2)
+            return null;
+
+        // the whole text backwards restores a message reversed end to end; turning single words round
+        // restores one whose words were reversed in place. Which of the two was done cannot be told
+        // from the words alone, so a view carries both whenever they differ.
+        var wordwise = ReverseUnknownWords(text);
+        return wordwise is null || string.Equals(wordwise, reversed, StringComparison.Ordinal)
+            ? reversed
+            : reversed + "\n" + wordwise;
     }
+
+    // Turns round each word that only reads as a known word backwards; other words stay as written.
+    private static string? ReverseUnknownWords(string text)
+    {
+        StringBuilder? result = null;
+        var index = 0;
+        while (index < text.Length)
+        {
+            if (char.IsWhiteSpace(text[index]))
+            {
+                result?.Append(text[index]);
+                index++;
+                continue;
+            }
+
+            var end = index;
+            while (end < text.Length && !char.IsWhiteSpace(text[end]))
+                end++;
+
+            var word = text[index..end];
+            var core = TrimWord(word);
+            var turned = core.Length >= 2 && !IsKnownWord(core) ? ReverseWord(core) : null;
+            if (turned is not null && IsKnownWord(turned))
+            {
+                result ??= new StringBuilder(text.Length).Append(text, 0, index);
+                result.Append(word.Replace(core, turned, StringComparison.Ordinal));
+            }
+            else
+            {
+                result?.Append(word);
+            }
+
+            index = end;
+        }
+
+        return result?.ToString();
+    }
+
+    private static string ReverseWord(string word)
+    {
+        var runes = word.EnumerateRunes().ToArray();
+        Array.Reverse(runes);
+        return ToText(runes).ToLowerInvariant();
+    }
+
+    private static string TrimWord(string word) => word.Trim(WordPunctuation);
+
+    private static bool IsKnownWord(string word)
+    {
+        var lower = word.ToLowerInvariant();
+        return CommonWords.Contains(lower) || InjectionVocabulary.Contains(lower);
+    }
+
+    private static readonly char[] WordPunctuation =
+        ['.', ',', '!', '?', ';', ':', '"', '\'', '(', ')', '[', ']', '{', '}', '<', '>', '*', '`'];
+
+    // shorter words turn up by accident in ordinary text when it is decoded
+    private const int MinVocabularyWordLength = 4;
 
     /// <summary>
     /// Undoes the Unicode used to disguise Latin text: fullwidth, mathematical and enclosed letters
@@ -351,8 +463,11 @@ public sealed partial class InputNormalizationRule : IGuardrailRule
                 continue;
             }
 
-            // an emoji variation selector marks an enclosed letter such as the parking sign as an emoji
-            var isEmoji = i + 1 < runes.Length && runes[i + 1].Value == EmojiVariationSelector;
+            // an emoji variation selector presents the few enclosed letters that double as emoji (the
+            // parking sign, the blood types, the metro sign) as an emoji; after any other styled
+            // letter it is padding, and must not keep the letter from being folded
+            var isEmoji = HasEmojiPresentation(value)
+                && i + 1 < runes.Length && runes[i + 1].Value == EmojiVariationSelector;
             if (!isEmoji && StyledLetters.TryGetValue(value, out var plain))
                 runes[i] = plain;
         }
@@ -411,6 +526,9 @@ public sealed partial class InputNormalizationRule : IGuardrailRule
 
     private const int FullwidthOffset = 0xFEE0;
     private const int EmojiVariationSelector = 0xFE0F;
+
+    // Ⓜ and the negative squared A, B, O and P
+    private static bool HasEmojiPresentation(int value) => value is 0x24C2 or 0x1F170 or 0x1F171 or 0x1F17E or 0x1F17F;
 
     // U+FF01-U+FF5E mirror printable ASCII U+0021-U+007E
     private static bool IsFullwidthAscii(int value) => value is >= 0xFF01 and <= 0xFF5E;
@@ -476,69 +594,231 @@ public sealed partial class InputNormalizationRule : IGuardrailRule
     }
 
     /// <summary>
-    /// Strips invisible Unicode characters used to evade detection:
-    /// zero-width spaces, zero-width joiners, zero-width non-joiners,
-    /// Unicode tag characters (U+E0000-U+E007F), soft hyphens, and other invisible formatting characters.
-    /// Returns null if no invisible characters were found.
+    /// Strips the Unicode characters that render as nothing and are used to break up words: zero-width
+    /// and joiner characters, directional marks, embeddings, overrides and isolates, invisible
+    /// operators, soft hyphens, Hangul fillers, Unicode tag characters (U+E0000-U+E007F), and
+    /// variation selectors placed after a letter or digit. Returns null if there were none.
     /// </summary>
     /// <remarks>
-    /// Walks the text by code point: tag characters are surrogate pairs, which a per-char loop
-    /// never recognises.
+    /// Walks the text by code point: tag characters and the supplementary variation selectors are
+    /// surrogate pairs, which a per-char loop never recognises. A variation selector that follows a
+    /// symbol, an emoji or an ideograph selects how that character is drawn and is kept, as is the
+    /// one inside a keycap sequence (digit, U+FE0F, U+20E3).
     /// </remarks>
-    internal static string? StripInvisibleCharacters(string text) =>
-        InvisibleCharacters.Remove(text, IsInvisibleCharacter);
+    internal static string? StripInvisibleCharacters(string text)
+    {
+        if (Ascii.IsValid(text))
+            return null;
+
+        StringBuilder? builder = null;
+        var span = text.AsSpan();
+        var index = 0;
+        Rune? previousKept = null;
+
+        while (index < span.Length)
+        {
+            var status = Rune.DecodeFromUtf16(span[index..], out var rune, out var consumed);
+            var remove = false;
+
+            if (status == OperationStatus.Done)
+            {
+                if (IsVariationSelector(rune.Value))
+                {
+                    remove = previousKept is not { } previous
+                        || IsAlphabeticLetter(previous)
+                        || (previous.Value is >= '0' and <= '9' or '#' or '*'
+                            && !IsKeycapMark(span[(index + consumed)..]));
+                }
+                else
+                {
+                    remove = IsInvisibleCharacter(rune);
+                }
+            }
+
+            if (remove)
+            {
+                // first removal: copy everything kept so far, then keep appending from here on
+                builder ??= new StringBuilder(text.Length).Append(text, 0, index);
+            }
+            else
+            {
+                builder?.Append(text, index, consumed);
+                if (status == OperationStatus.Done)
+                    previousKept = rune;
+            }
+
+            index += consumed;
+        }
+
+        return builder?.ToString();
+    }
+
+    private static bool IsKeycapMark(ReadOnlySpan<char> rest) => rest.Length > 0 && rest[0] == '⃣';
+
+    // U+FE00-U+FE0F and the supplement U+E0100-U+E01EF
+    private static bool IsVariationSelector(int value) =>
+        value is (>= 0xFE00 and <= 0xFE0F) or (>= 0xE0100 and <= 0xE01EF);
+
+    // letters of the alphabetic scripts, which take no variation selector; ideographs, which do, are
+    // "other letters"
+    private static bool IsAlphabeticLetter(Rune rune) => Rune.GetUnicodeCategory(rune) is
+        UnicodeCategory.UppercaseLetter or UnicodeCategory.LowercaseLetter or UnicodeCategory.TitlecaseLetter
+        or UnicodeCategory.ModifierLetter;
 
     private static bool IsInvisibleCharacter(Rune rune) =>
         InvisibleCharacters.IsUnicodeTag(rune) || (rune.IsBmp && IsInvisibleCharacter((char)rune.Value));
 
     private static bool IsInvisibleCharacter(char c) => c switch
     {
-        '\u200B' => true, // Zero-width space
-        '\u200C' => true, // Zero-width non-joiner
-        '\u200D' => true, // Zero-width joiner
-        '\u200E' => true, // Left-to-right mark
-        '\u200F' => true, // Right-to-left mark
-        '\u2060' => true, // Word joiner
-        '\u2061' => true, // Function application
-        '\u2062' => true, // Invisible times
-        '\u2063' => true, // Invisible separator
-        '\u2064' => true, // Invisible plus
-        '\uFEFF' => true, // BOM / zero-width no-break space
-        '\u00AD' => true, // Soft hyphen
-        '\u034F' => true, // Combining grapheme joiner
-        '\u061C' => true, // Arabic letter mark
-        '\u180E' => true, // Mongolian vowel separator
+        '​' => true, // Zero-width space
+        '‌' => true, // Zero-width non-joiner
+        '‍' => true, // Zero-width joiner
+        '‎' => true, // Left-to-right mark
+        '‏' => true, // Right-to-left mark
+        >= '‪' and <= '‮' => true, // Directional embeddings and overrides
+        '⁠' => true, // Word joiner
+        '⁡' => true, // Function application
+        '⁢' => true, // Invisible times
+        '⁣' => true, // Invisible separator
+        '⁤' => true, // Invisible plus
+        >= '⁦' and <= '⁩' => true, // Directional isolates
+        '﻿' => true, // BOM / zero-width no-break space
+        '­' => true, // Soft hyphen
+        '͏' => true, // Combining grapheme joiner
+        '؜' => true, // Arabic letter mark
+        'ᅟ' => true, // Hangul choseong filler
+        'ᅠ' => true, // Hangul jungseong filler
+        '឴' => true, // Khmer vowel inherent AQ
+        '឵' => true, // Khmer vowel inherent AA
+        '᠎' => true, // Mongolian vowel separator
+        'ㅤ' => true, // Hangul filler
+        'ﾠ' => true, // Halfwidth Hangul filler
         _ => false
     };
 
     /// <summary>
-    /// Decodes common leetspeak substitutions to reveal hidden injection attempts.
-    /// Only triggers if the decoded version contains known injection-related words
-    /// that the original did not, reducing false positives.
+    /// Decodes common leetspeak substitutions (1gn0r3 → ignore), or returns null when doing so
+    /// reveals nothing.
     /// </summary>
+    /// <remarks>
+    /// Only words that mix letters with substitute characters are decoded, so numbers, prices and
+    /// punctuation stay as written. The decoded text is reported when a decoded word is injection
+    /// vocabulary, or when decoding reveals several common words at once. A <c>1</c> stands for
+    /// <c>i</c> or <c>l</c>, whichever spells a known word.
+    /// </remarks>
     internal static string? DecodeLeetspeak(string text)
     {
-        var decoded = new StringBuilder(text.Length);
-        foreach (var c in text)
+        StringBuilder? decoded = null;
+        var revealedVocabulary = 0;
+        var index = 0;
+
+        while (index < text.Length)
         {
-            decoded.Append(LeetMap.TryGetValue(c, out var replacement) ? replacement : c);
+            if (char.IsWhiteSpace(text[index]))
+            {
+                decoded?.Append(text[index]);
+                index++;
+                continue;
+            }
+
+            var end = index;
+            while (end < text.Length && !char.IsWhiteSpace(text[end]))
+                end++;
+
+            var word = text.AsSpan(index, end - index);
+            var plain = DecodeLeetWord(word);
+            if (plain is null)
+            {
+                decoded?.Append(word);
+            }
+            else
+            {
+                decoded ??= new StringBuilder(text.Length).Append(text, 0, index);
+                decoded.Append(plain);
+
+                var core = TrimWord(plain).ToLowerInvariant();
+                if (core.Length >= MinVocabularyWordLength && InjectionVocabulary.Contains(core))
+                    revealedVocabulary++;
+            }
+
+            index = end;
         }
 
-        var decodedStr = decoded.ToString();
-        if (decodedStr == text)
+        if (decoded is null)
             return null;
 
-        // Only report as decoded if the substitution reveals significantly more
-        // injection-related words (threshold of +2 to reduce false positives from
-        // normal text containing numbers like "3 cats and 4 dogs")
-        var originalHits = CountKnownWords(text.ToLowerInvariant());
-        var decodedHits = CountKnownWords(decodedStr.ToLowerInvariant());
+        var decodedText = decoded.ToString();
+        if (revealedVocabulary > 0)
+            return decodedText;
 
-        return decodedHits > originalHits + 1 ? decodedStr : null;
+        return CountKnownWords(decodedText) > CountKnownWords(text) + 1 ? decodedText : null;
     }
 
+    // Decodes one word, or returns null when it holds no substitution or no letter to anchor one.
+    private static string? DecodeLeetWord(ReadOnlySpan<char> word)
+    {
+        var hasLetter = false;
+        var substitutes = 0;
+        var ones = 0;
+        for (var i = 0; i < word.Length; i++)
+        {
+            var c = word[i];
+            if (char.IsAsciiLetter(c))
+            {
+                hasLetter = true;
+            }
+            else if (IsLeetSubstitute(word, i))
+            {
+                substitutes++;
+                if (c == '1')
+                    ones++;
+            }
+        }
+
+        if (!hasLetter || substitutes == 0)
+            return null;
+
+        // every 1 as i first; then the other readings, as long as there are few enough to try
+        var buffer = new char[word.Length];
+        var readings = ones is > 0 and <= MaxAmbiguousOnes ? 1 << ones : 1;
+        string? first = null;
+        for (var reading = 0; reading < readings; reading++)
+        {
+            var one = 0;
+            for (var i = 0; i < word.Length; i++)
+            {
+                var c = word[i];
+                if (!IsLeetSubstitute(word, i))
+                    buffer[i] = c;
+                else if (c == '1')
+                    buffer[i] = (reading >> one++ & 1) == 0 ? 'i' : 'l';
+                else
+                    buffer[i] = LeetMap[c];
+            }
+
+            var candidate = new string(buffer);
+            first ??= candidate;
+            if (IsKnownWord(TrimWord(candidate)))
+                return candidate;
+        }
+
+        return first;
+    }
+
+    // '!' ends far more sentences than it replaces an i, so it only counts inside a word
+    private static bool IsLeetSubstitute(ReadOnlySpan<char> word, int index)
+    {
+        var c = word[index];
+        if (!LeetMap.ContainsKey(c))
+            return false;
+
+        return c != '!' || (index + 1 < word.Length && char.IsAsciiLetterOrDigit(word[index + 1]));
+    }
+
+    private const int MaxAmbiguousOnes = 4;
+
     // Common leetspeak substitutions
-    private static readonly Dictionary<char, char> LeetMap = new()
+    private static readonly FrozenDictionary<char, char> LeetMap = new Dictionary<char, char>
     {
         ['0'] = 'o',
         ['1'] = 'i',
@@ -548,7 +828,8 @@ public sealed partial class InputNormalizationRule : IGuardrailRule
         ['7'] = 't',
         ['@'] = 'a',
         ['!'] = 'i',
-    };
+        ['$'] = 's',
+    }.ToFrozenDictionary();
 
     private static bool IsPrintableText(string text)
     {
@@ -571,7 +852,7 @@ public sealed partial class InputNormalizationRule : IGuardrailRule
         var count = 0;
         foreach (var word in words)
         {
-            if (CommonWords.Contains(word.Trim('.', ',', '!', '?', ';', ':').ToLowerInvariant()))
+            if (CommonWords.Contains(TrimWord(word).ToLowerInvariant()))
                 count++;
         }
         return count;
@@ -590,6 +871,20 @@ public sealed partial class InputNormalizationRule : IGuardrailRule
         "act", "as", "if", "a", "an", "and", "or", "not", "no", "be", "to",
         "this", "that", "it", "in", "for", "with", "on", "from", "but",
     ];
+
+    // What an injection is written with. One of these appearing only once the text is decoded is
+    // enough to hand the decoded text to the detection rules.
+    private static readonly FrozenSet<string> InjectionVocabulary = FrozenSet.ToFrozenSet(
+    [
+        "ignore", "ignoring", "disregard", "forget", "override", "bypass", "disable", "circumvent",
+        "previous", "prior", "above", "earlier", "preceding",
+        "instruction", "instructions", "directive", "directives", "rules", "guidelines", "restrictions",
+        "limitations", "policies", "safeguards", "safety", "filter", "filters", "guardrails",
+        "system", "prompt", "prompts", "developer", "admin", "administrator",
+        "pretend", "roleplay", "simulate", "jailbreak", "unrestricted", "unfiltered", "uncensored",
+        "reveal", "secret", "secrets", "confidential", "hidden", "password", "passwords", "credentials",
+        "obey", "comply", "execute",
+    ]);
 
     // Cyrillic and Greek letters that look like Latin ones, folded only inside mixed-script words
     private static readonly FrozenDictionary<int, char> HomoglyphMap = new Dictionary<int, char>
@@ -631,7 +926,7 @@ public sealed partial class InputNormalizationRule : IGuardrailRule
         ['Ζ'] = 'Z',
     }.ToFrozenDictionary();
 
-    [GeneratedRegex(@"[A-Za-z0-9+/]{4,}={0,2}", RegexOptions.Compiled)]
+    [GeneratedRegex(@"[A-Za-z0-9+/_\-]{4,}={0,2}", RegexOptions.Compiled)]
     private static partial Regex Base64Pattern();
 
     [GeneratedRegex(@"\\x([0-9a-fA-F]{2})", RegexOptions.Compiled)]
