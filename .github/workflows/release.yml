@@ -33,7 +33,10 @@ jobs:
       run: dotnet build AgentGuard.slnx --configuration Release
 
     - name: Test
-      run: dotnet test AgentGuard.slnx --configuration Release --no-build
+      # -m:1 runs the test projects one at a time, as the CI workflow does: several suites check that
+      # large inputs are scanned within the rules' regex match timeouts, which are wall-clock, and the
+      # CPU-heavy ONNX suite running alongside would eat into them
+      run: dotnet test AgentGuard.slnx --configuration Release --no-build -m:1
 
     - name: Pack
       run: |

@@ -193,7 +193,7 @@ public sealed class SecretsDetectionRule : IGuardrailRule
             // redacted the very thing that gives it away (the AKIA id next to an AWS secret key)
             if (pattern.RequiredContext is not null)
             {
-                switch (TryIsMatch(pattern.RequiredContext, text))
+                switch (pattern.RequiredContext.TryIsMatch(text))
                 {
                     case false:
                         continue;
@@ -269,6 +269,17 @@ public sealed class SecretsDetectionRule : IGuardrailRule
     /// </remarks>
     private static bool Scan(SecretPattern pattern, string text, string? replacement, out string rewritten, out bool incomplete)
     {
+        // a scan that ran out of time is run again before it counts as unfinished: see RegexPatterns
+        for (var attempt = 1; ; attempt++)
+        {
+            var found = ScanOnce(pattern, text, replacement, out rewritten, out incomplete);
+            if (!incomplete || attempt >= RegexPatterns.Attempts)
+                return found;
+        }
+    }
+
+    private static bool ScanOnce(SecretPattern pattern, string text, string? replacement, out string rewritten, out bool incomplete)
+    {
         rewritten = text;
         incomplete = false;
         StringBuilder? builder = null;
@@ -303,18 +314,6 @@ public sealed class SecretsDetectionRule : IGuardrailRule
             rewritten = builder.Append(text, copied, text.Length - copied).ToString();
 
         return found;
-    }
-
-    private static bool? TryIsMatch(Regex pattern, string text)
-    {
-        try
-        {
-            return pattern.IsMatch(text);
-        }
-        catch (RegexMatchTimeoutException)
-        {
-            return null;
-        }
     }
 
     private List<SecretPattern> BuildPatterns()

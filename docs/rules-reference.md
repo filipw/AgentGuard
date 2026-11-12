@@ -79,10 +79,10 @@ Order 10, Input phase. Patterns informed by the [Arcanum Prompt Injection Taxono
 | CustomPatterns | `IList<string>` | [] | Additional regex patterns; an invalid one throws when the rule is constructed |
 | BlockSystemPromptExtraction | `bool` | true | Run the system prompt extraction patterns |
 | BlockRolePlayAttacks | `bool` | true | Run the role/persona hijacking patterns |
-| MatchTimeout | `TimeSpan` | 250 ms | Budget per pattern evaluation |
+| MatchTimeout | `TimeSpan` | 250 ms | Budget per pattern evaluation. Wall-clock; a pattern that exceeds it is tried once more before it counts as timed out |
 | OnError | `ErrorBehavior` | FailOpen | Outcome when a pattern timed out and no other pattern matched |
 
-A pattern that exceeds `MatchTimeout` does not end the scan: the remaining patterns still run and any match blocks. The built-in patterns run in time linear in the input.
+A pattern that exceeds `MatchTimeout` does not end the scan: the remaining patterns still run and any match blocks. The built-in patterns run in time linear in the input. The timeout is wall-clock, so on a host with no free processor it can fire for a pattern that is not slow; every regex-based rule therefore retries a timed-out pattern once before treating it as unfinished, which keeps a busy machine from skipping checks. A pattern that genuinely can't finish on an input costs two budgets instead of one.
 
 **Sensitivity tiers:**
 
@@ -515,7 +515,7 @@ Order 22, Both phases. Detects API keys, tokens, connection strings, private key
 
 A private key matches as a whole block - from the `-----BEGIN ... PRIVATE KEY-----` line (RSA, EC, DSA, OPENSSH, ENCRYPTED, PKCS#8, PGP's `PRIVATE KEY BLOCK` and `SECRET KEY BLOCK`, and the SSH2 `---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----` form) through the matching end line, or to the end of the text when that line is missing - so `Redact` removes the key body, not just its header. Placeholder values (`${VAR}`, `$VAR`, `<password>`, `%PASSWORD%`, `****`, `changeme`, `YOUR_API_KEY`, `your-api-key-here`) are not reported, and neither is a value that is code rather than a key (`apiKey: process.env.OPENAI_API_KEY`). A value has to be a placeholder as a whole: a password that only starts like one (`$uperS3cret!9`, `Enterprise2024!`, `(Tr0ub4dor&3)`) is a password. In a `key=value` connection string the password may be quoted and may come before or after the host key; `SharedAccessKey=` and `AccountKey=` values are reported as well.
 
-A pattern that exceeds its 200 ms match timeout is skipped and the others still run. When nothing else was found, the result is an error decided by `OnError` (default `FailOpen`) with `IsError` set, not a clean pass; when `Redact` did replace something, the result also has `IsError` and `IsWarning` set, since the text may hold what the unfinished pattern looks for.
+A pattern that exceeds its 200 ms match timeout twice in a row is skipped and the others still run. When nothing else was found, the result is an error decided by `OnError` (default `FailOpen`) with `IsError` set, not a clean pass; when `Redact` did replace something, the result also has `IsError` and `IsWarning` set, since the text may hold what the unfinished pattern looks for.
 
 `GenericHighEntropy` flags a token when its entropy reaches 90% (85% next to a secret-like key name) of what a random string of the same length and character set - hex, single-case alphanumeric, base64 or printable ASCII - typically has. Hex strings and tokens inside URLs only count when they are assigned to a secret-like key name. Git SHAs, UUIDs, labelled and Subresource Integrity hashes, data URIs and base64 images, long words and camelCase/PascalCase identifiers, file paths, URLs without credentials and JWTs (left to the JWT pattern) are not flagged. A bare 40-character AWS secret key is only flagged when related context appears in the text (`aws` as a word, `secret access key` however it is separated, or an `AKIA...` access key id) and it is not forty hex digits, which is a commit id. A 32-character hex Azure subscription key is only flagged when a key is named (`ocp-apim-subscription-key`, `subscription key`, `AZURE_..._KEY`, `api key`, ...). When blocked, result metadata includes `detectedCategories` (e.g. `aws-access-key`, `private-key`).
 

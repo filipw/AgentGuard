@@ -398,13 +398,14 @@ public sealed class RetrievalGuardrailRule : IGuardrailRule
         var found = false;
         foreach (var pattern in patterns)
         {
-            try
+            switch (pattern.TryIsMatch(text))
             {
-                found |= pattern.IsMatch(text);
-            }
-            catch (RegexMatchTimeoutException)
-            {
-                incomplete = true;
+                case true:
+                    found = true;
+                    break;
+                case null:
+                    incomplete = true;
+                    break;
             }
         }
 
@@ -416,17 +417,15 @@ public sealed class RetrievalGuardrailRule : IGuardrailRule
         var result = text;
         foreach (var pattern in patterns)
         {
-            try
-            {
-                // a MatchEvaluator, not the string overload: "$" sequences in the replacement are
-                // not substitutions
-                result = pattern.Replace(result, _ => _options.SanitizationReplacement);
-            }
-            catch (RegexMatchTimeoutException)
+            // a MatchEvaluator, not the string overload: "$" sequences in the replacement are
+            // not substitutions
+            if (pattern.TryReplace(result, _ => _options.SanitizationReplacement) is not { } replaced)
             {
                 // where the match ends cannot be known, so nothing of the chunk is kept
                 return _options.SanitizationReplacement;
             }
+
+            result = replaced;
         }
 
         return result;
