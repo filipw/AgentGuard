@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text.RegularExpressions;
 
 namespace AgentGuard.Core.Rules;
@@ -11,9 +12,20 @@ namespace AgentGuard.Core.Rules;
 /// once warm - so <see cref="Warm"/> pays that while the rule is being built rather than on the
 /// first request. And a match that exceeds its timeout throws, which without
 /// <see cref="IsMatchOrFalse"/> escapes the rule and takes the whole pipeline run down with it.
+/// <para>
+/// A third: the match timeout is wall-clock. It also counts time the thread spends not matching -
+/// the JIT compiling a pattern's matching routine the first time a candidate position is found
+/// (<see cref="Warm"/> only reaches the search for one), a garbage collection, a machine whose
+/// processors are all busy. A timeout is therefore retried (<see cref="Attempts"/>): a stall does not
+/// repeat, while a pattern that really cannot finish on the input times out again. Without the retry
+/// a busy host skips patterns, and a skipped pattern is an input that was not checked.
+/// </para>
 /// </remarks>
 internal static class RegexPatterns
 {
+    /// <summary>How many times a match is attempted before its timeout stands.</summary>
+    internal const int Attempts = 2;
+
     /// <summary>
     /// A whole PEM private key block: the <c>-----BEGIN ... PRIVATE KEY-----</c> header (RSA, EC,
     /// DSA, OPENSSH, ENCRYPTED, plain PKCS#8, PGP's <c>PRIVATE KEY BLOCK</c> or <c>SECRET KEY BLOCK</c>,
@@ -53,31 +65,96 @@ internal static class RegexPatterns
     /// verdict. Skipping it keeps one pathological input from failing the whole request; the
     /// remaining patterns still run.
     /// </remarks>
-    internal static bool IsMatchOrFalse(this Regex pattern, string text)
+    internal static bool IsMatchOrFalse(this Regex pattern, string text) => pattern.TryIsMatch(text) ?? false;
+
+    /// <summary>Matches, returning <c>null</c> when the pattern times out on every attempt.</summary>
+    internal static bool? TryIsMatch(this Regex pattern, string text) =>
+        TryRun((pattern, text), static s => s.pattern.IsMatch(s.text), out var matched) ? matched : null;
+
+    /// <summary>
+    /// Runs <paramref name="match"/>, again when it times out, up to <see cref="Attempts"/> times.
+    /// Returns <c>false</c> when every attempt timed out.
+    /// </summary>
+    /// <param name="state">What <paramref name="match"/> works on, passed in so it needs no closure.</param>
+    /// <param name="match">One attempt at the match.</param>
+    /// <param name="result">What the attempt that finished returned.</param>
+    internal static bool TryRun<TState, TResult>(TState state, Func<TState, TResult> match, [MaybeNullWhen(false)] out TResult result)
     {
-        try
+        for (var attempt = 1; ; attempt++)
         {
-            return pattern.IsMatch(text);
+            try
+            {
+                result = match(state);
+                return true;
+            }
+            catch (RegexMatchTimeoutException)
+            {
+                if (attempt >= Attempts)
+                {
+                    result = default;
+                    return false;
+                }
+            }
         }
-        catch (RegexMatchTimeoutException)
+    }
+
+    /// <summary>
+    /// Finds the first match. Returns <c>false</c> when the pattern times out on every attempt;
+    /// otherwise <paramref name="match"/> is the match, or <c>null</c> when there is none.
+    /// </summary>
+    internal static bool TryMatch(this Regex pattern, string text, out Match? match)
+    {
+        if (!TryRun((pattern, text), static s => s.pattern.Match(s.text), out var found))
         {
+            match = null;
             return false;
+        }
+
+        match = found.Success ? found : null;
+        return true;
+    }
+
+    /// <summary>
+    /// Replaces every match with what <paramref name="evaluator"/> returns for it, or returns
+    /// <c>null</c> when the pattern times out on every attempt.
+    /// </summary>
+    internal static string? TryReplace(this Regex pattern, string text, MatchEvaluator evaluator)
+    {
+        TryRun((pattern, text, evaluator), static s => s.pattern.Replace(s.text, s.evaluator), out var replaced);
+        return replaced;
+    }
+
+    /// <summary>
+    /// Collects every match. Returns <c>false</c> when the pattern times out on every attempt;
+    /// <paramref name="matches"/> then holds what the last attempt found before its budget ran out.
+    /// </summary>
+    internal static bool TryMatches(this Regex pattern, string text, out List<Match> matches)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            matches = [];
+
+            try
+            {
+                for (var match = pattern.Match(text); match.Success; match = match.NextMatch())
+                    matches.Add(match);
+
+                return true;
+            }
+            catch (RegexMatchTimeoutException)
+            {
+                if (attempt >= Attempts)
+                    return false;
+            }
         }
     }
 
     /// <summary>Replaces, returning the input unchanged if the pattern times out.</summary>
     internal static string ReplaceOrOriginal(this Regex pattern, string text, string replacement)
     {
-        try
-        {
-            // a MatchEvaluator, not the string overload: Regex.Replace treats "$" sequences in the
-            // replacement as substitutions, so a replacement containing one would be rewritten
-            return pattern.Replace(text, _ => replacement);
-        }
-        catch (RegexMatchTimeoutException)
-        {
-            return text;
-        }
+        // a MatchEvaluator, not the string overload: Regex.Replace treats "$" sequences in the
+        // replacement as substitutions, so a replacement containing one would be rewritten
+        return pattern.TryReplace(text, _ => replacement) ?? text;
     }
 
     /// <summary>
@@ -86,18 +163,8 @@ internal static class RegexPatterns
     /// </summary>
     internal static List<Match> MatchesUntilTimeout(this Regex pattern, string text)
     {
-        var matches = new List<Match>();
-
-        try
-        {
-            for (var match = pattern.Match(text); match.Success; match = match.NextMatch())
-                matches.Add(match);
-        }
-        catch (RegexMatchTimeoutException)
-        {
-            // the scan could not finish; what it found so far still stands
-        }
-
+        // when the scan could not finish, what it found so far still stands
+        pattern.TryMatches(text, out var matches);
         return matches;
     }
 }

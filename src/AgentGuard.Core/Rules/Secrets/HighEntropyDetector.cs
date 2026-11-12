@@ -144,6 +144,24 @@ internal sealed class HighEntropyDetector
     // reports positions in the whole text.
     private bool ScanChunk(string text, int start, int length, List<(int Start, int Length)> findings, bool firstOnly)
     {
+        var before = findings.Count;
+
+        // a scan that ran out of time is run again before it stands: see RegexPatterns
+        for (var attempt = 1; ; attempt++)
+        {
+            var found = ScanChunkOnce(text, start, length, findings, firstOnly, out var incomplete);
+            if (!incomplete || attempt >= RegexPatterns.Attempts)
+                return found;
+
+            findings.RemoveRange(before, findings.Count - before);
+        }
+    }
+
+    private bool ScanChunkOnce(
+        string text, int start, int length, List<(int Start, int Length)> findings, bool firstOnly, out bool incomplete)
+    {
+        incomplete = false;
+
         try
         {
             // values assigned to a secret-like key name come first: they are judged more leniently,
@@ -184,6 +202,7 @@ internal sealed class HighEntropyDetector
         catch (RegexMatchTimeoutException)
         {
             // the chunk could not be scanned inside the budget; what it found still counts
+            incomplete = true;
         }
 
         return false;

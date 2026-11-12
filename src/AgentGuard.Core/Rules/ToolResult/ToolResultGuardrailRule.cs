@@ -795,17 +795,12 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
 
     private static Match? TryMatch(Regex pattern, string text, ref int timedOut)
     {
-        try
-        {
-            var match = pattern.Match(text);
-            return match.Success ? match : null;
-        }
-        catch (RegexMatchTimeoutException)
-        {
-            // the remaining patterns still run; the caller reports that this one could not finish
-            timedOut++;
-            return null;
-        }
+        if (pattern.TryMatch(text, out var match))
+            return match;
+
+        // the remaining patterns still run; the caller reports that this one could not finish
+        timedOut++;
+        return null;
     }
 
     /// <summary>
@@ -854,15 +849,11 @@ public sealed class ToolResultGuardrailRule : IGuardrailRule
     {
         foreach (var (_, _, pattern) in patterns)
         {
-            try
-            {
-                foreach (Match match in pattern.Matches(content))
-                    matches.Add((match.Index, match.Index + match.Length));
-            }
-            catch (RegexMatchTimeoutException)
-            {
+            if (!pattern.TryMatches(content, out var found))
                 return false;
-            }
+
+            foreach (var match in found)
+                matches.Add((match.Index, match.Index + match.Length));
         }
 
         return true;

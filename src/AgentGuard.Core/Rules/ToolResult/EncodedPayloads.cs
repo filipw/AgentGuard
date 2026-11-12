@@ -74,6 +74,18 @@ internal static class EncodedPayloads
     /// </remarks>
     public static List<EncodedRun> Find(string text)
     {
+        // a search that ran out of time is run again before it stands: see RegexPatterns
+        for (var attempt = 1; ; attempt++)
+        {
+            var runs = FindOnce(text, out var incomplete);
+            if (!incomplete || attempt >= RegexPatterns.Attempts)
+                return runs;
+        }
+    }
+
+    private static List<EncodedRun> FindOnce(string text, out bool incomplete)
+    {
+        incomplete = false;
         var runs = new List<EncodedRun>();
         var examined = 0;
         var budget = MaxEncodedLength;
@@ -151,6 +163,7 @@ internal static class EncodedPayloads
         catch (RegexMatchTimeoutException)
         {
             // the search could not finish inside its budget; keep the runs found so far
+            incomplete = true;
         }
 
         return runs;

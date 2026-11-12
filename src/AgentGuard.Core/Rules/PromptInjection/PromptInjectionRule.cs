@@ -400,11 +400,8 @@ public sealed class PromptInjectionRule : IGuardrailRule
     {
         try
         {
-            return pattern.IsMatch(text);
-        }
-        catch (RegexMatchTimeoutException)
-        {
-            return null;
+            // a timeout is retried before it counts: see RegexPatterns
+            return pattern.TryIsMatch(text);
         }
         catch (IndexOutOfRangeException)
         {

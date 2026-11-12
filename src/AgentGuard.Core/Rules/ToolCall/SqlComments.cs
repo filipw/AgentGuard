@@ -30,13 +30,6 @@ internal static class SqlComments
         if (!text.Contains("/*", StringComparison.Ordinal))
             return null;
 
-        try
-        {
-            return Comment.Replace(text, " ");
-        }
-        catch (RegexMatchTimeoutException)
-        {
-            return null;
-        }
+        return Comment.TryReplace(text, static _ => " ");
     }
 }
